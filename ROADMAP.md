@@ -30,11 +30,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 - [x] S0.1 Cargo project, MIT license, lite-xl credit (NOTICE)
 - [x] S0.2 Window (winit) + software canvas (softbuffer) + text (cosmic-text)
 - [x] S0.3 Headless `--screenshot out.png` mode using the same render path
-- [~] S0.4 Windows CI: release build, tests, screenshot, upload exe + PNG;
+- [x] S0.4 Windows CI: release build, tests, screenshot, upload exe + PNG;
        log exe size, startup time, peak memory
 - [x] S0.5 Windows hardening: static CRT, panic hook → log file, no `\\?\` paths,
        CRLF / BOM / non-UTF-8 tolerant file loading
-- [ ] S0.6 User runs the CI exe on their Windows machine and gives feedback
+- [~] S0.6 User runs the CI exe on their Windows machine and gives feedback
        (DPI, fonts, feel) — **gate before Epic 1**
 
 ## Epic 1 — Viewer (useful daily for reading)
@@ -91,6 +91,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Windows CI green. Windows numbers: exe 2.43 MB, startup 178 ms
+  (fonts 152 ms), window working set 21.4 MB (6.7 MB private). Static CRT and
+  pure-Rust checks pass. Waiting on user feedback (S0.6).
 - 2026-11-14 — Thin slice works on Linux: 4.7 MB exe, ~110 ms startup, ~14 MB RSS
   in window mode. Pushing with Windows CI to get real Windows numbers.
 - 2026-11-14 — Project started. Roadmap written. Working on Epic 0.
