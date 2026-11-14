@@ -139,6 +139,30 @@ asks for each dirty tab.
 - [x] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
        markdown source and in side-by-side mode
 
+## Epic 5 — Everyday parity (owner review after 1.0)
+
+Owner asked for tabs/compare/split "like other code editors" (VS Code is the
+reference for these; lite-xl for the rest). Adversarial review findings are
+fixed first (S5.0).
+
+- [ ] S5.0 Fix confirmed findings from the end-to-end adversarial review
+- [x] S5.1a Tree drag-to-move, F2/Delete in tree, unsaved dot in tab close slot
+- [ ] S5.1 Tabs like VS Code: sized to the name, shrink when crowded, then
+       scroll (wheel, active tab kept in view, overflow indicator); drag to
+       reorder; right-click menu (Close, Close Others, Close to the Right,
+       Close Saved, Close All, Copy Path, Reveal in tree / Explorer);
+       Ctrl+Shift+T reopens the last closed tab; double-click empty bar = new file
+- [ ] S5.2 Compare: tree "Select for Compare" → "Compare with Selected", and
+       "Compare with Saved" for an edited file. Side-by-side diff tab: removed /
+       added lines tinted, changed characters highlighted, aligned rows, one
+       scroll, F7 / Shift+F7 next/previous change, change count in status
+- [ ] S5.3 Split right: two editor groups side by side, each with its own tabs
+       (Ctrl+\ like VS Code; move tab to other group; close group)
+- [ ] S5.4 Everyday editing gaps vs lite-xl: Ctrl+N new file, Shift+click
+       extends selection, Ctrl+/ toggle comment, Alt+Up/Down move lines,
+       Ctrl+D select next occurrence (multi-caret), Ctrl+click add caret,
+       right-click menu in the editor, Ctrl+wheel zoom
+
 ---
 
 ## Progress log

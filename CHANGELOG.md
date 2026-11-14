@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0 — unreleased
+
+- File tree: drag a file or folder onto a folder to move it (asks first,
+  never overwrites); F2 renames and Delete deletes the selected entry.
+- Tabs with unsaved changes show a dot in place of the close button.
+
 ## 1.0.0 — 2026-11-14
 
 First release. One 6.5 MB `litedit.exe`, no installer, no runtime; about
