@@ -13,6 +13,8 @@ const HEADER: &str = "litedit-session 1";
 #[derive(Clone, Debug, PartialEq)]
 pub struct Session {
     pub root: Option<PathBuf>,
+    /// More folders shown in the tree (workspace folders after the first).
+    pub folders: Vec<PathBuf>,
     pub tabs: Vec<PathBuf>,
     /// Side of each tab (0 left, 1 right; missing = left).
     pub groups: Vec<u8>,
@@ -28,6 +30,7 @@ impl Default for Session {
     fn default() -> Self {
         Self {
             root: None,
+            folders: Vec::new(),
             tabs: Vec::new(),
             groups: Vec::new(),
             active: 0,
@@ -79,6 +82,9 @@ impl Session {
             let v = v.trim_end_matches('\r');
             match k {
                 "root" if !v.is_empty() => s.root = Some(PathBuf::from(v)),
+                "folder" if !v.is_empty() && s.folders.len() < 32 => {
+                    s.folders.push(PathBuf::from(v))
+                }
                 "tab" | "tab-right" if !v.is_empty() => {
                     s.tabs.push(PathBuf::from(v));
                     s.groups.push(u8::from(k == "tab-right"));
@@ -117,6 +123,9 @@ impl Session {
         let clean = |p: &Path| p.display().to_string().replace(['\t', '\n', '\r'], " ");
         if let Some(r) = &self.root {
             out.push_str(&format!("root\t{}\n", clean(r)));
+        }
+        for f in &self.folders {
+            out.push_str(&format!("folder\t{}\n", clean(f)));
         }
         for (i, t) in self.tabs.iter().enumerate() {
             let k = if self.groups.get(i) == Some(&1) {
@@ -157,6 +166,7 @@ mod tests {
     #[test]
     fn round_trip_and_tolerance() {
         let s = Session {
+            folders: Vec::new(),
             groups: vec![0, 1],
             root: Some(PathBuf::from("/notes")),
             tabs: vec![PathBuf::from("/notes/a.md"), PathBuf::from("/notes/b c.md")],
@@ -193,6 +203,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let p = d.join("deeper/session.txt");
         let s = Session {
+            folders: Vec::new(),
             groups: Vec::new(),
             zoom: 1.5,
             ..Session::default()

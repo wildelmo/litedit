@@ -1331,6 +1331,7 @@ fn starting_with_a_file_does_not_overwrite_the_saved_workspace() {
         std::fs::write(dir.join(f), f).unwrap();
     }
     let saved = Session {
+        folders: Vec::new(),
         groups: Vec::new(),
         root: Some(dir.clone()),
         tabs: vec![dir.join("a.md"), dir.join("b.md")],
@@ -3141,4 +3142,43 @@ fn workspace_files_save_and_reopen_folder_and_tabs() {
     app4.open(&evil);
     assert!(app4.tab_titles().iter().all(|t| !t.0.contains("x.md")));
     let _ = std::fs::remove_dir_all(moved.parent().unwrap());
+}
+
+#[test]
+fn several_folders_in_the_tree_quick_open_and_workspace_files() {
+    use crate::input::MouseButton;
+    let (a, b, store) = two_projects("multiroot");
+    let mut app = new_app();
+    app.use_workspace_store(store);
+    app.open(&a);
+    app.add_folder(&b);
+    render_hash(&mut app, 800, 600);
+    // Quick open lists files of both, prefixed by folder name.
+    key(&mut app, "ctrl+p");
+    app.handle(Input::Text("b1".into()));
+    key(&mut app, "enter");
+    assert!(app.title().starts_with("b1.txt"), "{}", app.title());
+    // Both folders are watched.
+    let w: Vec<PathBuf> = app.watch_targets().into_iter().map(|(p, _)| p).collect();
+    assert!(w.contains(&a) && w.contains(&b), "{w:?}");
+    // A workspace file keeps both folders.
+    let file = a.join("both.litedit-workspace");
+    app.save_workspace_as(&file);
+    let mut app2 = new_app();
+    app2.open(&file);
+    render_hash(&mut app2, 800, 600);
+    let w: Vec<PathBuf> = app2.watch_targets().into_iter().map(|(p, _)| p).collect();
+    assert!(w.contains(&a) && w.contains(&b), "{w:?}");
+    // The added folder's row offers "Remove Folder from Workspace".
+    // Rows: alpha (19), src (46), a1.md (73), both.litedit-workspace (100), beta (127).
+    assert_eq!(app2.tree_roots(), vec![a.clone(), b.clone()]);
+    let y = app2.tree_row_y(&b).expect("beta row");
+    mouse(&mut app2, 60.0, y, MouseButton::Right);
+    run_menu_item(&mut app2, "Remove Folder from Workspace");
+    assert_eq!(app2.tree_roots(), vec![a.clone()]);
+    assert!(
+        b.join("b1.txt").is_file(),
+        "removed from the tree, not deleted"
+    );
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }

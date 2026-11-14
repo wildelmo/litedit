@@ -102,6 +102,8 @@ pub enum Request {
     SaveWorkspaceDialog(PathBuf),
     /// Ask which workspace file to open.
     OpenWorkspaceDialog,
+    /// Ask for a folder to add to the workspace.
+    AddFolderDialog,
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Open a file at a 1-based line (search results).

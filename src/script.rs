@@ -14,6 +14,7 @@
 //! mods shift             # hold modifiers for following clicks/wheel (mods none)
 //! saveworkspace a.litedit-workspace   # save the workspace (open one with `open`)
 //! workspaces dir         # remember per-folder workspaces in dir (as the window does)
+//! addfolder dir          # add another folder to the tree
 //! move 100 200           # mouse move
 //! click 100 200 [right|middle] [double]
 //! down 100 200 / up 100 200
@@ -74,6 +75,7 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
             },
             "settings" => app.use_settings(resolve_arg_path(rest)),
             "saveworkspace" => app.save_workspace_as(&resolve_arg_path(rest)),
+            "addfolder" => app.add_folder(&resolve_arg_path(rest)),
             "workspaces" => app.use_workspace_store(resolve_arg_path(rest)),
             "mods" => {
                 let m = crate::input::Mods {

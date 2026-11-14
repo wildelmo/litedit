@@ -31,6 +31,9 @@ pub enum MenuAction {
     CompareWithSaved(u64),
     /// Editor menu: replay a key combo in the active view.
     Keys(&'static str),
+    /// Workspace folders.
+    AddFolder,
+    RemoveFolder(PathBuf),
 }
 
 pub struct Menu {

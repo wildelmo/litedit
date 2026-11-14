@@ -27,6 +27,7 @@ pub enum Action {
     CompareWithSaved,
     SaveWorkspace,
     OpenWorkspace,
+    AddFolder,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +192,11 @@ impl Palette {
             action: Action::OpenWorkspace,
         });
         items.push(Item {
+            label: "File: Add Folder to Workspace…".into(),
+            detail: String::new(),
+            action: Action::AddFolder,
+        });
+        items.push(Item {
             label: "View: Toggle Light / Dark Theme".into(),
             detail: String::new(),
             action: Action::ToggleTheme,
@@ -210,15 +216,35 @@ impl Palette {
         Self::new(Mode::Commands, "Command", items, 0)
     }
 
-    pub fn files(root: &Path, files: &[PathBuf]) -> Self {
+    pub fn files(roots: &[PathBuf], files: &[PathBuf]) -> Self {
         let items = files
             .iter()
             .map(|p| {
-                let rel = p
-                    .strip_prefix(root)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                // Relative to its folder; with several folders, prefixed by
+                // that folder's name.
+                let root = roots
+                    .iter()
+                    .filter(|r| p.starts_with(r))
+                    .max_by_key(|r| r.components().count());
+                let rel = match root {
+                    Some(r) => {
+                        let rel = p
+                            .strip_prefix(r)
+                            .unwrap_or(p)
+                            .to_string_lossy()
+                            .replace('\\', "/");
+                        if roots.len() > 1 {
+                            let name = r
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            format!("{name}/{rel}")
+                        } else {
+                            rel
+                        }
+                    }
+                    None => p.to_string_lossy().replace('\\', "/"),
+                };
                 Item {
                     label: rel,
                     detail: String::new(),

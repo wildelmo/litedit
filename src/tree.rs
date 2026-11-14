@@ -67,7 +67,9 @@ pub struct Row {
 }
 
 pub struct Tree {
-    root: Option<PathBuf>,
+    /// Folders shown (the first is the main folder; more can be added to the
+    /// workspace, like lite-xl's "add directory").
+    roots: Vec<PathBuf>,
     entries: HashMap<PathBuf, Vec<Entry>>,
     /// Directories whose listing was truncated: (shown, total).
     truncated: HashMap<PathBuf, usize>,
@@ -190,7 +192,7 @@ impl Default for Tree {
 impl Tree {
     pub fn new() -> Self {
         Self {
-            root: None,
+            roots: Vec::new(),
             entries: HashMap::new(),
             truncated: HashMap::new(),
             expanded: HashSet::new(),
@@ -210,15 +212,51 @@ impl Tree {
     }
 
     pub fn root(&self) -> Option<&Path> {
-        self.root.as_deref()
+        self.roots.first().map(PathBuf::as_path)
+    }
+
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+
+    /// The shown folder that contains `p` (the deepest one).
+    pub fn root_of(&self, p: &Path) -> Option<&Path> {
+        self.roots
+            .iter()
+            .filter(|r| p.starts_with(r))
+            .max_by_key(|r| r.components().count())
+            .map(PathBuf::as_path)
+    }
+
+    /// Add another folder to the tree. False if it is already shown.
+    pub fn add_root(&mut self, dir: &Path) -> bool {
+        if self.roots.iter().any(|r| r == dir) {
+            return false;
+        }
+        self.roots.push(dir.to_path_buf());
+        self.expanded.insert(dir.to_path_buf());
+        self.rows_dirty = true;
+        true
+    }
+
+    /// Take a folder out of the tree (never the last one).
+    pub fn remove_root(&mut self, dir: &Path) -> bool {
+        if self.roots.len() < 2 {
+            return false;
+        }
+        let before = self.roots.len();
+        self.roots.retain(|r| r != dir);
+        self.selected = None;
+        self.rows_dirty = true;
+        self.roots.len() != before
     }
 
     pub fn is_shown(&self) -> bool {
-        self.visible && self.root.is_some()
+        self.visible && !self.roots.is_empty()
     }
 
     pub fn set_root(&mut self, dir: &Path) {
-        self.root = Some(dir.to_path_buf());
+        self.roots = vec![dir.to_path_buf()];
         self.entries.clear();
         self.truncated.clear();
         self.expanded.clear();
@@ -256,7 +294,7 @@ impl Tree {
     pub fn rows(&mut self) -> &[Row] {
         if self.rows_dirty {
             let mut rows = Vec::new();
-            if let Some(root) = self.root.clone() {
+            for root in self.roots.clone() {
                 let name = root
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -303,8 +341,8 @@ impl Tree {
     }
 
     pub fn toggle(&mut self, dir: &Path) {
-        if Some(dir) == self.root.as_deref() {
-            return; // the root stays open
+        if self.roots.iter().any(|r| r == dir) {
+            return; // the folders themselves stay open
         }
         if !self.expanded.remove(dir) {
             self.expanded.insert(dir.to_path_buf());
@@ -331,12 +369,9 @@ impl Tree {
 
     /// Expand parents so `file` is visible and select it.
     pub fn reveal(&mut self, file: &Path) {
-        let Some(root) = self.root.clone() else {
+        let Some(root) = self.root_of(file).map(Path::to_path_buf) else {
             return;
         };
-        if !file.starts_with(&root) {
-            return;
-        }
         let mut p = file.parent();
         while let Some(dir) = p {
             if !dir.starts_with(&root) {

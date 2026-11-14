@@ -7,6 +7,9 @@
   edits always stay open). Save a workspace to a `.litedit-workspace` file
   (command palette: File: Save Workspace As…) and open it later or on
   another PC (paths inside the project are stored relative).
+- Several folders in one workspace: File: Add Folder to Workspace… (command
+  palette, or right-click the top of the tree); quick open, find in folder
+  and workspace files include them all.
 - Split view: Ctrl+Alt+Right moves the current tab to a right-hand side
   (with its own tabs); Ctrl+Alt+Left moves it back; Ctrl+1 / Ctrl+2 or a
   click switches sides. Also in the tab menu and command palette.

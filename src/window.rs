@@ -91,6 +91,12 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::AddFolderDialog => {
+                    if let Some(p) = pick(&window, true) {
+                        self.app.add_folder(&p);
+                        redraw = true;
+                    }
+                }
                 Request::OpenWorkspaceDialog => {
                     if let Some(p) = pick_workspace(&window) {
                         self.app.open(&p);

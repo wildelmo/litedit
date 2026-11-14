@@ -65,7 +65,7 @@ pub struct App {
     /// Command palette / quick open / go to line overlay.
     palette: Option<Palette>,
     /// Files under the tree root for quick open (rebuilt after changes).
-    file_index: Option<(PathBuf, Vec<PathBuf>)>,
+    file_index: Option<(Vec<PathBuf>, Vec<PathBuf>)>,
     /// Right-click menu (tree).
     menu: Option<Menu>,
     /// What the open text prompt is for.
@@ -456,6 +456,22 @@ impl App {
     pub fn menu_item_pos(&self, label: &str) -> Option<(f32, f32)> {
         let r = self.menu.as_ref()?.item_rect(label)?;
         Some((r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0))
+    }
+
+    #[cfg(test)]
+    pub fn tree_roots(&self) -> Vec<PathBuf> {
+        self.tree.roots().to_vec()
+    }
+
+    /// Window y of the middle of the tree row showing `p` (tests).
+    #[cfg(test)]
+    pub fn tree_row_y(&mut self, p: &Path) -> Option<f32> {
+        let t = self.layout().tree?;
+        let ctx = ctx!(self);
+        let rh = (ctx.ui_metrics().line_height + ctx.px(6.0)).round();
+        let top = t.y as f32 + ctx.px(theme::PADDING_Y);
+        let i = self.tree.rows().iter().position(|r| r.entry.path == p)?;
+        Some(top + i as f32 * rh + rh / 2.0)
     }
 
     #[cfg(test)]
@@ -909,15 +925,27 @@ impl App {
     }
 
     fn open_quick_open(&mut self) {
-        let Some(root) = self.tree.root().map(Path::to_path_buf) else {
+        let roots = self.tree.roots().to_vec();
+        if roots.is_empty() {
             self.notice = Some("Open a folder first (Ctrl+Shift+O)".into());
             return;
-        };
-        if self.file_index.as_ref().is_none_or(|(r, _)| *r != root) {
-            self.file_index = Some((root.clone(), index_files(&root)));
         }
-        let files = &self.file_index.as_ref().expect("just built").1;
-        self.palette = Some(Palette::files(&root, files));
+        let files = match &self.file_index {
+            Some((r, f)) if *r == roots => f.clone(),
+            _ => {
+                let mut all = Vec::new();
+                for r in &roots {
+                    all.extend(index_files(r));
+                    if all.len() >= crate::palette::MAX_INDEX_FILES {
+                        all.truncate(crate::palette::MAX_INDEX_FILES);
+                        break;
+                    }
+                }
+                self.file_index = Some((roots.clone(), all.clone()));
+                all
+            }
+        };
+        self.palette = Some(Palette::files(&roots, &files));
     }
 
     fn run_palette(&mut self, o: Outcome) {
@@ -941,6 +969,7 @@ impl App {
                 }
             }
             Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
+            Outcome::Run(Action::AddFolder) => self.requests.push(Request::AddFolderDialog),
             Outcome::Run(Action::CompareWithSaved) => {
                 let id = self.tabs[self.active].id;
                 self.compare_with_saved(id);
@@ -1055,9 +1084,18 @@ impl App {
             ("New file…", MenuAction::NewFile(dir.clone())),
             ("New folder…", MenuAction::NewFolder(dir)),
         ];
+        if is_root {
+            items.push(("Add Folder to Workspace…", MenuAction::AddFolder));
+        }
         if !is_root {
             items.push(("Rename…", MenuAction::Rename(path.clone())));
             items.push(("Delete (to Recycle Bin)", MenuAction::Delete(path.clone())));
+        }
+        if is_root && self.tree.roots().len() > 1 {
+            items.push((
+                "Remove Folder from Workspace",
+                MenuAction::RemoveFolder(path.clone()),
+            ));
         }
         if is_dir {
             items.push(("Find in folder…", MenuAction::FindInFolder(path.clone())));
@@ -1118,6 +1156,15 @@ impl App {
                 if let Some((key, mods)) = parse_key_combo(combo) {
                     self.handle(Input::Key { key, mods });
                 }
+                return;
+            }
+            MenuAction::RemoveFolder(p) => {
+                let p = p.clone();
+                self.remove_folder(&p);
+                return;
+            }
+            MenuAction::AddFolder => {
+                self.requests.push(Request::AddFolderDialog);
                 return;
             }
             MenuAction::SelectForCompare(p) => {
@@ -1275,6 +1322,7 @@ impl App {
         let ws = self.current_workspace();
         Session {
             root: self.tree.root().map(Path::to_path_buf),
+            folders: self.tree.roots().iter().skip(1).cloned().collect(),
             tabs: ws.tabs.iter().map(|(p, _)| p.clone()).collect(),
             groups: ws.tabs.iter().map(|(_, g)| *g).collect(),
             active: ws.active,
@@ -1292,6 +1340,9 @@ impl App {
         self.zoom = s.zoom;
         if let Some(r) = s.root.filter(|r| r.is_dir()) {
             self.tree.set_root(&r);
+            for f in s.folders.iter().filter(|f| f.is_dir()) {
+                self.tree.add_root(f);
+            }
             self.view = Box::new(MessageView::folder_opened());
         }
         let tabs: Vec<(PathBuf, u8)> = s
@@ -1430,7 +1481,7 @@ impl App {
     /// Folders to watch for external changes: (path, recursive).
     pub fn watch_targets(&self) -> Vec<(PathBuf, bool)> {
         let mut v = Vec::new();
-        if let Some(r) = self.tree.root() {
+        for r in self.tree.roots() {
             v.push((r.to_path_buf(), true));
         }
         for i in 0..self.tabs.len() {
@@ -1442,7 +1493,7 @@ impl App {
                 .chain(view.watched_paths());
             for f in files {
                 if let Some(dir) = f.parent()
-                    && !self.tree.root().is_some_and(|r| dir.starts_with(r))
+                    && self.tree.root_of(dir).is_none()
                     && !v.iter().any(|(d, _)| d == dir)
                 {
                     v.push((dir.to_path_buf(), false));
@@ -1887,12 +1938,7 @@ impl App {
     /// The folders, open files (with their side) and active file.
     pub fn current_workspace(&self) -> Workspace {
         let mut w = Workspace {
-            folders: self
-                .tree
-                .root()
-                .map(Path::to_path_buf)
-                .into_iter()
-                .collect(),
+            folders: self.tree.roots().to_vec(),
             ..Workspace::default()
         };
         for i in 0..self.tabs.len() {
@@ -1963,7 +2009,10 @@ impl App {
         let close: Vec<u64> = (0..self.tabs.len())
             .filter(|&i| {
                 let v = self.tab_view(i);
-                !v.is_dirty() && !v.path().is_some_and(|p| p.starts_with(&root))
+                !v.is_dirty()
+                    && !v
+                        .path()
+                        .is_some_and(|p| w.folders.iter().any(|f| p.starts_with(f)))
             })
             .map(|i| self.tabs[i].id)
             .collect();
@@ -1975,6 +2024,9 @@ impl App {
         }
         self.group_shown = [self.tabs.get(self.active).map(|t| t.id), None];
         self.tree.set_root(&root);
+        for f in w.folders.iter().skip(1).filter(|f| f.is_dir()) {
+            self.tree.add_root(f);
+        }
         self.tree.visible = true;
         self.open_workspace_tabs(&w.tabs, w.active);
         if self.view.path().is_none() && self.tabs.len() == 1 {
@@ -1995,8 +2047,9 @@ impl App {
 
     /// Open a folder: its remembered workspace if there is one.
     fn open_folder(&mut self, dir: &Path) {
-        if self.tree.root() == Some(dir) {
+        if self.tree.roots().iter().any(|r| r == dir) {
             self.tree.visible = true;
+            self.tree.reveal(dir);
             self.focus = Focus::Tree;
             return;
         }
@@ -2007,6 +2060,36 @@ impl App {
             .filter(|w| w.folders.first().is_some_and(|f| f == dir))
             .unwrap_or_else(|| Workspace::for_folder(dir));
         self.apply_workspace(w);
+    }
+
+    /// "File: Add Folder to Workspace…": show another folder in the tree.
+    pub fn add_folder(&mut self, dir: &Path) {
+        if !dir.is_dir() {
+            return;
+        }
+        if self.tree.root().is_none() {
+            self.open_folder(dir);
+            return;
+        }
+        if self.tree.add_root(dir) {
+            push_recent(&mut self.recent, dir);
+            self.file_index = None;
+            self.session_dirty = true;
+            self.tree.visible = true;
+            self.notice = Some(format!("Added {} to the workspace", display_name(dir)));
+        }
+    }
+
+    /// "Remove Folder from Workspace" (tree menu on an added folder).
+    fn remove_folder(&mut self, dir: &Path) {
+        if self.tree.remove_root(dir) {
+            self.file_index = None;
+            self.session_dirty = true;
+            self.notice = Some(format!(
+                "Removed {} from the workspace (nothing was deleted)",
+                display_name(dir)
+            ));
+        }
     }
 
     /// "File: Save Workspace As…" (from the dialog or a script).
@@ -2349,7 +2432,12 @@ impl App {
                         true
                     }
                     Key::Char('f') if mods.shift => {
-                        match self.tree.root().map(Path::to_path_buf) {
+                        let here = self
+                            .view
+                            .path()
+                            .and_then(|p| self.tree.root_of(p))
+                            .map(Path::to_path_buf);
+                        match here.or_else(|| self.tree.root().map(Path::to_path_buf)) {
                             Some(root) => {
                                 self.palette = Some(Palette::text(
                                     "Find in folder",
@@ -2823,7 +2911,6 @@ impl App {
         let other_view = layout
             .other
             .and_then(|o| self.shown_tab(o.group).map(|i| (o, i)));
-        let active_tab = self.active;
         let mouse = self.mouse;
         let current = self.view.path().map(Path::to_path_buf);
         let focus = self.focus;

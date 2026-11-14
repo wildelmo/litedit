@@ -57,7 +57,8 @@ or drag a file or folder onto the window.
 | `Ctrl+click` / `Shift+click` | Add a caret / extend the selection |
 | `Ctrl+N` | New file (named in the current folder) |
 | `Ctrl+Shift+O` / `Ctrl+R` | Open folder / open recent file, folder or workspace |
-| Palette: File: Save Workspace As… / Open Workspace… | Save or open a `.litedit-workspace` (folder + open files + split) |
+| Palette: File: Save Workspace As… / Open Workspace… | Save or open a `.litedit-workspace` (folders + open files + split) |
+| Palette or tree menu: Add Folder to Workspace… | Show another folder in the tree (right-click it → Remove Folder from Workspace) |
 | `Ctrl+Alt+Right` / `Ctrl+Alt+Left` | Split: move the tab to the right / left side |
 | `Ctrl+1` / `Ctrl+2` | Focus the left / right side |
 | Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |

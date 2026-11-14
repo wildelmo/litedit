@@ -176,8 +176,10 @@ fixed first (S5.0).
        old folder's and restores the new one's (unsaved tabs always stay);
        File: Save Workspace As… / Open Workspace… (`.litedit-workspace`,
        relative paths, network paths ignored); split restored next start
-- [ ] S5.5b Several folders in the tree (lite-xl "add directory"): File: Add
-       Folder to Workspace…, Remove Folder from Workspace
+- [x] S5.5b Several folders in the tree (lite-xl "add directory"): File: Add
+       Folder to Workspace… (palette, tree menu), Remove Folder from Workspace
+       (tree menu on an added folder); quick open, watching, find in folder,
+       session and workspace files cover every folder
 - [ ] S5.6 Full lite-xl command audit → one table of remaining differences
 
 ---
@@ -186,6 +188,9 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.5b several workspace folders: Tree.roots, root_of,
+  add_root/remove_root; quick open indexes all folders (labels prefixed with
+  the folder name); session `folder` lines; workspace files keep all folders.
 - 2026-11-14 — S5.5a workspaces: workspace.rs (format, relative paths,
   bounds, network paths skipped, per-folder store in %APPDATA%), App
   apply_workspace / open_folder / save_workspace_as / persist_workspace;
