@@ -110,8 +110,8 @@ CommandView) powers find/replace, go to line, rename/new file, quick open
 and the command palette. Tabs move the discard gate to per-tab close; quit
 asks for each dirty tab.
 
-- [ ] S3.0 Input bar widget (text field: caret, selection, clipboard, history)
-- [ ] S3.1 Tabs: tab bar, click/middle-click, Ctrl+Tab / Ctrl+PgUp/PgDn,
+- [x] S3.0 Input bar widget (text field: caret, selection, clipboard, history)
+- [x] S3.1 Tabs: tab bar, click/middle-click, Ctrl+Tab / Ctrl+PgUp/PgDn,
        Ctrl+W (guarded), dirty dot, reopen activates existing tab, quit asks
        per dirty tab, watcher covers all open files
 - [ ] S3.2 Find / replace in file: Ctrl+F (prefill from selection), F3 /
@@ -143,6 +143,11 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.0/S3.1 done: input bar widget (reuses EditDoc); tabs (tab bar with
+  hover ×, click/middle-click, Ctrl+Tab/Ctrl+PgUp/PgDn/Alt+1..9, Ctrl+W asks when
+  dirty, quit asks per dirty tab, opening never discards, background tabs reload
+  or queue a disk prompt, multiple CLI paths). Real-window CI (4 tests) now
+  gating after two green runs; CI reports memory with 10 tabs.
 - 2026-11-14 — Hardening (advisor review): save never deletes the only good copy
   (ReplaceFileW partial failures, verified in-place overwrite); app-level fuzz
   (random keys/typing/clicks/drags through App, render each step, grapheme

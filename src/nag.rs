@@ -3,8 +3,6 @@
 //! Modal: while shown, keys and clicks go to the bar. Answer with a click,
 //! the first letter of an option, ←/→ + Enter, or Esc (the last option).
 
-use std::path::PathBuf;
-
 use crate::canvas::{Canvas, Rect};
 use crate::input::{Input, Key, MouseButton};
 use crate::theme;
@@ -13,7 +11,9 @@ use crate::ui::{Ctx, FontKind};
 /// What to do after a "save changes?" question is answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pending {
-    Open(PathBuf),
+    /// Close the tab with this id.
+    CloseTab(u64),
+    /// Quit (asks about each dirty tab in turn).
     Quit,
 }
 

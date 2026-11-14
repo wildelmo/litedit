@@ -445,7 +445,8 @@ fn mouse_places_caret_and_selects_words() {
     render_hash(&mut app, 800, 600);
     // Click far right of line 2 → caret at its end.
     let lh = (15.0f32 * 1.4).round();
-    let y2 = 7.0 + lh * 1.5;
+    let tabs = lh + 14.0; // tab bar height
+    let y2 = tabs + 7.0 + lh * 1.5;
     app.handle(Input::MouseMove { x: 700.0, y: y2 });
     app.handle(Input::MouseDown {
         x: 700.0,
@@ -465,7 +466,7 @@ fn mouse_places_caret_and_selects_words() {
     );
     assert_eq!(app.cursor(), crate::input::Cursor::Text);
     // Double-click a word on line 1 and type over it.
-    let y1 = 7.0 + lh * 0.5;
+    let y1 = tabs + 7.0 + lh * 0.5;
     let gutter_and_some = 80.0;
     app.handle(Input::MouseDown {
         x: gutter_and_some,
@@ -548,7 +549,7 @@ fn save_preserves_endings_and_ignores_own_change_event() {
 }
 
 #[test]
-fn every_discard_path_asks_first() {
+fn tabs_open_without_discarding_and_closing_dirty_tabs_asks() {
     let p = temp_file("dirty.txt", "text\n");
     let other = p.parent().unwrap().join("other.txt");
     std::fs::write(&other, "other\n").unwrap();
@@ -556,42 +557,102 @@ fn every_discard_path_asks_first() {
     app.open(&p);
     type_text(&mut app, "edit ");
 
-    // Opening another file (dialog, tree, link, CLI all use App::open).
-    app.open(&other);
+    // Opening another file (dialog, tree, link, drop) adds a tab: nothing is lost.
+    app.handle(Input::Drop(other.clone()));
+    assert_eq!(app.nag_message(), None);
+    assert_eq!(app.tab_count(), 2);
+    assert!(app.title().starts_with("other.txt"));
+    // Re-opening an open file just switches to it.
+    app.open(&p);
+    assert_eq!(app.tab_count(), 2);
+    assert!(app.title().starts_with("● dirty.txt"));
+
+    // Ctrl+W on the dirty tab asks; Cancel keeps it.
+    press(&mut app, "ctrl+w");
     assert!(
         app.nag_message()
             .unwrap()
             .contains("Save changes to dirty.txt")
     );
-    assert!(app.title().contains("dirty.txt"), "still on the dirty file");
-    press(&mut app, "escape"); // Cancel
-    assert_eq!(app.nag_message(), None);
-
-    // Drag and drop.
-    app.handle(Input::Drop(other.clone()));
-    assert!(app.nag_message().is_some());
-    press(&mut app, "c"); // Cancel by first letter
-    assert!(app.title().contains("dirty.txt"));
-
-    // Tree: keyboard-open another file.
-    press(&mut app, "ctrl+shift+e");
-    press(&mut app, "end");
-    press(&mut app, "enter");
-    assert!(app.nag_message().is_some(), "tree open must ask");
     press(&mut app, "escape");
+    assert_eq!(app.tab_count(), 2);
 
-    // Closing the window.
+    // Ctrl+Tab cycles; closing a clean tab does not ask.
+    press(&mut app, "ctrl+tab");
+    assert!(app.title().starts_with("other.txt"));
+    press(&mut app, "ctrl+w");
+    assert_eq!(app.nag_message(), None);
+    assert_eq!(app.tab_count(), 1);
+    assert!(app.title().starts_with("● dirty.txt"));
+
+    // Closing the window asks about the dirty tab; Don't save quits and
+    // leaves the file on disk untouched.
     app.handle(Input::CloseRequested);
     assert!(app.nag_message().is_some());
     assert!(!app.take_requests().contains(&Request::Quit));
-    press(&mut app, "escape");
-
-    // "Don't save" discards and proceeds; the file on disk is untouched.
-    app.open(&other);
     press(&mut app, "d");
-    assert!(app.title().starts_with("other.txt"));
+    assert!(app.take_requests().contains(&Request::Quit));
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "text\n");
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn quit_asks_about_each_dirty_tab() {
+    let a = temp_file("a.txt", "a");
+    let b = a.parent().unwrap().join("b.txt");
+    std::fs::write(&b, "b").unwrap();
+    let mut app = new_app();
+    app.open(&a);
+    type_text(&mut app, "1");
+    app.open(&b);
+    type_text(&mut app, "2");
+    app.handle(Input::CloseRequested);
+    assert!(
+        app.nag_message().unwrap().contains("a.txt")
+            || app.nag_message().unwrap().contains("b.txt")
+    );
+    press(&mut app, "enter"); // save the first
+    assert!(app.nag_message().is_some(), "asks about the second");
+    assert!(!app.take_requests().contains(&Request::Quit));
+    press(&mut app, "d"); // discard the second
+    assert!(app.take_requests().contains(&Request::Quit));
+    let saved = [
+        std::fs::read_to_string(&a).unwrap(),
+        std::fs::read_to_string(&b).unwrap(),
+    ];
+    assert!(
+        saved.contains(&"1a".to_string()) || saved.contains(&"2b".to_string()),
+        "{saved:?}"
+    );
+    std::fs::remove_dir_all(a.parent().unwrap()).ok();
+}
+
+#[test]
+fn tab_bar_click_switches_and_middle_click_closes() {
+    let a = temp_file("one.txt", "1");
+    let b = a.parent().unwrap().join("two.txt");
+    std::fs::write(&b, "2").unwrap();
+    let mut app = new_app();
+    app.open(&a);
+    app.open(&b);
+    key(&mut app, "ctrl+\\"); // hide tree: tab bar starts at x = 0
+    render_hash(&mut app, 800, 600);
+    app.handle(Input::MouseDown {
+        x: 20.0,
+        y: 10.0,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    assert!(app.title().starts_with("one.txt"), "{}", app.title());
+    app.handle(Input::MouseDown {
+        x: 200.0,
+        y: 10.0,
+        button: crate::input::MouseButton::Middle,
+        clicks: 1,
+    });
+    assert_eq!(app.tab_count(), 1);
+    assert!(app.title().starts_with("one.txt"));
+    std::fs::remove_dir_all(a.parent().unwrap()).ok();
 }
 
 #[test]
@@ -691,7 +752,7 @@ fn save_as_switches_file_and_script_expect_file_works() {
 }
 
 #[test]
-fn markdown_edit_updates_preview_saves_and_link_click_is_guarded() {
+fn markdown_edit_updates_preview_and_links_open_in_tabs() {
     let p = temp_file("notes.md", "[go](other.md)\n\n# Title\n");
     std::fs::write(p.parent().unwrap().join("other.md"), "# Other\n").unwrap();
     let mut app = new_app();
@@ -713,27 +774,24 @@ fn markdown_edit_updates_preview_saves_and_link_click_is_guarded() {
         render_hash(&mut app, 800, 600),
         "preview follows the edit"
     );
-    // Clicking the link while dirty must ask before leaving.
-    app.handle(Input::MouseMove { x: 50.0, y: 40.0 });
+    // Following a link opens it in a new tab; the edited file stays open.
+    let y = 40.0 + 35.0; // below the tab bar
+    app.handle(Input::MouseMove { x: 50.0, y });
     app.handle(Input::MouseDown {
         x: 50.0,
-        y: 40.0,
+        y,
         button: crate::input::MouseButton::Left,
         clicks: 1,
     });
-    assert!(
-        app.nag_message()
-            .unwrap_or_default()
-            .contains("Save changes to notes.md"),
-        "{:?}",
-        app.nag_message()
-    );
-    press(&mut app, "enter"); // Save, then follow the link
+    assert_eq!(app.nag_message(), None);
+    assert!(app.title().starts_with("other.md"), "{}", app.title());
+    assert_eq!(app.tab_count(), 2);
+    press(&mut app, "ctrl+shift+tab");
+    press(&mut app, "ctrl+s");
     assert_eq!(
         std::fs::read_to_string(&p).unwrap(),
         "[go](other.md)\n\n# Title edited\n"
     );
-    assert!(app.title().starts_with("other.md"), "{}", app.title());
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
 
@@ -849,7 +907,7 @@ fn fuzz_editor_through_the_app() {
                 8 => {
                     moved = true;
                     last = "click".into();
-                    let (cx, cy) = (rnd(500) as f32, rnd(300) as f32);
+                    let (cx, cy) = (rnd(500) as f32, 40.0 + rnd(260) as f32); // below the tab bar
                     let clicks = 1 + rnd(3) as u32;
                     app.handle(Input::MouseMove { x: cx, y: cy });
                     app.handle(Input::MouseDown {
@@ -858,7 +916,7 @@ fn fuzz_editor_through_the_app() {
                         button: crate::input::MouseButton::Left,
                         clicks,
                     });
-                    let (dx, dy) = (rnd(500) as f32, rnd(300) as f32);
+                    let (dx, dy) = (rnd(500) as f32, 40.0 + rnd(260) as f32);
                     app.handle(Input::MouseMove { x: dx, y: dy });
                     app.handle(Input::MouseUp {
                         x: dx,
@@ -875,7 +933,8 @@ fn fuzz_editor_through_the_app() {
                 }
             }
             render_hash(&mut app, 500, 300);
-            if let Some((text, pts)) = app.snapshot() {
+            let preview = app.status_text().starts_with("Markdown preview");
+            if let Some((text, pts)) = app.snapshot().filter(|_| !preview) {
                 let lines: Vec<&str> = crate::editor::buffer::Chunk::parse(&text)
                     .lines
                     .iter()

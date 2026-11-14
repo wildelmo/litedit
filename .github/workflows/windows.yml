@@ -66,6 +66,16 @@ jobs:
           $priv = if ($alive) { [math]::Round($p.PrivateMemorySize64 / 1MB, 1) } else { "n/a" }
           if ($alive) { Stop-Process -Id $p.Id -Force }
 
+          # Ten tabs: open every fixture plus sources.
+          $files = @(Get-ChildItem tests\fixtures -File | Select-Object -ExpandProperty FullName) + @("src\app.rs", "src\view\code.rs", "ROADMAP.md")
+          $files = $files | Select-Object -First 10
+          $p10 = Start-Process -FilePath $exe -ArgumentList ($files | ForEach-Object { "`"$_`"" }) -PassThru
+          Start-Sleep -Seconds 4
+          $p10.Refresh()
+          $ws10 = if (-not $p10.HasExited) { [math]::Round($p10.WorkingSet64 / 1MB, 1) } else { "n/a (exited)" }
+          $priv10 = if (-not $p10.HasExited) { [math]::Round($p10.PrivateMemorySize64 / 1MB, 1) } else { "n/a" }
+          if (-not $p10.HasExited) { Stop-Process -Id $p10.Id -Force }
+
           $crash = Test-Path "target\release\litedit-crash.log"
           $summary = @"
           ## litedit Windows metrics
@@ -76,6 +86,7 @@ jobs:
           | window: working set after 4s | $ws MB |
           | window: peak working set | $peak MB |
           | window: private bytes | $priv MB |
+          | 10 tabs: working set / private | $ws10 MB / $priv10 MB |
           | window still running after 4s | $alive |
           | crash log present | $crash |
 
@@ -89,8 +100,7 @@ jobs:
           if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
           if (-not $alive) { Write-Error "window process exited early"; exit 1 }
 
-      - name: Real-window tests (report-only)
-        continue-on-error: true
+      - name: Real-window tests
         shell: pwsh
         run: |
           $exe = (Resolve-Path "target\release\litedit.exe").Path

@@ -8,6 +8,7 @@ mod doc;
 mod editor;
 mod images;
 mod input;
+mod inputbar;
 mod links;
 mod markdown;
 mod nag;
@@ -33,7 +34,7 @@ use app::App;
 use text::Fonts;
 
 struct Args {
-    path: Option<String>,
+    paths: Vec<String>,
     screenshot: Option<PathBuf>,
     script: Option<PathBuf>,
     size: (u32, u32),
@@ -43,7 +44,7 @@ struct Args {
 
 fn parse_args() -> Result<Args, String> {
     let mut a = Args {
-        path: None,
+        paths: Vec::new(),
         screenshot: None,
         script: None,
         size: (1280, 800),
@@ -84,7 +85,7 @@ fn parse_args() -> Result<Args, String> {
                 std::process::exit(0);
             }
             _ if arg.starts_with("--") => return Err(format!("unknown option {arg}")),
-            _ => a.path = Some(arg),
+            _ => a.paths.push(arg),
         }
     }
     Ok(a)
@@ -130,7 +131,8 @@ fn main() {
     let fonts = Fonts::load();
     let font_ms = fonts.load_ms;
     let mut app = App::new(fonts, args.scale);
-    if let Some(p) = &args.path {
+    // Each path opens in its own tab (a folder goes to the tree).
+    for p in &args.paths {
         app.open(&app::resolve_arg_path(p));
     }
 

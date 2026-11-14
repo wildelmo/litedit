@@ -63,3 +63,4 @@ pub const LINE_HEIGHT: f32 = 1.4;
 pub const PADDING_X: f32 = 14.0;
 pub const PADDING_Y: f32 = 7.0;
 pub const SCROLLBAR_SIZE: f32 = 4.0;
+pub const TAB_WIDTH: f32 = 170.0;

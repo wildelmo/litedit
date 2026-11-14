@@ -36,7 +36,15 @@ pub struct App {
     scale: f32,
     zoom: f32,
     size: (u32, u32),
+    /// The active tab's view. Inactive tabs live in `tabs` (their slot for
+    /// the active tab is empty while it is borrowed here).
     view: Box<dyn View>,
+    tabs: Vec<TabSlot>,
+    active: usize,
+    next_tab_id: u64,
+    /// Tabs whose file changed on disk while they had unsaved edits; the
+    /// question is asked when the tab is shown.
+    disk_prompt: Vec<u64>,
     tree: Tree,
     focus: Focus,
     requests: Vec<Request>,
@@ -54,8 +62,14 @@ pub struct App {
     pending: bool,
 }
 
+struct TabSlot {
+    id: u64,
+    view: Option<Box<dyn View>>,
+}
+
 struct Layout {
     nag: Option<Rect>,
+    tabs: Option<Rect>,
     tree: Option<Rect>,
     divider: Option<Rect>,
     main: Rect,
@@ -84,6 +98,10 @@ impl App {
             zoom: 1.0,
             size: (1, 1),
             view: Box::new(MessageView::welcome()),
+            tabs: vec![TabSlot { id: 1, view: None }],
+            active: 0,
+            next_tab_id: 2,
+            disk_prompt: Vec::new(),
             tree: Tree::new(),
             focus: Focus::Main,
             requests: Vec::new(),
@@ -108,12 +126,12 @@ impl App {
         self.clipboard.get()
     }
 
-    /// Open a file (into the main view) or a folder (into the tree).
-    /// Every way of opening goes through here, so unsaved edits are never
-    /// discarded without asking.
+    /// Open a file (in a tab) or a folder (in the tree). Opening never
+    /// discards anything: an already-open file is brought to the front,
+    /// otherwise a new tab is added.
     pub fn open(&mut self, path: &Path) {
         if path.is_dir() {
-            // A folder only changes the tree; an open file stays open.
+            // A folder only changes the tree; open files stay open.
             self.tree.set_root(path);
             self.tree.visible = true;
             if self.view.path().is_none() {
@@ -124,14 +142,117 @@ impl App {
             self.focus = Focus::Tree;
             return;
         }
-        if self.view.path() == Some(path) {
-            self.focus = Focus::Main;
-            return; // already open
-        }
-        self.guard(Pending::Open(path.to_path_buf()));
+        self.open_now(path);
     }
 
-    /// The single discard gate: run `then` now, or ask first if the open
+    // ---- tabs ------------------------------------------------------------
+
+    fn tab_view(&self, i: usize) -> &dyn View {
+        if i == self.active {
+            &*self.view
+        } else {
+            self.tabs[i]
+                .view
+                .as_deref()
+                .expect("inactive tab has its view")
+        }
+    }
+
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    fn tab_index(&self, id: u64) -> Option<usize> {
+        self.tabs.iter().position(|t| t.id == id)
+    }
+
+    fn find_tab(&self, path: &Path) -> Option<usize> {
+        (0..self.tabs.len()).find(|&i| self.tab_view(i).path() == Some(path))
+    }
+
+    /// Bring tab `i` to the front.
+    pub fn activate(&mut self, i: usize) {
+        if i == self.active || i >= self.tabs.len() {
+            return;
+        }
+        let incoming = self.tabs[i].view.take().expect("inactive tab has its view");
+        let outgoing = std::mem::replace(&mut self.view, incoming);
+        self.tabs[self.active].view = Some(outgoing);
+        self.active = i;
+        self.view.metrics_changed();
+        if let Some(p) = self.view.path().map(Path::to_path_buf) {
+            self.tree.reveal(&p);
+        }
+        let id = self.tabs[i].id;
+        if let Some(k) = self.disk_prompt.iter().position(|t| *t == id) {
+            self.disk_prompt.remove(k);
+            if self.view.is_dirty() && self.view.disk_state() == DiskState::Differs {
+                let name = self.view_name();
+                self.nag = Some(Nag::changed_on_disk(&name));
+            }
+        }
+        self.pending = true;
+    }
+
+    /// Add a view as a new tab after the active one (or replace the welcome
+    /// screen) and show it.
+    fn add_tab(&mut self, view: Box<dyn View>) {
+        if self.view.path().is_none() && self.tabs.len() == 1 {
+            self.view = view;
+            return;
+        }
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let at = self.active + 1;
+        self.tabs.insert(
+            at,
+            TabSlot {
+                id,
+                view: Some(view),
+            },
+        );
+        self.activate(at);
+    }
+
+    /// Close tab `i`, asking first if it has unsaved edits.
+    pub fn close_tab(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let id = self.tabs[i].id;
+        self.activate(i);
+        self.guard(Pending::CloseTab(id));
+    }
+
+    /// Remove a tab without asking (its edits are dropped).
+    fn remove_tab(&mut self, id: u64) {
+        let Some(i) = self.tab_index(id) else { return };
+        self.disk_prompt.retain(|t| *t != id);
+        if self.tabs.len() == 1 {
+            self.view = if self.tree.root().is_some() {
+                Box::new(MessageView::folder_opened())
+            } else {
+                Box::new(MessageView::welcome())
+            };
+            return;
+        }
+        if i == self.active {
+            let next = if i + 1 < self.tabs.len() {
+                i + 1
+            } else {
+                i - 1
+            };
+            self.activate(next);
+        }
+        // `activate` moved the old active view into its slot.
+        self.tabs.remove(i);
+        if self.active > i {
+            self.active -= 1;
+        }
+        self.pending = true;
+    }
+
+    /// The single discard gate: run `then` now, or ask first if the active
     /// document has unsaved edits.
     fn guard(&mut self, then: Pending) {
         if self.view.is_dirty() {
@@ -144,8 +265,18 @@ impl App {
 
     fn perform(&mut self, p: Pending) {
         match p {
-            Pending::Open(path) => self.open_now(&path),
-            Pending::Quit => self.requests.push(Request::Quit),
+            Pending::CloseTab(id) => self.remove_tab(id),
+            Pending::Quit => {
+                // Ask about each dirty tab in turn, then quit.
+                match (0..self.tabs.len()).find(|&i| self.tab_view(i).is_dirty()) {
+                    Some(i) => {
+                        self.activate(i);
+                        let name = self.view_name();
+                        self.nag = Some(Nag::unsaved(&name, Pending::Quit));
+                    }
+                    None => self.requests.push(Request::Quit),
+                }
+            }
         }
     }
 
@@ -217,6 +348,11 @@ impl App {
             NagAction::SaveThen(p) => {
                 self.save_with(false, Some(p));
             }
+            NagAction::DiscardThen(Pending::Quit) => {
+                let id = self.tabs[self.active].id;
+                self.remove_tab(id);
+                self.perform(Pending::Quit);
+            }
             NagAction::DiscardThen(p) => self.perform(p),
             NagAction::SaveAnyway => {
                 let then = self.after_lossy.take();
@@ -255,7 +391,12 @@ impl App {
         {
             self.tree.set_root(parent);
         }
-        self.view = match Document::open(path) {
+        if let Some(i) = self.find_tab(path) {
+            self.activate(i);
+            self.focus = Focus::Main;
+            return;
+        }
+        let view: Box<dyn View> = match Document::open(path) {
             Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
             Ok(doc) => Box::new(CodeView::new(doc)),
             Err(e) => Box::new(MessageView::error(
@@ -263,6 +404,7 @@ impl App {
                 format!("Could not open {}: {e}", path.display()),
             )),
         };
+        self.add_tab(view);
         self.tree.reveal(path);
         self.focus = Focus::Main;
         self.pending = true;
@@ -323,10 +465,13 @@ impl App {
         if let Some(r) = self.tree.root() {
             v.push((r.to_path_buf(), true));
         }
-        if let Some(dir) = self.view.path().and_then(Path::parent)
-            && !self.tree.root().is_some_and(|r| dir.starts_with(r))
-        {
-            v.push((dir.to_path_buf(), false));
+        for i in 0..self.tabs.len() {
+            if let Some(dir) = self.tab_view(i).path().and_then(Path::parent)
+                && !self.tree.root().is_some_and(|r| dir.starts_with(r))
+                && !v.iter().any(|(d, _)| d == dir)
+            {
+                v.push((dir.to_path_buf(), false));
+            }
         }
         v
     }
@@ -334,6 +479,15 @@ impl App {
     fn ui_line_height(&self) -> f32 {
         let s = (theme::FONT_SIZE * self.scale * self.zoom).round().max(4.0);
         (s * theme::LINE_HEIGHT).round()
+    }
+
+    fn tab_bar_height(&self) -> i32 {
+        let pad_y = (theme::PADDING_Y * self.scale).round() as i32;
+        self.ui_line_height() as i32 + pad_y * 2
+    }
+
+    fn show_tab_bar(&self) -> bool {
+        self.tabs.len() > 1 || self.view.path().is_some()
     }
 
     fn layout(&self) -> Layout {
@@ -351,7 +505,7 @@ impl App {
         let nag = (nag_h > 0).then(|| Rect::new(0, 0, w, nag_h));
         let top = nag_h;
         let body_h = (h - status_h - top).max(0);
-        if self.tree.is_shown() && w > 200 {
+        let (tree, divider, col) = if self.tree.is_shown() && w > 200 {
             let tw = (self.tree.width * self.scale)
                 .clamp(
                     TREE_MIN_W * self.scale,
@@ -360,22 +514,52 @@ impl App {
                 .min(w as f32 - 100.0)
                 .round() as i32;
             let div = (self.scale.round() as i32).max(1);
-            Layout {
-                nag,
-                tree: Some(Rect::new(0, top, tw, body_h)),
-                divider: Some(Rect::new(tw, top, div, body_h)),
-                main: Rect::new(tw + div, top, (w - tw - div).max(0), body_h),
-                status,
-            }
+            (
+                Some(Rect::new(0, top, tw, body_h)),
+                Some(Rect::new(tw, top, div, body_h)),
+                Rect::new(tw + div, top, (w - tw - div).max(0), body_h),
+            )
         } else {
-            Layout {
-                nag,
-                tree: None,
-                divider: None,
-                main: Rect::new(0, top, w, body_h),
-                status,
-            }
+            (None, None, Rect::new(0, top, w, body_h))
+        };
+        let (tabs, main) = if self.show_tab_bar() {
+            let th = self.tab_bar_height().min(col.h);
+            (
+                Some(Rect::new(col.x, col.y, col.w, th)),
+                Rect::new(col.x, col.y + th, col.w, (col.h - th).max(0)),
+            )
+        } else {
+            (None, col)
+        };
+        Layout {
+            nag,
+            tabs,
+            tree,
+            divider,
+            main,
+            status,
         }
+    }
+
+    /// Rectangles of each tab and its close button in the tab bar.
+    fn tab_rects(&self, bar: Rect) -> Vec<(Rect, Rect)> {
+        let n = self.tabs.len().max(1) as i32;
+        let max_w = (theme::TAB_WIDTH * self.scale) as i32;
+        let min_w = (90.0 * self.scale) as i32;
+        let w = (bar.w / n).clamp(min_w.min(bar.w), max_w.max(1));
+        let cs = (bar.h as f32 * 0.5) as i32;
+        (0..self.tabs.len() as i32)
+            .map(|i| {
+                let r = Rect::new(bar.x + i * w, bar.y, w, bar.h);
+                let close = Rect::new(
+                    r.right() - cs - (8.0 * self.scale) as i32,
+                    r.y + (r.h - cs) / 2,
+                    cs,
+                    cs,
+                );
+                (r, close)
+            })
+            .collect()
     }
 
     fn near_divider(&self, x: f32) -> bool {
@@ -473,7 +657,66 @@ impl App {
                         }
                     }
                 }
+                // Background tabs: reload clean ones, remember dirty ones.
+                for i in 0..self.tabs.len() {
+                    if i == self.active {
+                        continue;
+                    }
+                    let id = self.tabs[i].id;
+                    let Some(v) = self.tabs[i].view.as_mut() else {
+                        continue;
+                    };
+                    let Some(p) = v.path().map(Path::to_path_buf) else {
+                        continue;
+                    };
+                    if !paths.iter().any(|c| c == &p) {
+                        continue;
+                    }
+                    match v.disk_state() {
+                        DiskState::Same => {}
+                        DiskState::Missing => v.mark_orphaned(),
+                        DiskState::Differs if v.is_dirty() => {
+                            if !self.disk_prompt.contains(&id) {
+                                self.disk_prompt.push(id);
+                            }
+                        }
+                        DiskState::Differs => {
+                            let mut ctx = Ctx {
+                                fonts: &mut self.fonts,
+                                scale: self.scale,
+                                zoom: self.zoom,
+                                requests: &mut self.requests,
+                                cursor: &mut self.cursor,
+                                focused: false,
+                                clipboard: &mut *self.clipboard,
+                            };
+                            v.reload(&mut ctx);
+                        }
+                    }
+                    changed = true;
+                }
                 return changed;
+            }
+            Input::Key {
+                key: Key::Tab,
+                mods,
+            } if mods.ctrl => {
+                let n = self.tabs.len();
+                let next = if mods.shift {
+                    (self.active + n - 1) % n
+                } else {
+                    (self.active + 1) % n
+                };
+                self.activate(next);
+                return true;
+            }
+            Input::Key {
+                key: Key::Char(c),
+                mods,
+            } if mods.alt && !mods.ctrl && c.is_ascii_digit() && *c != '0' => {
+                let i = (*c as usize - '1' as usize).min(self.tabs.len() - 1);
+                self.activate(i);
+                return true;
             }
             Input::Key { key, mods } if mods.ctrl => {
                 let handled = match key {
@@ -484,6 +727,21 @@ impl App {
                         true
                     }
                     Key::Char('s') => self.save(),
+                    Key::Char('w') => {
+                        let i = self.active;
+                        self.close_tab(i);
+                        true
+                    }
+                    Key::PageDown if !mods.shift => {
+                        let n = self.tabs.len();
+                        self.activate((self.active + 1) % n);
+                        true
+                    }
+                    Key::PageUp if !mods.shift => {
+                        let n = self.tabs.len();
+                        self.activate((self.active + n - 1) % n);
+                        true
+                    }
                     Key::Char('o') if mods.shift => {
                         self.requests.push(Request::OpenFolderDialog);
                         true
@@ -530,6 +788,44 @@ impl App {
         }
 
         let layout = self.layout();
+        // Tab bar: activate / close.
+        if let Some(bar) = layout.tabs {
+            let inside = |x: f32, y: f32| {
+                x >= bar.x as f32
+                    && x < bar.right() as f32
+                    && y >= bar.y as f32
+                    && y < bar.bottom() as f32
+            };
+            match input {
+                Input::MouseDown { x, y, button, .. } if inside(*x, *y) => {
+                    self.mouse = (*x, *y);
+                    let hit = self
+                        .tab_rects(bar)
+                        .iter()
+                        .position(|(r, _)| (*x as i32) >= r.x && (*x as i32) < r.right());
+                    if let Some(i) = hit {
+                        let (_, close) = self.tab_rects(bar)[i];
+                        let on_close = (*x as i32) >= close.x && (*x as i32) < close.right();
+                        match button {
+                            MouseButton::Middle => self.close_tab(i),
+                            MouseButton::Left if on_close => self.close_tab(i),
+                            MouseButton::Left => {
+                                self.activate(i);
+                                self.focus = Focus::Main;
+                            }
+                            _ => {}
+                        }
+                    }
+                    return true;
+                }
+                Input::MouseMove { x, y } if inside(*x, *y) => {
+                    self.mouse = (*x, *y);
+                    self.cursor = Cursor::Default;
+                    return true; // hover highlight
+                }
+                _ => {}
+            }
+        }
         // Mouse: divider drag, then route by position.
         match input {
             Input::MouseMove { x, y } => {
@@ -644,6 +940,25 @@ impl App {
         canvas.set_clip(canvas.bounds());
         canvas.fill_rect(canvas.bounds(), theme::BACKGROUND);
 
+        let tab_info = layout.tabs.map(|bar| {
+            let titles: Vec<(String, bool)> = (0..self.tabs.len())
+                .map(|i| {
+                    let v = self.tab_view(i);
+                    let t = v.title();
+                    (
+                        if t.is_empty() {
+                            "untitled".to_string()
+                        } else {
+                            t
+                        },
+                        v.is_dirty(),
+                    )
+                })
+                .collect();
+            (bar, self.tab_rects(bar), titles)
+        });
+        let active_tab = self.active;
+        let mouse = self.mouse;
         let current = self.view.path().map(Path::to_path_buf);
         let focus = self.focus;
         let mut ctx = ctx!(self);
@@ -663,6 +978,56 @@ impl App {
             );
             canvas.set_clip(d);
             canvas.fill_rect(d, theme::DIVIDER);
+        }
+
+        if let Some((bar, rects, titles)) = &tab_info {
+            let bar = *bar;
+            canvas.set_clip(bar);
+            canvas.fill_rect(bar, theme::BACKGROUND2);
+            let pad = ctx.px(theme::PADDING_X) as i32;
+            let lh = ctx.ui_metrics().line_height as i32;
+            for (i, ((r, close), (title, _dirty))) in rects.iter().zip(titles.iter()).enumerate() {
+                let active = i == active_tab;
+                let hovered = (mouse.0 as i32) >= r.x
+                    && (mouse.0 as i32) < r.right()
+                    && (mouse.1 as i32) >= r.y
+                    && (mouse.1 as i32) < r.bottom();
+                if active {
+                    canvas.fill_rect(*r, theme::BACKGROUND);
+                } else if hovered {
+                    canvas.fill_rect(*r, theme::LINE_HIGHLIGHT);
+                }
+                canvas.fill_rect(
+                    Rect::new(
+                        r.right() - 1,
+                        r.y + ctx.px(6.0) as i32,
+                        1,
+                        r.h - ctx.px(12.0) as i32,
+                    ),
+                    theme::DIVIDER,
+                );
+                let color = if active { theme::ACCENT } else { theme::TEXT };
+                let text_w = (close.x - r.x - pad - ctx.px(4.0) as i32).max(0);
+                ctx.label(
+                    canvas,
+                    title,
+                    r.x + pad,
+                    r.y + (r.h - lh) / 2,
+                    color,
+                    text_w,
+                    FontKind::Ui,
+                );
+                if active || hovered {
+                    let (cx, cy, s) = (
+                        close.x as f32 + close.w as f32 / 2.0,
+                        close.y as f32 + close.h as f32 / 2.0,
+                        close.w as f32 * 0.28,
+                    );
+                    let lw = ctx.px(1.5).max(1.0);
+                    canvas.draw_line(cx - s, cy - s, cx + s, cy + s, lw, theme::TEXT);
+                    canvas.draw_line(cx - s, cy + s, cx + s, cy - s, lw, theme::TEXT);
+                }
+            }
         }
 
         canvas.set_clip(layout.main);
