@@ -563,6 +563,29 @@ impl CodeView {
             (Key::Down, false, false) => mv(self, Move::Down),
             (Key::Up, true, false) => self.scroll.y -= lh,
             (Key::Down, true, false) => self.scroll.y += lh,
+            (Key::Up | Key::Down, false, true) if !ro => {
+                self.doc.move_lines(*key == Key::Up);
+                self.after_edit(edit_from.saturating_sub(1));
+            }
+            (Key::Escape, false, false) if self.doc.sels.len() > 1 => {
+                self.doc.single_selection();
+            }
+            (Key::Char('d'), true, false) if !shift => {
+                self.doc.select_next_occurrence();
+                self.reveal_caret = true;
+            }
+            (Key::Char('l'), true, false) if shift => {
+                self.doc.select_all_occurrences();
+            }
+            (Key::Char('/'), true, false) if !ro => {
+                match crate::syntax::comment_tokens(self.highlighter.name()) {
+                    Some((start, end)) => {
+                        self.doc.toggle_comment(start, end);
+                        self.after_edit(edit_from);
+                    }
+                    None => return false,
+                }
+            }
             (Key::Home, ctrl, _) => mv(self, if ctrl { Move::DocStart } else { Move::Home }),
             (Key::End, ctrl, _) => mv(self, if ctrl { Move::DocEnd } else { Move::End }),
             (Key::PageUp, _, _) => {
@@ -1269,9 +1292,12 @@ impl CodeView {
                     match clicks {
                         2 => self.doc.select_word_at(p),
                         3 => self.doc.select_line_at(p.line),
-                        _ => self.doc.set_caret(p, false),
+                        // Ctrl+click adds a caret; Shift+click extends.
+                        _ if ctx.mods.ctrl => self.doc.add_caret(p),
+                        _ => self.doc.set_caret(p, ctx.mods.shift),
                     }
-                    self.dragging = *clicks == 1;
+                    // Dragging after a Ctrl+click would drop the other carets.
+                    self.dragging = *clicks == 1 && !ctx.mods.ctrl;
                 }
             }
             Input::MouseUp { .. } => {
@@ -1512,6 +1538,7 @@ mod tests {
                     cursor: &mut cur,
                     focused: true,
                     clipboard: &mut clip,
+                    mods: crate::input::Mods::default(),
                 }
             };
         }

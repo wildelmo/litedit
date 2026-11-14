@@ -187,6 +187,7 @@ pub fn run(out: &Path, mut app: App) -> std::io::Result<()> {
             cursor: &mut cur,
             focused: true,
             clipboard: &mut clip,
+            mods: crate::input::Mods::default(),
         };
         use crate::view::View;
         if !search.tick(&mut ctx, Duration::from_millis(8)).more

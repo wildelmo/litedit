@@ -2709,3 +2709,75 @@ fn small_fixes_from_the_review() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn ctrl_n_names_a_new_file_next_to_the_current_one() {
+    let d = tmp_dir("ctrln");
+    std::fs::write(d.join("a.txt"), "a").unwrap();
+    let mut app = new_app();
+    app.open(&d.join("a.txt"));
+    key(&mut app, "ctrl+n");
+    app.handle(Input::Text("notes.md".into()));
+    key(&mut app, "enter");
+    assert!(d.join("notes.md").is_file());
+    assert!(app.title().starts_with("notes.md"), "{}", app.title());
+    // Without any folder: the system dialog is asked for.
+    let mut app = new_app();
+    key(&mut app, "ctrl+n");
+    assert!(app.take_requests().contains(&Request::NewFileDialog));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn shift_click_extends_ctrl_wheel_zooms_and_the_editor_menu_works() {
+    use crate::input::{Mods, MouseButton, WheelUnit};
+    let d = tmp_dir("mouse");
+    std::fs::write(d.join("m.txt"), "first line\nsecond line\nthird line\n").unwrap();
+    let mut app = new_app();
+    app.open(&d.join("m.txt"));
+    render_hash(&mut app, 800, 600);
+    // Click line 1, Shift+click line 3: lines 1..3 selected.
+    let (x0, y1, y3) = (330.0, 52.0, 94.0);
+    mouse(&mut app, x0, y1, MouseButton::Left);
+    app.handle(Input::Modifiers(Mods {
+        shift: true,
+        ..Default::default()
+    }));
+    mouse(&mut app, x0, y3, MouseButton::Left);
+    app.handle(Input::Modifiers(Mods::default()));
+    key(&mut app, "ctrl+c");
+    let copied = app.clipboard_text().unwrap_or_default();
+    assert!(copied.contains("second line"), "{copied:?}");
+    // Right-click → Select All → Copy.
+    mouse(&mut app, x0, y1, MouseButton::Right);
+    run_menu_item(&mut app, "Select All");
+    mouse(&mut app, x0, y1, MouseButton::Right);
+    run_menu_item(&mut app, "Copy");
+    assert_eq!(
+        app.clipboard_text().unwrap_or_default(),
+        "first line\nsecond line\nthird line\n"
+    );
+    // Ctrl+wheel zooms in and out.
+    app.handle(Input::Modifiers(Mods {
+        ctrl: true,
+        ..Default::default()
+    }));
+    app.handle(Input::Wheel {
+        dx: 0.0,
+        dy: -1.0,
+        unit: WheelUnit::Lines,
+    });
+    assert!(app.zoom() > 1.0);
+    app.handle(Input::Wheel {
+        dx: 0.0,
+        dy: 1.0,
+        unit: WheelUnit::Lines,
+    });
+    app.handle(Input::Wheel {
+        dx: 0.0,
+        dy: 1.0,
+        unit: WheelUnit::Lines,
+    });
+    assert!(app.zoom() < 1.0);
+    let _ = std::fs::remove_dir_all(&d);
+}

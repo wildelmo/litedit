@@ -2,6 +2,11 @@
 
 ## 1.1.0 — unreleased
 
+- Editing: Ctrl+D selects the next occurrence (multiple carets; type to edit
+  them all), Ctrl+Shift+L all occurrences, Ctrl+click adds a caret,
+  Shift+click extends the selection, Alt+Up/Down moves lines, Ctrl+/
+  comments lines, Ctrl+N makes a new file, right-click menu in the editor,
+  Ctrl+mouse wheel zooms.
 - Safer saving (from an end-to-end review): a question bar always answers
   for the file it asked about; your own save no longer looks like an outside
   change; when another program really changed a file you are editing, the

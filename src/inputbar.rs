@@ -258,6 +258,7 @@ mod tests {
             cursor: &mut cur,
             focused: true,
             clipboard: &mut clip,
+            mods: crate::input::Mods::default(),
         };
         let mut bar = InputBar::new("Find:", "old");
         // Initial text is selected: typing replaces it.

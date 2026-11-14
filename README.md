@@ -51,6 +51,12 @@ or drag a file or folder onto the window.
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (whole line when nothing is selected) |
 | `Ctrl+A` / `Ctrl+L` | Select all / select line |
 | `Ctrl+Shift+D` / `Ctrl+Shift+K` | Duplicate line / delete line |
+| `Alt+Up` / `Alt+Down` | Move line(s) up / down |
+| `Ctrl+/` | Comment / uncomment line(s) |
+| `Ctrl+D` / `Ctrl+Shift+L` | Select next / all occurrences (type to edit them all; `Esc` for one caret) |
+| `Ctrl+click` / `Shift+click` | Add a caret / extend the selection |
+| `Ctrl+N` | New file (named in the current folder) |
+| Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |
 | `Tab` / `Shift+Tab` | Indent / outdent |
 | `Alt+Z` | Toggle word wrap (on by default for markdown) |
 | `Ctrl+\` | Show / hide the file tree |
@@ -59,7 +65,7 @@ or drag a file or folder onto the window.
 | Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
 | Drag in the tree | Move a file or folder into another folder (asks first) |
 | `F2` / `Delete` in the tree | Rename / delete (Recycle Bin, asks first) |
-| `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
+| `Ctrl +` / `Ctrl -` / `Ctrl 0`, `Ctrl+wheel` | Zoom in / out / reset |
 | `Ctrl+,` | Settings (theme, font sizes, fonts, wrap, ignored folders) |
 | Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |
 

@@ -780,6 +780,262 @@ impl EditDoc {
         });
     }
 
+    /// Ctrl+click: add a caret at `p` (or remove the caret already there).
+    pub fn add_caret(&mut self, p: Pos) {
+        self.hist.seal();
+        let p = self.buf.clamp(p);
+        if let Some(i) = self.sels.iter().position(|s| s.is_empty() && s.head == p) {
+            if self.sels.len() > 1 {
+                self.sels.remove(i);
+            }
+            return;
+        }
+        self.sels.push(Sel::caret(p));
+        self.merge_sels();
+    }
+
+    /// Back to one selection (Escape with several carets).
+    pub fn single_selection(&mut self) -> bool {
+        if self.sels.len() < 2 {
+            return false;
+        }
+        let keep = *self.sels.last().unwrap_or(&self.sels[0]);
+        self.sels = vec![keep];
+        true
+    }
+
+    /// The selected text of `sel` if it lies on one line.
+    fn one_line_text(&self, sel: Sel) -> Option<String> {
+        let (a, b) = sel.range();
+        (a.line == b.line && a != b).then(|| self.buf.line(a.line)[a.col..b.col].to_string())
+    }
+
+    /// Occurrences of `needle` (case-sensitive, within lines) in order.
+    fn occurrences(&self, needle: &str) -> Vec<Sel> {
+        let mut out = Vec::new();
+        if needle.is_empty() {
+            return out;
+        }
+        for (i, line) in self.buf.lines().iter().enumerate() {
+            let mut from = 0;
+            while let Some(k) = line[from..].find(needle) {
+                let a = from + k;
+                out.push(Sel {
+                    anchor: Pos::new(i, a),
+                    head: Pos::new(i, a + needle.len()),
+                });
+                from = a + needle.len();
+                if out.len() >= 10_000 {
+                    return out;
+                }
+            }
+        }
+        out
+    }
+
+    /// Ctrl+D (VS Code): with only a caret, select the word under it; then
+    /// add the next occurrence of the selected text as another selection.
+    pub fn select_next_occurrence(&mut self) {
+        self.hist.seal();
+        let last = *self.sels.last().unwrap_or(&self.sels[0]);
+        if last.is_empty() {
+            let i = self.sels.len() - 1;
+            let keep: Vec<Sel> = self.sels[..i].to_vec();
+            self.sels = vec![last];
+            self.select_word_at(last.head);
+            let word = self.sels[0];
+            self.sels = keep;
+            self.sels.push(word);
+            return;
+        }
+        let Some(needle) = self.one_line_text(last) else {
+            return;
+        };
+        let all = self.occurrences(&needle);
+        let after = last.range().1;
+        let next = all
+            .iter()
+            .find(|o| o.anchor >= after)
+            .or_else(|| all.first())
+            .copied();
+        if let Some(n) = next
+            && !self.sels.iter().any(|s| s.range() == n.range())
+        {
+            // Keep the newest selection last (Ctrl+D continues from it).
+            self.sels.push(n);
+            let newest = n;
+            self.merge_sels();
+            if let Some(i) = self.sels.iter().position(|s| s.range() == newest.range()) {
+                let s = self.sels.remove(i);
+                self.sels.push(s);
+            }
+        }
+    }
+
+    /// Ctrl+Shift+L: select every occurrence of the selected text (or of
+    /// the word under the caret).
+    pub fn select_all_occurrences(&mut self) {
+        self.hist.seal();
+        let mut cur = *self.sels.last().unwrap_or(&self.sels[0]);
+        if cur.is_empty() {
+            self.sels = vec![cur];
+            self.select_word_at(cur.head);
+            cur = self.sels[0];
+        }
+        let Some(needle) = self.one_line_text(cur) else {
+            return;
+        };
+        let all = self.occurrences(&needle);
+        if !all.is_empty() {
+            self.sels = all;
+        }
+    }
+
+    /// Line blocks covered by the selections (merged, ascending).
+    fn selected_blocks(&self) -> Vec<(usize, usize)> {
+        let mut v: Vec<(usize, usize)> = self
+            .sels
+            .iter()
+            .map(|s| {
+                let (a, b) = s.range();
+                (a.line, last_line_of(a, b).line)
+            })
+            .collect();
+        v.sort_unstable();
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        for (a, b) in v {
+            match out.last_mut() {
+                Some(l) if a <= l.1 + 1 => l.1 = l.1.max(b),
+                _ => out.push((a, b)),
+            }
+        }
+        out
+    }
+
+    /// Alt+Up / Alt+Down: move the selected lines, keeping line endings.
+    pub fn move_lines(&mut self, up: bool) {
+        let blocks = self.selected_blocks();
+        let n = self.buf.line_count();
+        if blocks.is_empty()
+            || (up && blocks[0].0 == 0)
+            || (!up && blocks.last().is_some_and(|b| b.1 + 1 >= n))
+        {
+            return;
+        }
+        let before = self.sels.clone();
+        let len = |buf: &Buffer, l: usize| buf.line(l).len();
+        let mut ops = Vec::new();
+        for &(a, b) in blocks.iter().rev() {
+            let block = self
+                .buf
+                .slice(Pos::new(a, 0), Pos::new(b, len(&self.buf, b)));
+            let (start, end, chunk) = if up {
+                let prev = self.buf.slice(Pos::new(a - 1, 0), Pos::new(a, 0));
+                let mut lines = block.lines.clone();
+                lines.push(prev.lines[0].clone());
+                let mut eols = block.eols.clone();
+                eols.push(prev.eols[0]);
+                (
+                    Pos::new(a - 1, 0),
+                    Pos::new(b, len(&self.buf, b)),
+                    Chunk { lines, eols },
+                )
+            } else {
+                let next = self.buf.slice(
+                    Pos::new(b, len(&self.buf, b)),
+                    Pos::new(b + 1, len(&self.buf, b + 1)),
+                );
+                let mut lines = vec![next.lines[1].clone()];
+                lines.extend(block.lines.clone());
+                let mut eols = vec![next.eols[0]];
+                eols.extend(block.eols.clone());
+                (
+                    Pos::new(a, 0),
+                    Pos::new(b + 1, len(&self.buf, b + 1)),
+                    Chunk { lines, eols },
+                )
+            };
+            ops.push(Op::Remove {
+                at: start,
+                chunk: self.buf.slice(start, end),
+            });
+            ops.push(Op::Insert { at: start, chunk });
+        }
+        for s in &mut self.sels {
+            let shift = |p: Pos| Pos::new(if up { p.line - 1 } else { p.line + 1 }, p.col);
+            s.anchor = shift(s.anchor);
+            s.head = shift(s.head);
+        }
+        self.apply(ops, GroupKind::Other, before);
+    }
+
+    /// Ctrl+/: comment or uncomment the selected lines with `start` (and
+    /// `end` for block-style languages like HTML).
+    pub fn toggle_comment(&mut self, start: &str, end: Option<&str>) {
+        let blocks = self.selected_blocks();
+        let lines: Vec<usize> = blocks.iter().flat_map(|&(a, b)| a..=b).collect();
+        let body = |l: &str| l.trim_start().to_string();
+        let non_empty: Vec<usize> = lines
+            .iter()
+            .copied()
+            .filter(|&l| !self.buf.line(l).trim().is_empty())
+            .collect();
+        if non_empty.is_empty() {
+            return;
+        }
+        let commented = non_empty.iter().all(|&l| {
+            let t = body(self.buf.line(l));
+            t.starts_with(start) && end.is_none_or(|e| t.trim_end().ends_with(e))
+        });
+        let indent = non_empty
+            .iter()
+            .map(|&l| self.buf.line(l).len() - self.buf.line(l).trim_start().len())
+            .min()
+            .unwrap_or(0);
+        let (start, end) = (start.to_string(), end.map(str::to_string));
+        self.for_selected_lines(|buf, line| {
+            let text = buf.line(line);
+            if text.trim().is_empty() {
+                return Vec::new();
+            }
+            let lead = text.len() - text.trim_start().len();
+            let mut ops = Vec::new();
+            if commented {
+                if let Some(e) = &end {
+                    let t = text.trim_end();
+                    if let Some(k) = t.rfind(e.as_str()) {
+                        let k0 = if t[..k].ends_with(' ') { k - 1 } else { k };
+                        ops.push(Op::Remove {
+                            at: Pos::new(line, k0),
+                            chunk: buf.slice(Pos::new(line, k0), Pos::new(line, k + e.len())),
+                        });
+                    }
+                }
+                let mut n = start.len();
+                if text[lead + n..].starts_with(' ') {
+                    n += 1;
+                }
+                ops.push(Op::Remove {
+                    at: Pos::new(line, lead),
+                    chunk: buf.slice(Pos::new(line, lead), Pos::new(line, lead + n)),
+                });
+            } else {
+                if let Some(e) = &end {
+                    let at = Pos::new(line, text.trim_end().len());
+                    ops.push(Op::Insert {
+                        at,
+                        chunk: Chunk::typed(&format!(" {e}"), Eol::Lf),
+                    });
+                }
+                ops.push(Op::Insert {
+                    at: Pos::new(line, indent.min(lead)),
+                    chunk: Chunk::typed(&format!("{start} "), Eol::Lf),
+                });
+            }
+            ops
+        });
+    }
+
     /// Duplicate the current line(s) below.
     pub fn duplicate_lines(&mut self) {
         let eol = self.buf.default_eol();
@@ -969,6 +1225,81 @@ pub fn sel_range(s: &Sel) -> (Pos, Pos) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_d_selects_word_then_next_occurrences_and_typing_edits_all() {
+        let mut d = doc("let x = 1;\nx += x;\n");
+        d.set_caret(Pos::new(0, 4), false);
+        d.select_next_occurrence(); // the word "x"
+        assert_eq!(d.selected_text(), "x");
+        d.select_next_occurrence();
+        d.select_next_occurrence();
+        assert_eq!(d.sels.len(), 3);
+        d.insert_text("y");
+        assert_eq!(d.buf.to_text(), "let y = 1;\ny += y;\n");
+        assert!(d.undo());
+        assert_eq!(d.buf.to_text(), "let x = 1;\nx += x;\n", "one undo step");
+        // Ctrl+Shift+L: all at once; wraps and never duplicates.
+        let mut d = doc("ab ab ab");
+        d.set_caret(Pos::new(0, 0), false);
+        d.select_all_occurrences();
+        assert_eq!(d.sels.len(), 3);
+        for _ in 0..5 {
+            d.select_next_occurrence();
+        }
+        assert_eq!(d.sels.len(), 3);
+        assert!(d.single_selection() && d.sels.len() == 1);
+    }
+
+    #[test]
+    fn move_lines_keeps_text_endings_and_selection() {
+        let mut d = doc("a\r\nb\nc");
+        d.set_caret(Pos::new(1, 1), false);
+        d.move_lines(true);
+        assert_eq!(d.buf.to_text(), "b\r\na\nc");
+        assert_eq!(d.primary().head, Pos::new(0, 1));
+        d.move_lines(true); // already at the top
+        assert_eq!(d.buf.to_text(), "b\r\na\nc");
+        d.set_caret(Pos::new(1, 0), false);
+        d.move_lines(false); // onto the last line without a newline
+        assert_eq!(d.buf.to_text(), "b\r\nc\na");
+        assert!(d.undo());
+        assert_eq!(d.buf.to_text(), "b\r\na\nc");
+        // A two-line selection moves as a block.
+        let mut d = doc("1\n2\n3\n4\n");
+        d.set_caret(Pos::new(1, 0), false);
+        d.set_caret(Pos::new(2, 1), true);
+        d.move_lines(false);
+        assert_eq!(d.buf.to_text(), "1\n4\n2\n3\n");
+    }
+
+    #[test]
+    fn toggle_comment_adds_and_removes_at_a_common_indent() {
+        let mut d = doc("fn a() {\n    x();\n\n    y();\n}\n");
+        d.set_caret(Pos::new(1, 0), false);
+        d.set_caret(Pos::new(3, 2), true);
+        d.toggle_comment("//", None);
+        assert_eq!(d.buf.to_text(), "fn a() {\n    // x();\n\n    // y();\n}\n");
+        d.toggle_comment("//", None);
+        assert_eq!(d.buf.to_text(), "fn a() {\n    x();\n\n    y();\n}\n");
+        let mut d = doc("<p>hi</p>");
+        d.toggle_comment("<!--", Some("-->"));
+        assert_eq!(d.buf.to_text(), "<!-- <p>hi</p> -->");
+        d.toggle_comment("<!--", Some("-->"));
+        assert_eq!(d.buf.to_text(), "<p>hi</p>");
+    }
+
+    #[test]
+    fn ctrl_click_adds_and_removes_carets() {
+        let mut d = doc("abc\ndef");
+        d.set_caret(Pos::new(0, 1), false);
+        d.add_caret(Pos::new(1, 2));
+        assert_eq!(d.sels.len(), 2);
+        d.insert_text("-");
+        assert_eq!(d.buf.to_text(), "a-bc\nde-f");
+        d.add_caret(Pos::new(1, 3)); // the caret that is there: removed
+        assert_eq!(d.sels.len(), 1);
+    }
 
     #[test]
     fn line_commands_respect_a_selection_ending_at_column_zero() {

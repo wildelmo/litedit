@@ -162,10 +162,12 @@ fixed first (S5.0).
        change, change count in status; recomputes when either file changes
 - [ ] S5.3 Split right: two editor groups side by side, each with its own tabs
        (Ctrl+\ like VS Code; move tab to other group; close group)
-- [ ] S5.4 Everyday editing gaps vs lite-xl: Ctrl+N new file, Shift+click
-       extends selection, Ctrl+/ toggle comment, Alt+Up/Down move lines,
-       Ctrl+D select next occurrence (multi-caret), Ctrl+click add caret,
-       right-click menu in the editor, Ctrl+wheel zoom
+- [x] S5.4 Everyday editing gaps vs lite-xl: Ctrl+N new file (named in the
+       current folder; system dialog without one; also double-click on the
+       empty tab bar), Shift+click extends, Ctrl+click adds/removes a caret,
+       Ctrl+D next occurrence, Ctrl+Shift+L all occurrences, Esc back to one
+       caret, Alt+Up/Down move lines, Ctrl+/ toggle comment (per-language
+       table), right-click menu in text views, Ctrl+wheel zoom
 
 ---
 
@@ -173,6 +175,11 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.4 everyday editing: modifier state reaches the app
+  (Input::Modifiers → Ctx.mods; script `mods`), multi-caret commands, move
+  lines keeping each line's ending, comment toggle (line and block styles),
+  Ctrl+N, editor right-click menu (drawn above the status bar), Ctrl+wheel.
+  Windows CI green for all of S5.0 (200 tests incl. the Windows font test).
 - 2026-11-14 — S5.0 part 4: whole-document searches stop after 300 ms (3 s
   for replace all) and say "pattern too slow" (two patterns that froze for
   minutes now take ~0.3 s); backtrack limit 50k; files over 4M lines refused;

@@ -106,6 +106,8 @@ pub struct App {
     tab_drag: Option<(usize, f32, bool)>,
     /// Recently closed files, most recent last (Ctrl+Shift+T).
     closed: Vec<PathBuf>,
+    /// Modifier keys held (from the window).
+    mods: crate::input::Mods,
     /// File chosen with "Select for Compare".
     compare_with: Option<PathBuf>,
 }
@@ -134,6 +136,7 @@ macro_rules! ctx {
             cursor: &mut $s.cursor,
             focused: $s.focus == Focus::Main,
             clipboard: &mut *$s.clipboard,
+            mods: $s.mods,
         }
     };
 }
@@ -182,6 +185,7 @@ impl App {
             tab_drag: None,
             closed: Vec::new(),
             compare_with: None,
+            mods: crate::input::Mods::default(),
         }
     }
 
@@ -1046,6 +1050,12 @@ impl App {
                 self.perform(Pending::CloseTabs(list));
                 return;
             }
+            MenuAction::Keys(combo) => {
+                if let Some((key, mods)) = parse_key_combo(combo) {
+                    self.handle(Input::Key { key, mods });
+                }
+                return;
+            }
             MenuAction::SelectForCompare(p) => {
                 self.compare_with = Some(p.clone());
                 self.notice = Some(format!(
@@ -1601,6 +1611,60 @@ impl App {
         self.open_compare(Side::from_file(&path, format!("{name} (saved)")), Ok(new));
     }
 
+    /// Ctrl+N: name a new file in the current file's folder (or the tree's
+    /// folder); with neither, the system's save dialog picks the place.
+    fn new_file(&mut self) -> bool {
+        let dir = self
+            .view
+            .path()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(|| self.tree.root().map(Path::to_path_buf));
+        match dir {
+            Some(d) => self.run_menu(MenuAction::NewFile(d)),
+            None => self.requests.push(Request::NewFileDialog),
+        }
+        true
+    }
+
+    /// Create an empty file (never overwriting) and open it.
+    pub fn create_and_open(&mut self, path: &Path) {
+        let res = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path);
+        match res {
+            Ok(_) => {
+                self.after_fs_change(path);
+                self.open(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => self.open(path),
+            Err(e) => {
+                self.nag = Some(Nag::error(format!(
+                    "Could not create {}: {e}",
+                    path.display()
+                )))
+            }
+        }
+    }
+
+    /// Right-click in a text view.
+    fn open_editor_menu(&mut self, x: f32, y: f32) {
+        let id = self.tabs[self.active].id;
+        let mut items: Vec<(&'static str, MenuAction)> = vec![
+            ("Cut", MenuAction::Keys("ctrl+x")),
+            ("Copy", MenuAction::Keys("ctrl+c")),
+            ("Paste", MenuAction::Keys("ctrl+v")),
+            ("Select All", MenuAction::Keys("ctrl+a")),
+            ("Find…", MenuAction::Keys("ctrl+f")),
+            ("Toggle Comment", MenuAction::Keys("ctrl+/")),
+        ];
+        if self.view.is_dirty() {
+            items.push(("Compare with Saved", MenuAction::CompareWithSaved(id)));
+        }
+        self.menu = Some(Menu::new(x, y, items));
+    }
+
     /// Ctrl+Shift+T: reopen the most recently closed file that still exists.
     fn reopen_closed_tab(&mut self) -> bool {
         while let Some(p) = self.closed.pop() {
@@ -1665,6 +1729,22 @@ impl App {
     }
 
     fn handle_inner(&mut self, input: &Input) -> bool {
+        if let Input::Modifiers(m) = input {
+            self.mods = *m;
+            return false;
+        }
+        // Ctrl+wheel zooms (like every editor and browser).
+        if let Input::Wheel { dy, .. } = input
+            && self.mods.ctrl
+            && self.nag.is_none()
+            && *dy != 0.0
+        {
+            return self.set_zoom(if *dy < 0.0 {
+                self.zoom * 1.1
+            } else {
+                self.zoom / 1.1
+            });
+        }
         if matches!(input, Input::Key { .. } | Input::MouseDown { .. }) {
             self.notice = None;
         }
@@ -1768,6 +1848,7 @@ impl App {
                             cursor: &mut self.cursor,
                             focused: false,
                             clipboard: &mut *self.clipboard,
+                            mods: self.mods,
                         };
                         v.reload(&mut ctx);
                     }
@@ -1829,6 +1910,7 @@ impl App {
                                 cursor: &mut self.cursor,
                                 focused: false,
                                 clipboard: &mut *self.clipboard,
+                                mods: self.mods,
                             };
                             v.reload(&mut ctx);
                         }
@@ -1902,6 +1984,7 @@ impl App {
                     }
                     Key::Char('s') => self.save(),
                     Key::Char('t') if mods.shift => self.reopen_closed_tab(),
+                    Key::Char('n') if !mods.shift => self.new_file(),
                     Key::Char('w') => {
                         let i = self.active;
                         self.close_tab(i);
@@ -2022,8 +2105,21 @@ impl App {
                 }
             }
             match input {
-                Input::MouseDown { x, y, button, .. } if inside(*x, *y) => {
+                Input::MouseDown {
+                    x,
+                    y,
+                    button,
+                    clicks,
+                } if inside(*x, *y) => {
                     self.mouse = (*x, *y);
+                    if self.tab_at(bar, *x).is_none()
+                        && *clicks >= 2
+                        && *button == MouseButton::Left
+                    {
+                        // Double-click on the empty part of the bar: new file.
+                        self.new_file();
+                        return true;
+                    }
                     if let Some(i) = self.tab_at(bar, *x) {
                         let (_, close) = self.tab_rects(bar)[i];
                         let on_close = (*x as i32) >= close.x && (*x as i32) < close.right();
@@ -2115,6 +2211,20 @@ impl App {
             && *x < t.right() as f32
         {
             self.open_tree_menu(*x, *y, t);
+            return true;
+        }
+        if let Input::MouseDown {
+            x,
+            y,
+            button: MouseButton::Right,
+            ..
+        } = input
+            && !in_tree
+            && self.view.text().is_some()
+            && (*y as i32) >= layout.main.y
+        {
+            self.focus = Focus::Main;
+            self.open_editor_menu(*x, *y);
             return true;
         }
         let target = match input {
@@ -2337,12 +2447,6 @@ impl App {
             canvas.set_clip(layout.main);
             p.render(canvas, layout.main, &mut ctx);
         }
-        if let Some(m) = self.menu.as_mut() {
-            let all = canvas.bounds();
-            canvas.set_clip(all);
-            m.render(canvas, all, &mut ctx);
-        }
-
         // Status bar (lite-xl StatusView).
         canvas.set_clip(layout.status);
         canvas.fill_rect(layout.status, theme::p().background2);
@@ -2391,6 +2495,12 @@ impl App {
                 w + 2,
                 FontKind::Ui,
             );
+        }
+        // The right-click menu goes over everything, the status bar included.
+        if let Some(m) = self.menu.as_mut() {
+            let all = canvas.bounds();
+            canvas.set_clip(all);
+            m.render(canvas, all, &mut ctx);
         }
         canvas.set_clip(canvas.bounds());
     }

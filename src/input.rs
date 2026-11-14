@@ -73,6 +73,8 @@ pub enum Input {
         dy: f32,
         unit: WheelUnit,
     },
+    /// Modifier keys held now (for Shift+click, Ctrl+click, Ctrl+wheel).
+    Modifiers(Mods),
     Key {
         key: Key,
         mods: Mods,
@@ -94,6 +96,8 @@ pub enum Request {
     OpenFolderDialog,
     /// Ask where to save the current file (suggested path).
     SaveAsDialog(PathBuf),
+    /// Ctrl+N with no folder open: ask where to create a new file.
+    NewFileDialog,
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Open a file at a 1-based line (search results).

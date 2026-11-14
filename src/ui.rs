@@ -24,6 +24,8 @@ pub struct Ctx<'a> {
     /// Whether the view being drawn has keyboard focus (caret shown).
     pub focused: bool,
     pub clipboard: &'a mut dyn crate::clipboard::Clipboard,
+    /// Modifier keys currently held.
+    pub mods: crate::input::Mods,
 }
 
 impl Ctx<'_> {

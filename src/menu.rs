@@ -29,6 +29,8 @@ pub enum MenuAction {
     /// (old, new)
     Compare(PathBuf, PathBuf),
     CompareWithSaved(u64),
+    /// Editor menu: replay a key combo in the active view.
+    Keys(&'static str),
 }
 
 pub struct Menu {
@@ -113,7 +115,8 @@ impl Menu {
             .map(|(l, _)| ctx.text_width(l, FontKind::Ui) as i32)
             .max()
             .unwrap_or(0)
-            + pad * 2;
+            + pad * 2
+            + ctx.px(4.0) as i32; // slack so measured labels never get "…"
         let h = row_h * self.items.len() as i32 + ctx.px(8.0) as i32;
         // Keep the menu inside the window.
         let x = (self.x as i32).min(bounds.right() - w - 2).max(bounds.x);

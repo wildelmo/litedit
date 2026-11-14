@@ -1110,6 +1110,7 @@ mod tests {
                 cursor: &mut self.cursor,
                 focused: true,
                 clipboard: &mut self.clip,
+                mods: crate::input::Mods::default(),
             }
         }
     }

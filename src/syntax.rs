@@ -138,6 +138,73 @@ fn build_theme(pal: &theme::Palette) -> Theme {
     }
 }
 
+/// Line-comment syntax for Ctrl+/: (start, end for block-style languages).
+pub fn comment_tokens(syntax_name: &str) -> Option<(&'static str, Option<&'static str>)> {
+    let n = syntax_name.to_ascii_lowercase();
+    let line = |t: &'static str| Some((t, None));
+    let has = |k: &str| n.contains(k);
+    if has("html") || has("xml") || has("markdown") || has("svg") || n == "vue" {
+        return Some(("<!--", Some("-->")));
+    }
+    if n == "css" || has("scss") || has("less") {
+        return Some(("/*", Some("*/")));
+    }
+    if has("python")
+        || has("shell")
+        || has("bash")
+        || has("yaml")
+        || has("toml")
+        || has("ruby")
+        || has("perl")
+        || has("makefile")
+        || has("dockerfile")
+        || has("powershell")
+        || has("r ")
+        || n == "r"
+        || has("cmake")
+        || has("nim")
+        || has("julia")
+        || has("elixir")
+        || has("nix")
+        || has("graphql")
+        || has("git")
+        || has("ssh")
+        || has("crystal")
+        || has("tcl")
+        || n == "fish"
+    {
+        return line("#");
+    }
+    if n == "lua" || has("sql") || has("haskell") || has("elm") || has("ada") {
+        return line("--");
+    }
+    if has("lisp")
+        || has("clojure")
+        || has("scheme")
+        || has("racket")
+        || has("ini")
+        || has("assembly")
+        || has("asm")
+    {
+        return line(";");
+    }
+    if has("batch") {
+        return line("REM");
+    }
+    if has("vim") {
+        return line("\"");
+    }
+    if has("latex") || has("tex") || has("erlang") || has("matlab") {
+        return line("%");
+    }
+    if n == "plain text" || n.is_empty() {
+        return None;
+    }
+    // C family and most others (Rust, C, C++, C#, Java, JavaScript,
+    // TypeScript, Go, Swift, Kotlin, Dart, PHP, JSON with comments, …).
+    line("//")
+}
+
 /// Pick a grammar from the file name, then the first line (shebang etc.).
 pub fn find_syntax(path: &Path, first_line: &str) -> &'static SyntaxReference {
     let ss = syntax_set();

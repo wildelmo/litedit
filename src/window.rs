@@ -85,6 +85,16 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::NewFileDialog => {
+                    let start = std::env::var_os("USERPROFILE")
+                        .map(PathBuf::from)
+                        .unwrap_or_default()
+                        .join("untitled.md");
+                    if let Some(p) = pick_save(&window, &start) {
+                        self.app.create_and_open(&p);
+                        redraw = true;
+                    }
+                }
             }
         }
         self.watcher.set_targets(self.app.watch_targets());
@@ -227,7 +237,7 @@ impl ApplicationHandler<UserEvent> for Runner {
             }
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
-                return;
+                Input::Modifiers(self.mods())
             }
             WindowEvent::DroppedFile(p) => Input::Drop(p),
             // Text composed by an input method arrives here (not as key text).
