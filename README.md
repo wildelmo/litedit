@@ -56,6 +56,8 @@ or drag a file or folder onto the window.
 | `Ctrl+D` / `Ctrl+Shift+L` | Select next / all occurrences (type to edit them all; `Esc` for one caret) |
 | `Ctrl+click` / `Shift+click` | Add a caret / extend the selection |
 | `Ctrl+N` | New file (named in the current folder) |
+| `Ctrl+Alt+Right` / `Ctrl+Alt+Left` | Split: move the tab to the right / left side |
+| `Ctrl+1` / `Ctrl+2` | Focus the left / right side |
 | Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |
 | `Tab` / `Shift+Tab` | Indent / outdent |
 | `Alt+Z` | Toggle word wrap (on by default for markdown) |

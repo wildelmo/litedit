@@ -2212,16 +2212,21 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
         key(&mut app, &format!("alt+{}", (i % 9) + 1));
     }
     let mut dirty: Vec<String> = Vec::new();
+    let mut steps_run = 0;
     for step in 0..300 {
         let n = app.tab_titles().len();
         let Some((bar, rects)) = app.tab_layout() else {
-            break;
+            // Everything closed: bring files back and keep going.
+            app.open(&files[rnd(files.len())]);
+            app.open(&files[rnd(files.len())]);
+            continue;
         };
-        match rnd(6) {
+        steps_run += 1;
+        match rnd(7) {
             0 if n > 0 => {
                 // Drag a tab somewhere else.
-                let a = rects[rnd(n)];
-                let b = rects[rnd(n)];
+                let a = rects[rnd(rects.len())];
+                let b = rects[rnd(rects.len())];
                 let y = a.y as f32 + 10.0;
                 app.handle(Input::MouseDown {
                     x: a.x as f32 + 5.0,
@@ -2279,6 +2284,19 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
                 }
                 key(&mut app, "escape");
             }
+            5 => {
+                key(
+                    &mut app,
+                    if rnd(2) == 0 {
+                        "ctrl+alt+right"
+                    } else {
+                        "ctrl+alt+left"
+                    },
+                );
+                if rnd(3) == 0 {
+                    key(&mut app, if rnd(2) == 0 { "ctrl+1" } else { "ctrl+2" });
+                }
+            }
             _ => {
                 key(&mut app, "ctrl+shift+t");
             }
@@ -2304,6 +2322,7 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
             assert_eq!(std::fs::read_to_string(f).unwrap(), format!("file {i}\n"));
         }
     }
+    assert!(steps_run > 200, "only {steps_run} steps ran");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -2779,5 +2798,95 @@ fn shift_click_extends_ctrl_wheel_zooms_and_the_editor_menu_works() {
         unit: WheelUnit::Lines,
     });
     assert!(app.zoom() < 1.0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn split_view_moves_tabs_focuses_sides_and_merges_back() {
+    use crate::input::MouseButton;
+    let (d, files) = many_files("split", 3);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    assert!(!app.is_split_for_test());
+    key(&mut app, "ctrl+alt+right"); // f02 to the right side
+    assert!(app.is_split_for_test());
+    assert!(
+        app.title().starts_with("f02.txt"),
+        "the moved tab keeps focus"
+    );
+    // Ctrl+1 focuses the left side (its shown tab), Ctrl+2 back.
+    key(&mut app, "ctrl+1");
+    assert!(app.title().starts_with("f01.txt"), "{}", app.title());
+    key(&mut app, "ctrl+2");
+    assert!(app.title().starts_with("f02.txt"));
+    // Ctrl+Tab stays on its side (the right side has one tab).
+    key(&mut app, "ctrl+tab");
+    assert!(app.title().starts_with("f02.txt"));
+    // A click in the left pane focuses it.
+    render_hash(&mut app, 800, 600);
+    let (bar, _) = app.tab_layout().unwrap();
+    let left_x = if bar.x > 400 {
+        300.0
+    } else {
+        bar.x as f32 + 50.0
+    };
+    mouse(&mut app, left_x + 60.0, 200.0, MouseButton::Left);
+    assert!(app.title().starts_with("f0"), "{}", app.title());
+    assert!(
+        !app.title().starts_with("f02.txt"),
+        "left side focused: {}",
+        app.title()
+    );
+    // Opening a file that is open on the other side goes there (one tab per file).
+    app.open(&files[2]);
+    assert!(app.title().starts_with("f02.txt"));
+    assert_eq!(app.tab_titles().len(), 3);
+    // Closing the only tab on the right merges back to one side.
+    key(&mut app, "ctrl+w");
+    assert!(!app.is_split_for_test());
+    // Moving the only tab of the left side leaves the right as the only side.
+    key(&mut app, "ctrl+alt+right");
+    assert!(app.is_split_for_test());
+    key(&mut app, "ctrl+1");
+    key(&mut app, "ctrl+alt+right"); // the other left tab moves too: left empty
+    assert!(!app.is_split_for_test(), "one side again");
+    assert_eq!(app.tab_titles().len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn quitting_with_unsaved_tabs_on_both_sides_asks_for_each() {
+    let (d, files) = many_files("splitquit", 3);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    app.handle(Input::Text("right-edit ".into()));
+    key(&mut app, "ctrl+alt+right");
+    key(&mut app, "ctrl+1");
+    app.handle(Input::Text("left-edit ".into()));
+    app.handle(Input::CloseRequested);
+    let mut asked = Vec::new();
+    while let Some(m) = app.nag_message() {
+        asked.push(m);
+        key(&mut app, "s");
+        if asked.len() > 5 {
+            break;
+        }
+    }
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(app.take_requests().contains(&Request::Quit));
+    assert!(
+        std::fs::read_to_string(&files[2])
+            .unwrap()
+            .starts_with("right-edit")
+    );
+    assert!(
+        std::fs::read_to_string(&files[1])
+            .unwrap()
+            .starts_with("left-edit")
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

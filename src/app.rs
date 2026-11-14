@@ -98,10 +98,13 @@ pub struct App {
     wrap_code: bool,
     /// Extra ignored names currently in effect (setting `ignore`).
     ignore: Vec<String>,
-    /// Tab bar scroll offset in pixels (when tabs don't fit).
-    tab_scroll: i32,
-    /// The tab last scrolled into view (so wheel scrolling isn't undone).
-    tab_revealed: Option<u64>,
+    /// Tab bar scroll offset in pixels per group (when tabs don't fit).
+    tab_scroll: [i32; 2],
+    /// The tab last scrolled into view per group (so wheel scrolling isn't
+    /// undone).
+    tab_revealed: [Option<u64>; 2],
+    /// The tab each group shows (the focused group's is the active tab).
+    group_shown: [Option<u64>; 2],
     /// Left button pressed on a tab: (index, start x, dragging).
     tab_drag: Option<(usize, f32, bool)>,
     /// Recently closed files, most recent last (Ctrl+Shift+T).
@@ -115,11 +118,26 @@ pub struct App {
 struct TabSlot {
     id: u64,
     view: Option<Box<dyn View>>,
+    /// Editor group: 0 = left (or only), 1 = right (split view).
+    group: u8,
+}
+
+/// The editor group that doesn't have focus (split view).
+#[derive(Clone, Copy)]
+struct OtherPane {
+    group: u8,
+    bar: Rect,
+    main: Rect,
 }
 
 struct Layout {
     nag: Option<Rect>,
+    /// Tab bar and editor area of the focused group.
     tabs: Option<Rect>,
+    /// The other group, when the view is split.
+    other: Option<OtherPane>,
+    /// The line between the two groups.
+    split_line: Option<Rect>,
     tree: Option<Rect>,
     divider: Option<Rect>,
     main: Rect,
@@ -149,7 +167,11 @@ impl App {
             zoom: 1.0,
             size: (1, 1),
             view: Box::new(MessageView::welcome()),
-            tabs: vec![TabSlot { id: 1, view: None }],
+            tabs: vec![TabSlot {
+                id: 1,
+                view: None,
+                group: 0,
+            }],
             active: 0,
             next_tab_id: 2,
             disk_prompt: Vec::new(),
@@ -180,8 +202,9 @@ impl App {
             settings_path: None,
             wrap_code: false,
             ignore: Vec::new(),
-            tab_scroll: 0,
-            tab_revealed: None,
+            tab_scroll: [0, 0],
+            tab_revealed: [None, None],
+            group_shown: [Some(1), None],
             tab_drag: None,
             closed: Vec::new(),
             compare_with: None,
@@ -409,7 +432,7 @@ impl App {
         self.reveal_active_tab(bar);
         Some((
             bar,
-            self.tab_rects(bar).into_iter().map(|(r, _)| r).collect(),
+            self.tab_rects(bar).into_iter().map(|(_, r, _)| r).collect(),
         ))
     }
 
@@ -429,6 +452,11 @@ impl App {
     pub fn menu_item_pos(&self, label: &str) -> Option<(f32, f32)> {
         let r = self.menu.as_ref()?.item_rect(label)?;
         Some((r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0))
+    }
+
+    #[cfg(test)]
+    pub fn is_split_for_test(&self) -> bool {
+        self.is_split()
     }
 
     #[cfg(test)]
@@ -498,6 +526,7 @@ impl App {
         let outgoing = std::mem::replace(&mut self.view, incoming);
         self.tabs[self.active].view = Some(outgoing);
         self.active = i;
+        self.group_shown[self.tabs[i].group as usize] = Some(self.tabs[i].id);
         self.view.metrics_changed();
         if let Some(p) = self.view.path().map(Path::to_path_buf) {
             self.tree.reveal(&p);
@@ -528,6 +557,7 @@ impl App {
             TabSlot {
                 id,
                 view: Some(view),
+                group: self.focused_group(),
             },
         );
         self.activate(at);
@@ -564,11 +594,20 @@ impl App {
             return;
         }
         if i == self.active {
-            let next = if i + 1 < self.tabs.len() {
-                i + 1
-            } else {
-                i - 1
-            };
+            // Prefer the neighbour on the same side (split view).
+            let g = self.tabs[i].group;
+            let same: Vec<usize> = self.group_tabs(g).into_iter().filter(|&j| j != i).collect();
+            let next = same
+                .iter()
+                .copied()
+                .find(|&j| j > i)
+                .or_else(|| same.last().copied())
+                .or_else(|| self.shown_tab(1 - g))
+                .unwrap_or(if i + 1 < self.tabs.len() {
+                    i + 1
+                } else {
+                    i - 1
+                });
             self.activate(next);
         }
         // `activate` moved the old active view into its slot.
@@ -576,6 +615,7 @@ impl App {
         if self.active > i {
             self.active -= 1;
         }
+        self.normalize_groups();
         self.pending = true;
     }
 
@@ -1413,6 +1453,109 @@ impl App {
         self.tabs.len() > 1 || self.view.path().is_some()
     }
 
+    // ---- editor groups (split view) ------------------------------------
+
+    fn focused_group(&self) -> u8 {
+        self.tabs.get(self.active).map_or(0, |t| t.group)
+    }
+
+    fn is_split(&self) -> bool {
+        self.tabs.iter().any(|t| t.group == 1)
+    }
+
+    /// Global tab indices of group `g`, in order.
+    fn group_tabs(&self, g: u8) -> Vec<usize> {
+        (0..self.tabs.len())
+            .filter(|&i| self.tabs[i].group == g)
+            .collect()
+    }
+
+    /// The tab group `g` shows.
+    fn shown_tab(&self, g: u8) -> Option<usize> {
+        if g == self.focused_group() {
+            return Some(self.active);
+        }
+        self.group_shown[g as usize]
+            .and_then(|id| self.tab_index(id))
+            .filter(|&i| self.tabs[i].group == g)
+            .or_else(|| self.group_tabs(g).first().copied())
+    }
+
+    /// Keep group 0 non-empty: if it emptied, the right group becomes it.
+    fn normalize_groups(&mut self) {
+        if !self.tabs.iter().any(|t| t.group == 0) {
+            for t in &mut self.tabs {
+                t.group = 0;
+            }
+            self.group_shown = [self.tabs.get(self.active).map(|t| t.id), None];
+            self.tab_scroll = [self.tab_scroll[1], 0];
+            self.tab_revealed = [None, None];
+        }
+    }
+
+    /// Move the active tab to the other side (Ctrl+Alt+Right / Left, tab
+    /// menu "Move to Other Side"). The first move creates the split.
+    fn move_active_to(&mut self, g: u8) -> bool {
+        let cur = self.focused_group();
+        if g == cur {
+            return false;
+        }
+        if self.tabs.len() < 2 {
+            self.notice = Some("Open another file to split the view".into());
+            return false;
+        }
+        let id = self.tabs[self.active].id;
+        // The group left behind shows its nearest other tab.
+        let left_behind = self.group_tabs(cur);
+        let pos = left_behind
+            .iter()
+            .position(|&i| i == self.active)
+            .unwrap_or(0);
+        let neighbour = left_behind
+            .get(pos + 1)
+            .or_else(|| pos.checked_sub(1).and_then(|p| left_behind.get(p)))
+            .map(|&i| self.tabs[i].id);
+        self.tabs[self.active].group = g;
+        self.group_shown[cur as usize] = neighbour;
+        self.group_shown[g as usize] = Some(id);
+        self.tab_revealed = [None, None];
+        self.normalize_groups();
+        self.session_dirty = true;
+        self.pending = true;
+        true
+    }
+
+    /// Next / previous tab within the focused group (Ctrl+Tab, Ctrl+PgDn).
+    fn cycle_tab(&mut self, forward: bool) {
+        let group = self.group_tabs(self.focused_group());
+        let n = group.len();
+        if n < 2 {
+            return;
+        }
+        let k = group.iter().position(|&i| i == self.active).unwrap_or(0);
+        let next = if forward {
+            (k + 1) % n
+        } else {
+            (k + n - 1) % n
+        };
+        self.activate(group[next]);
+    }
+
+    /// Focus group `g` (Ctrl+1 / Ctrl+2, or a click in it).
+    fn focus_group(&mut self, g: u8) -> bool {
+        if g == self.focused_group() {
+            return false;
+        }
+        match self.shown_tab(g) {
+            Some(i) => {
+                self.activate(i);
+                self.focus = Focus::Main;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn layout(&self) -> Layout {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
         let pad_y = (theme::PADDING_Y * self.scale).round() as i32;
@@ -1445,6 +1588,27 @@ impl App {
         } else {
             (None, None, Rect::new(0, top, w, body_h))
         };
+        // Split view: left half group 0, right half group 1.
+        let (col, other, split_line) = if self.is_split() && col.w > 2 {
+            let half = col.w / 2;
+            let left = Rect::new(col.x, col.y, half, col.h);
+            let right = Rect::new(col.x + half + 1, col.y, col.w - half - 1, col.h);
+            let line = Rect::new(col.x + half, col.y, 1, col.h);
+            let th = self.tab_bar_height().min(col.h);
+            let (mine, theirs) = if self.focused_group() == 0 {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            let other = OtherPane {
+                group: 1 - self.focused_group(),
+                bar: Rect::new(theirs.x, theirs.y, theirs.w, th),
+                main: Rect::new(theirs.x, theirs.y + th, theirs.w, (theirs.h - th).max(0)),
+            };
+            (mine, Some(other), Some(line))
+        } else {
+            (col, None, None)
+        };
         let (tabs, main) = if self.show_tab_bar() {
             let th = self.tab_bar_height().min(col.h);
             (
@@ -1457,6 +1621,8 @@ impl App {
         Layout {
             nag,
             tabs,
+            other,
+            split_line,
             tree,
             divider,
             main,
@@ -1468,27 +1634,38 @@ impl App {
     /// Tab width and the largest scroll offset. Tabs share the bar equally,
     /// shrink to a minimum when crowded, and then the bar scrolls.
     fn tab_metrics(&self, bar: Rect) -> (i32, i32) {
-        let n = self.tabs.len().max(1) as i32;
+        self.tab_metrics_n(bar, self.group_tabs(self.focused_group()).len())
+    }
+
+    fn tab_metrics_n(&self, bar: Rect, n: usize) -> (i32, i32) {
+        let n = n.max(1) as i32;
         let max_w = (theme::TAB_WIDTH * self.scale * self.zoom * theme::ui_ratio()) as i32;
         let min_w = (130.0 * self.scale * self.zoom * theme::ui_ratio()) as i32;
         let w = (bar.w / n).clamp(min_w.min(bar.w).max(1), max_w.max(1));
         (w, (n * w - bar.w).max(0))
     }
 
-    fn tab_rects(&self, bar: Rect) -> Vec<(Rect, Rect)> {
-        let (w, max_scroll) = self.tab_metrics(bar);
-        let scroll = self.tab_scroll.clamp(0, max_scroll);
+    /// (global tab index, tab rect, close-button rect) for the focused group.
+    fn tab_rects(&self, bar: Rect) -> Vec<(usize, Rect, Rect)> {
+        self.group_tab_rects(bar, self.focused_group())
+    }
+
+    fn group_tab_rects(&self, bar: Rect, g: u8) -> Vec<(usize, Rect, Rect)> {
+        let idx = self.group_tabs(g);
+        let (w, max_scroll) = self.tab_metrics_n(bar, idx.len());
+        let scroll = self.tab_scroll[g as usize].clamp(0, max_scroll);
         let cs = (bar.h as f32 * 0.5) as i32;
-        (0..self.tabs.len() as i32)
-            .map(|i| {
-                let r = Rect::new(bar.x + i * w - scroll, bar.y, w, bar.h);
+        idx.into_iter()
+            .enumerate()
+            .map(|(k, i)| {
+                let r = Rect::new(bar.x + k as i32 * w - scroll, bar.y, w, bar.h);
                 let close = Rect::new(
                     r.right() - cs - (8.0 * self.scale) as i32,
                     r.y + (r.h - cs) / 2,
                     cs,
                     cs,
                 );
-                (r, close)
+                (i, r, close)
             })
             .collect()
     }
@@ -1496,18 +1673,24 @@ impl App {
     /// Scroll the tab bar so the active tab is fully visible (once per
     /// activation, so wheel scrolling sticks).
     fn reveal_active_tab(&mut self, bar: Rect) {
+        let g = self.focused_group() as usize;
         let (w, max_scroll) = self.tab_metrics(bar);
         let id = self.tabs.get(self.active).map(|t| t.id);
-        self.tab_scroll = self.tab_scroll.clamp(0, max_scroll);
-        if self.tab_revealed == id {
+        self.tab_scroll[g] = self.tab_scroll[g].clamp(0, max_scroll);
+        if self.tab_revealed[g] == id {
             return;
         }
-        self.tab_revealed = id;
-        let left = self.active as i32 * w;
-        if left < self.tab_scroll {
-            self.tab_scroll = left;
-        } else if left + w > self.tab_scroll + bar.w {
-            self.tab_scroll = (left + w - bar.w).min(max_scroll);
+        self.tab_revealed[g] = id;
+        let k = self
+            .group_tabs(g as u8)
+            .iter()
+            .position(|&i| i == self.active)
+            .unwrap_or(0) as i32;
+        let left = k * w;
+        if left < self.tab_scroll[g] {
+            self.tab_scroll[g] = left;
+        } else if left + w > self.tab_scroll[g] + bar.w {
+            self.tab_scroll[g] = (left + w - bar.w).min(max_scroll);
         }
     }
 
@@ -1518,7 +1701,8 @@ impl App {
         }
         self.tab_rects(bar)
             .iter()
-            .position(|(r, _)| (x as i32) >= r.x && (x as i32) < r.right())
+            .find(|(_, r, _)| (x as i32) >= r.x && (x as i32) < r.right())
+            .map(|(i, _, _)| *i)
     }
 
     /// Move tab `from` to position `to` (drag reorder), keeping which tab
@@ -1531,7 +1715,7 @@ impl App {
         let slot = self.tabs.remove(from);
         self.tabs.insert(to, slot);
         self.active = self.tab_index(active_id).unwrap_or(0);
-        self.tab_revealed = None;
+        self.tab_revealed = [None, None];
         self.session_dirty = true;
     }
 
@@ -1545,6 +1729,18 @@ impl App {
             ("Close to the Right", MenuAction::CloseToRight(id)),
             ("Close Saved", MenuAction::CloseSaved),
             ("Close All", MenuAction::CloseAll),
+            (
+                if self.tabs[i].group == 0 {
+                    "Move to Right Side"
+                } else {
+                    "Move to Left Side"
+                },
+                MenuAction::Keys(if self.tabs[i].group == 0 {
+                    "ctrl+alt+right"
+                } else {
+                    "ctrl+alt+left"
+                }),
+            ),
         ];
         if let Some(p) = path {
             if self.tab_view(i).is_dirty() {
@@ -1923,22 +2119,25 @@ impl App {
                 key: Key::Tab,
                 mods,
             } if mods.ctrl => {
-                let n = self.tabs.len();
-                let next = if mods.shift {
-                    (self.active + n - 1) % n
-                } else {
-                    (self.active + 1) % n
-                };
-                self.activate(next);
+                self.cycle_tab(!mods.shift);
                 return true;
             }
             Input::Key {
                 key: Key::Char(c),
                 mods,
             } if mods.alt && !mods.ctrl && c.is_ascii_digit() && *c != '0' => {
-                let i = (*c as usize - '1' as usize).min(self.tabs.len() - 1);
-                self.activate(i);
+                let group = self.group_tabs(self.focused_group());
+                let k = (*c as usize - '1' as usize).min(group.len().saturating_sub(1));
+                if let Some(&i) = group.get(k) {
+                    self.activate(i);
+                }
                 return true;
+            }
+            Input::Key {
+                key: k @ (Key::Left | Key::Right),
+                mods,
+            } if mods.ctrl && mods.alt && !mods.shift => {
+                return self.move_active_to(if *k == Key::Right { 1 } else { 0 });
             }
             Input::Key { key, mods } if mods.ctrl => {
                 let handled = match key {
@@ -1991,15 +2190,15 @@ impl App {
                         true
                     }
                     Key::PageDown if !mods.shift => {
-                        let n = self.tabs.len();
-                        self.activate((self.active + 1) % n);
+                        self.cycle_tab(true);
                         true
                     }
                     Key::PageUp if !mods.shift => {
-                        let n = self.tabs.len();
-                        self.activate((self.active + n - 1) % n);
+                        self.cycle_tab(false);
                         true
                     }
+                    Key::Char('1') if !mods.shift && !mods.alt => self.focus_group(0),
+                    Key::Char('2') if !mods.shift && !mods.alt => self.focus_group(1),
                     Key::Char('o') if mods.shift => {
                         self.requests.push(Request::OpenFolderDialog);
                         true
@@ -2066,6 +2265,46 @@ impl App {
         }
 
         let layout = self.layout();
+        // Split view: a click anywhere in the other group focuses it first
+        // (then the click is handled there); the wheel scrolls it in place.
+        let mut layout = layout;
+        if let Some(o) = layout.other {
+            let inside = |r: Rect, x: f32, y: f32| {
+                x >= r.x as f32 && x < r.right() as f32 && y >= r.y as f32 && y < r.bottom() as f32
+            };
+            let pane = Rect::new(o.bar.x, o.bar.y, o.bar.w, o.bar.h + o.main.h);
+            match input {
+                Input::MouseDown { x, y, .. }
+                    if inside(pane, *x, *y) && self.tab_drag.is_none() =>
+                {
+                    self.focus_group(o.group);
+                    layout = self.layout();
+                }
+                Input::Wheel { .. } if inside(o.main, self.mouse.0, self.mouse.1) => {
+                    if let Some(i) = self.shown_tab(o.group) {
+                        let mut ctx = Ctx {
+                            fonts: &mut self.fonts,
+                            scale: self.scale,
+                            zoom: self.zoom,
+                            requests: &mut self.requests,
+                            cursor: &mut self.cursor,
+                            focused: false,
+                            clipboard: &mut *self.clipboard,
+                            mods: self.mods,
+                        };
+                        if let Some(v) = self.tabs[i].view.as_mut() {
+                            return v.handle(input, o.main, &mut ctx);
+                        }
+                    }
+                }
+                Input::MouseMove { x, y } if inside(pane, *x, *y) && self.tab_drag.is_none() => {
+                    self.mouse = (*x, *y);
+                    self.cursor = Cursor::Default;
+                    return true;
+                }
+                _ => {}
+            }
+        }
         // Tab bar: activate / close / reorder / scroll / menu.
         if let Some(bar) = layout.tabs {
             self.reveal_active_tab(bar);
@@ -2084,11 +2323,14 @@ impl App {
                         self.tab_drag = Some((from, start, dragging));
                         if dragging {
                             let (w, _) = self.tab_metrics(bar);
-                            let scroll = self.tab_scroll;
-                            let to = (((x - bar.x as f32) + scroll as f32) / w.max(1) as f32)
+                            let g = self.focused_group() as usize;
+                            let group = self.group_tabs(g as u8);
+                            let scroll = self.tab_scroll[g];
+                            let k = (((x - bar.x as f32) + scroll as f32) / w.max(1) as f32)
                                 .floor()
-                                .clamp(0.0, (self.tabs.len() - 1) as f32)
+                                .clamp(0.0, (group.len().max(1) - 1) as f32)
                                 as usize;
+                            let to = group.get(k).copied().unwrap_or(from);
                             if to != from {
                                 self.move_tab(from, to);
                                 self.tab_drag = Some((to, start, true));
@@ -2112,16 +2354,19 @@ impl App {
                     clicks,
                 } if inside(*x, *y) => {
                     self.mouse = (*x, *y);
-                    if self.tab_at(bar, *x).is_none()
-                        && *clicks >= 2
-                        && *button == MouseButton::Left
-                    {
+                    let hit = self.tab_at(bar, *x);
+                    if hit.is_none() && *clicks >= 2 && *button == MouseButton::Left {
                         // Double-click on the empty part of the bar: new file.
                         self.new_file();
                         return true;
                     }
-                    if let Some(i) = self.tab_at(bar, *x) {
-                        let (_, close) = self.tab_rects(bar)[i];
+                    if let Some(i) = hit {
+                        let close = self
+                            .tab_rects(bar)
+                            .into_iter()
+                            .find(|(j, _, _)| *j == i)
+                            .map(|(_, _, c)| c)
+                            .unwrap_or(Rect::new(0, 0, 0, 0));
                         let on_close = (*x as i32) >= close.x && (*x as i32) < close.right();
                         match button {
                             MouseButton::Middle => self.close_tab(i),
@@ -2145,7 +2390,9 @@ impl App {
                     let (_, max_scroll) = self.tab_metrics(bar);
                     let step = 40.0 * self.scale;
                     let d = if dx.abs() > dy.abs() { *dx } else { *dy };
-                    self.tab_scroll = (self.tab_scroll + (d * step) as i32).clamp(0, max_scroll);
+                    let g = self.focused_group() as usize;
+                    self.tab_scroll[g] =
+                        (self.tab_scroll[g] + (d * step) as i32).clamp(0, max_scroll);
                     return true;
                 }
                 _ => {}
@@ -2311,31 +2558,55 @@ impl App {
         if let Some(bar) = layout.tabs {
             self.reveal_active_tab(bar);
         }
-        let tab_overflow = layout.tabs.map(|bar| {
-            let (w, max_scroll) = self.tab_metrics(bar);
+        // Tab bars to draw: the focused group's, and the other group's when
+        // split. (bar, rects, titles, shown tab, overflow, focused)
+        type BarInfo = (
+            Rect,
+            Vec<(usize, Rect, Rect)>,
+            Vec<(String, bool)>,
+            Option<usize>,
+            (i32, i32, i32),
+            bool,
+        );
+        let title_of = |app: &Self, i: usize| -> (String, bool) {
+            let v = app.tab_view(i);
+            let t = v.title();
             (
-                max_scroll,
-                self.tab_scroll.clamp(0, max_scroll),
-                w * self.tabs.len() as i32,
+                if t.is_empty() {
+                    "untitled".to_string()
+                } else {
+                    t
+                },
+                v.is_dirty(),
             )
-        });
-        let tab_info = layout.tabs.map(|bar| {
-            let titles: Vec<(String, bool)> = (0..self.tabs.len())
-                .map(|i| {
-                    let v = self.tab_view(i);
-                    let t = v.title();
-                    (
-                        if t.is_empty() {
-                            "untitled".to_string()
-                        } else {
-                            t
-                        },
-                        v.is_dirty(),
-                    )
-                })
-                .collect();
-            (bar, self.tab_rects(bar), titles)
-        });
+        };
+        let mut bars: Vec<BarInfo> = Vec::new();
+        let focused_g = self.focused_group();
+        let mut groups: Vec<(Rect, u8, bool)> = Vec::new();
+        if let Some(bar) = layout.tabs {
+            groups.push((bar, focused_g, true));
+        }
+        if let Some(o) = layout.other {
+            groups.push((o.bar, o.group, false));
+        }
+        for (bar, g, focused) in groups {
+            let rects = self.group_tab_rects(bar, g);
+            let titles = rects.iter().map(|(i, _, _)| title_of(self, *i)).collect();
+            let n = rects.len();
+            let (w, max_scroll) = self.tab_metrics_n(bar, n);
+            let scroll = self.tab_scroll[g as usize].clamp(0, max_scroll);
+            bars.push((
+                bar,
+                rects,
+                titles,
+                self.shown_tab(g),
+                (max_scroll, scroll, w * n as i32),
+                focused,
+            ));
+        }
+        let other_view = layout
+            .other
+            .and_then(|o| self.shown_tab(o.group).map(|i| (o, i)));
         let active_tab = self.active;
         let mouse = self.mouse;
         let current = self.view.path().map(Path::to_path_buf);
@@ -2359,23 +2630,28 @@ impl App {
             canvas.fill_rect(d, theme::p().divider);
         }
 
-        if let Some((bar, rects, titles)) = &tab_info {
+        for (bar, rects, titles, shown, (max_scroll, scroll, total), focused) in &bars {
             let bar = *bar;
             canvas.set_clip(bar);
             canvas.fill_rect(bar, theme::p().background2);
             let pad = ctx.px(theme::PADDING_X) as i32;
             let lh = ctx.ui_metrics().line_height as i32;
-            for (i, ((r, close), (title, dirty))) in rects.iter().zip(titles.iter()).enumerate() {
+            for ((i, r, close), (title, dirty)) in rects.iter().zip(titles.iter()) {
                 // Unsaved changes: a dot in the close button's place (the
                 // close X shows while the mouse is over the tab).
                 let title = title.strip_prefix("● ").unwrap_or(title);
-                let active = i == active_tab;
+                let active = Some(*i) == *shown;
                 let hovered = (mouse.0 as i32) >= r.x
                     && (mouse.0 as i32) < r.right()
                     && (mouse.1 as i32) >= r.y
                     && (mouse.1 as i32) < r.bottom();
                 if active {
                     canvas.fill_rect(*r, theme::p().background);
+                    if *focused && layout.other.is_some() {
+                        // Which side has the keyboard: a line on its tab.
+                        let t = ctx.px(2.0).max(1.0) as i32;
+                        canvas.fill_rect(Rect::new(r.x, r.y, r.w, t), theme::p().caret);
+                    }
                 } else if hovered {
                     canvas.fill_rect(*r, theme::p().line_highlight);
                 }
@@ -2427,18 +2703,29 @@ impl App {
             }
             // More tabs than fit: a thin bar along the bottom shows which
             // part is in view (scroll with the mouse wheel over the tabs).
-            if let Some((max_scroll, scroll, total)) = tab_overflow
-                && max_scroll > 0
-                && total > 0
-            {
+            if *max_scroll > 0 && *total > 0 {
                 let h = ctx.px(3.0).max(2.0) as i32;
-                let w = (bar.w as i64 * bar.w as i64 / total as i64) as i32;
-                let x = bar.x + (scroll as i64 * bar.w as i64 / total as i64) as i32;
+                let w = (bar.w as i64 * bar.w as i64 / *total as i64) as i32;
+                let x = bar.x + (*scroll as i64 * bar.w as i64 / *total as i64) as i32;
                 canvas.fill_rect(
                     Rect::new(x, bar.bottom() - h, w.max(h * 4), h),
                     theme::p().scrollbar,
                 );
             }
+        }
+        // The other side of a split: its shown tab, without keyboard focus.
+        if let Some(line) = layout.split_line {
+            canvas.set_clip(line);
+            canvas.fill_rect(line, theme::p().divider);
+        }
+        if let Some((o, i)) = other_view
+            && let Some(v) = self.tabs[i].view.as_mut()
+        {
+            canvas.set_clip(o.main);
+            let was = ctx.focused;
+            ctx.focused = false;
+            v.render(canvas, o.main, &mut ctx);
+            ctx.focused = was;
         }
 
         canvas.set_clip(layout.main);

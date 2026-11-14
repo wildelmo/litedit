@@ -28,6 +28,13 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-027 Split view: two sides, Ctrl+Alt+arrows, not saved in the session
+VS Code uses Ctrl+\ to split, but in litedit Ctrl+\ already shows/hides the
+file tree (lite-xl's habit), so moving a tab across is Ctrl+Alt+Right/Left
+(VS Code's "move editor to next group") and Ctrl+1/2 focus a side. At most
+two sides; a file is open in only one tab (two live copies of one file would
+fight over who saves last). The split isn't restored next start; tabs are.
+
 ### D-026 Known cosmetic limitations left after the 1.1 review
 Not worth the risk or size right now; tell me if any bothers you:
 - Soft wrap counts every character as one column, so CJK lines can run past

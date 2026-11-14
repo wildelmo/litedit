@@ -160,8 +160,10 @@ fixed first (S5.0).
        lines tinted, changed characters highlighted, aligned rows, one scroll,
        change markers on the right edge, F7 / Shift+F7 (Alt+F5) next/previous
        change, change count in status; recomputes when either file changes
-- [ ] S5.3 Split right: two editor groups side by side, each with its own tabs
-       (Ctrl+\ like VS Code; move tab to other group; close group)
+- [x] S5.3 Split right: two editor groups side by side, each with its own tabs
+       (Ctrl+Alt+Right/Left moves the tab across, Ctrl+1/2 focus a side, tab
+       menu "Move to Right/Left Side", palette); one tab per file; a side
+       closes when its last tab does (D-027)
 - [x] S5.4 Everyday editing gaps vs lite-xl: Ctrl+N new file (named in the
        current folder; system dialog without one; also double-click on the
        empty tab bar), Shift+click extends, Ctrl+click adds/removes a caret,
@@ -175,6 +177,13 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.3 split view: flat tab list with a group tag per tab,
+  focused group's view in App.view (all save/close/quit paths unchanged), the
+  other side drawn from its slot; per-side tab bars, scroll and reveal; clicks
+  in the other side focus it, the wheel scrolls it in place. Tests: split /
+  focus / merge flow, quit with unsaved tabs on both sides, randomized
+  drag/close/reopen/move-between-sides run (now asserts >200 steps run;
+  mutation-checked).
 - 2026-11-14 — S5.4 everyday editing: modifier state reaches the app
   (Input::Modifiers → Ctx.mods; script `mods`), multi-caret commands, move
   lines keeping each line's ending, comment toggle (line and block styles),

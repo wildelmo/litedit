@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Split view: Ctrl+Alt+Right moves the current tab to a right-hand side
+  (with its own tabs); Ctrl+Alt+Left moves it back; Ctrl+1 / Ctrl+2 or a
+  click switches sides. Also in the tab menu and command palette.
 - Editing: Ctrl+D selects the next occurrence (multiple carets; type to edit
   them all), Ctrl+Shift+L all occurrences, Ctrl+click adds a caret,
   Shift+click extends the selection, Alt+Up/Down moves lines, Ctrl+/
