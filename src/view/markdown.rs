@@ -10,7 +10,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::editor::doc::SaveError;
 use crate::images::{ImageStore, ImgState, scale_to};
-use crate::input::{Cursor, Input, Key, MouseButton, Request};
+use crate::input::{Cursor as MouseCursor, Input, Key, MouseButton, Request};
 use crate::links::{LinkTarget, classify};
 use crate::markdown::layout::{
     Element, ImgInfo, Layout, LayoutCtx, META_CODE, layout, link_from_meta,
@@ -20,6 +20,7 @@ use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
 use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
+use cosmic_text::Cursor;
 
 pub fn is_markdown(path: &Path) -> bool {
     path.extension()
@@ -69,6 +70,9 @@ pub struct MarkdownView {
     seen_version: u64,
     /// Caret line the split preview last followed.
     followed_line: usize,
+    /// Preview text selection: (element index, cursor) anchor and head.
+    sel: Option<((usize, Cursor), (usize, Cursor))>,
+    selecting: bool,
     /// Message shown in the status bar (e.g. blocked link).
     notice: Option<String>,
 }
@@ -97,6 +101,8 @@ impl MarkdownView {
             mouse_x: 0.0,
             seen_version: 0,
             followed_line: usize::MAX,
+            sel: None,
+            selecting: false,
             notice: None,
         };
         v.request_images();
@@ -177,6 +183,118 @@ impl MarkdownView {
             .unwrap_or_default()
     }
 
+    /// The selectable text element and buffer cursor under a window point.
+    fn text_hit(&self, px: f32, py: f32) -> Option<(usize, Cursor)> {
+        let (_, l) = self.layout.as_ref()?;
+        let x = px - self.last_rect.x as f32;
+        let y = py - self.last_rect.y as f32 + self.scroll.y;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, el) in l.elements.iter().enumerate() {
+            if let Element::Text {
+                y: ey,
+                h,
+                sel: true,
+                ..
+            } = el
+            {
+                let d = if y < *ey {
+                    ey - y
+                } else if y > ey + h {
+                    y - ey - h
+                } else {
+                    0.0
+                };
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((i, d));
+                }
+            }
+        }
+        let (i, _) = best?;
+        let Element::Text {
+            x: ex,
+            y: ey,
+            h,
+            buffer,
+            ..
+        } = &l.elements[i]
+        else {
+            return None;
+        };
+        let ly = (y - ey).clamp(0.0, (h - 1.0).max(0.0));
+        buffer.hit(x - ex, ly).map(|c| (i, c))
+    }
+
+    fn sel_range(&self) -> Option<((usize, Cursor), (usize, Cursor))> {
+        let (a, b) = self.sel?;
+        let key = |p: &(usize, Cursor)| (p.0, p.1.line, p.1.index);
+        if a == b {
+            return None;
+        }
+        Some(if key(&a) <= key(&b) { (a, b) } else { (b, a) })
+    }
+
+    /// The selected preview text as plain text.
+    pub fn selected_text(&self) -> String {
+        let (Some((lo, hi)), Some((_, l))) = (self.sel_range(), self.layout.as_ref()) else {
+            return String::new();
+        };
+        let mut parts = Vec::new();
+        for i in lo.0..=hi.0 {
+            let Some(Element::Text {
+                buffer, sel: true, ..
+            }) = l.elements.get(i)
+            else {
+                continue;
+            };
+            let mut lines = Vec::new();
+            for (li, bl) in buffer.lines.iter().enumerate() {
+                let t = bl.text();
+                let start = if i == lo.0 && li == lo.1.line {
+                    lo.1.index.min(t.len())
+                } else if i == lo.0 && li < lo.1.line {
+                    continue;
+                } else {
+                    0
+                };
+                let end = if i == hi.0 && li == hi.1.line {
+                    hi.1.index.min(t.len())
+                } else if i == hi.0 && li > hi.1.line {
+                    break;
+                } else {
+                    t.len()
+                };
+                if let Some(seg) = t.get(start..end.max(start)) {
+                    lines.push(seg.to_string());
+                }
+            }
+            parts.push(lines.join("\n"));
+        }
+        parts.join("\n")
+    }
+
+    fn select_all(&mut self) {
+        let Some((_, l)) = &self.layout else { return };
+        let texts: Vec<usize> = l
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, Element::Text { sel: true, .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let (Some(&first), Some(&last)) = (texts.first(), texts.last()) else {
+            return;
+        };
+        let Element::Text { buffer, .. } = &l.elements[last] else {
+            return;
+        };
+        let end_line = buffer.lines.len().saturating_sub(1);
+        let end_idx = buffer.lines.last().map_or(0, |b| b.text().len());
+        self.sel = Some((
+            (first, Cursor::new(0, 0)),
+            (last, Cursor::new(end_line, end_idx)),
+        ));
+    }
+
     fn preview_stale(&self) -> bool {
         self.editor.doc.version() != self.md_version
     }
@@ -253,6 +371,15 @@ impl MarkdownView {
                 k,
             };
             let l = layout(&self.md, &mut lctx, width as f32);
+            // Keep a selection across relayouts that only change sizes (image
+            // loaded, window resized): same elements, same order.
+            let same_shape = self
+                .layout
+                .as_ref()
+                .is_some_and(|(_, old)| old.elements.len() == l.elements.len());
+            if !same_shape {
+                self.sel = None;
+            }
             self.layout = Some((key, l));
         }
         &self.layout.as_ref().expect("just laid out").1
@@ -419,11 +546,12 @@ impl MarkdownView {
         let view_top = self.scroll.y;
         let view_bottom = self.scroll.y + rect.h as f32;
         let hover = self.hover_link;
+        let selection = self.sel_range();
         let Some((_, layout)) = self.layout.as_mut() else {
             return;
         };
 
-        for el in layout.elements.iter_mut() {
+        for (ei, el) in layout.elements.iter_mut().enumerate() {
             let (y0, y1) = el.y_range();
             if y1 < view_top || y0 > view_bottom {
                 continue;
@@ -437,9 +565,32 @@ impl MarkdownView {
                     y,
                     buffer,
                     color,
+                    sel: selectable,
                     ..
                 } => {
                     let (tx, ty) = (*x + dx, *y + dy);
+                    // Selection highlight.
+                    if let Some((lo, hi)) = selection
+                        && ei >= lo.0
+                        && ei <= hi.0
+                        && *selectable
+                    {
+                        let start = if ei == lo.0 { lo.1 } else { Cursor::new(0, 0) };
+                        let end = if ei == hi.0 {
+                            hi.1
+                        } else {
+                            let last = buffer.lines.len().saturating_sub(1);
+                            Cursor::new(last, buffer.lines.last().map_or(0, |b| b.text().len()))
+                        };
+                        for run in buffer.layout_runs() {
+                            for (hx, hw) in run.highlight(start, end) {
+                                canvas.fill_rect(
+                                    frect(tx + hx, ty + run.line_top, hw.max(2.0), run.line_height),
+                                    theme::SELECTION,
+                                );
+                            }
+                        }
+                    }
                     // Inline code backgrounds and link hover underline.
                     for run in buffer.layout_runs() {
                         let mut span: Option<(f32, f32)> = None;
@@ -631,7 +782,7 @@ impl View for MarkdownView {
             && !mods.shift
         {
             self.toggle_mode(ctx);
-            *ctx.cursor = Cursor::Default;
+            *ctx.cursor = MouseCursor::Default;
             return true;
         }
         // Ctrl+Shift+V: side-by-side live preview on/off.
@@ -807,11 +958,42 @@ impl View for MarkdownView {
 
 impl MarkdownView {
     fn handle_preview(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        // Hit-testing needs a layout even before the first frame.
+        if matches!(
+            input,
+            Input::MouseDown { .. } | Input::MouseMove { .. } | Input::Key { .. }
+        ) {
+            self.sync_preview();
+            self.ensure_layout(rect.w.max(1), ctx);
+        }
         let lh = ctx.font_px(theme::MD_FONT_SIZE) * theme::MD_LINE_HEIGHT;
         let before = self.scroll.y;
         match input {
             Input::Wheel { .. } => {
                 self.scroll.wheel(input, lh);
+            }
+            Input::Key {
+                key: Key::Char('a'),
+                mods,
+            } if mods.ctrl => {
+                self.select_all();
+                return true;
+            }
+            Input::Key {
+                key: Key::Char('c'),
+                mods,
+            } if mods.ctrl => {
+                let t = self.selected_text();
+                if !t.is_empty() {
+                    ctx.clipboard.set(t);
+                }
+                return false;
+            }
+            Input::Key {
+                key: Key::Escape, ..
+            } if self.sel.is_some() => {
+                self.sel = None;
+                return true;
             }
             Input::Key { key, mods } => {
                 let page = (rect.h as f32 - lh * 2.0).max(lh);
@@ -828,33 +1010,57 @@ impl MarkdownView {
                     _ => return false,
                 }
             }
+            Input::MouseMove { x, y } if self.selecting => {
+                if let (Some(h), Some((a, _))) = (self.text_hit(*x, *y), self.sel) {
+                    self.sel = Some((a, h));
+                }
+                *ctx.cursor = MouseCursor::Text;
+                return true;
+            }
             Input::MouseMove { x, y } => {
                 let link = self.link_at(*x, *y);
                 let changed = link != self.hover_link;
                 self.hover_link = link;
                 *ctx.cursor = if link.is_some() {
-                    Cursor::Pointer
+                    MouseCursor::Pointer
                 } else {
-                    Cursor::Default
+                    MouseCursor::Default
                 };
                 return changed;
             }
             Input::MouseLeave => {
                 let changed = self.hover_link.is_some();
                 self.hover_link = None;
-                *ctx.cursor = Cursor::Default;
+                *ctx.cursor = MouseCursor::Default;
                 return changed;
             }
             Input::MouseDown {
                 x,
                 y,
                 button: MouseButton::Left,
-                ..
+                clicks,
             } => {
                 if let Some(idx) = self.link_at(*x, *y) {
                     self.activate_link(idx, ctx);
                     return true;
                 }
+                // Start a text selection (double-click: the whole block).
+                let hit = self.text_hit(*x, *y);
+                self.sel = hit.map(|h| (h, h));
+                self.selecting = hit.is_some();
+                if *clicks >= 2
+                    && let (Some((i, _)), Some((_, l))) = (hit, self.layout.as_ref())
+                    && let Element::Text { buffer, .. } = &l.elements[i]
+                {
+                    let end_line = buffer.lines.len().saturating_sub(1);
+                    let end = buffer.lines.last().map_or(0, |b| b.text().len());
+                    self.sel = Some(((i, Cursor::new(0, 0)), (i, Cursor::new(end_line, end))));
+                    self.selecting = false;
+                }
+                return true;
+            }
+            Input::MouseUp { .. } => {
+                self.selecting = false;
                 return false;
             }
             _ => return false,
@@ -873,7 +1079,7 @@ mod tests {
     struct Harness {
         fonts: Fonts,
         requests: Vec<Request>,
-        cursor: Cursor,
+        cursor: MouseCursor,
         clip: crate::clipboard::MemClipboard,
     }
 
@@ -882,7 +1088,7 @@ mod tests {
             Self {
                 fonts: Fonts::load(),
                 requests: Vec::new(),
-                cursor: Cursor::Default,
+                cursor: MouseCursor::Default,
                 clip: crate::clipboard::MemClipboard::default(),
             }
         }
@@ -969,7 +1175,7 @@ mod tests {
             let p = link_point(&v, 0);
             click(&mut v, &mut h, p)
         });
-        assert_eq!(h.cursor, Cursor::Pointer);
+        assert_eq!(h.cursor, MouseCursor::Pointer);
         assert_eq!(
             h.requests.pop(),
             Some(Request::OpenUrl("https://example.com".into()))

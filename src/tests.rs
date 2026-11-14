@@ -1588,3 +1588,47 @@ fn wrap_movement_works_without_a_render() {
     assert!(col > 30, "row width too small: {st}");
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+#[test]
+fn preview_text_can_be_selected_and_copied() {
+    let p = temp_file(
+        "sel.md",
+        "# Heading\n\nFirst paragraph here.\n\n- item one\n- item two\n",
+    );
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+\\");
+    render_hash(&mut app, 900, 600);
+    // Select all + copy: text of every block, list bullets excluded.
+    press(&mut app, "ctrl+a");
+    render_hash(&mut app, 900, 600);
+    press(&mut app, "ctrl+c");
+    let t = app.clipboard_text().unwrap_or_default();
+    assert!(
+        t.contains("Heading") && t.contains("First paragraph here.") && t.contains("item two"),
+        "{t:?}"
+    );
+    assert!(!t.contains('•'), "bullets are not copied: {t:?}");
+    // Drag-select inside the paragraph.
+    let y = 35.0 + 28.0 + 70.0; // roughly the first paragraph line
+    app.handle(Input::MouseDown {
+        x: 45.0,
+        y,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseMove { x: 120.0, y });
+    app.handle(Input::MouseUp {
+        x: 120.0,
+        y,
+        button: crate::input::MouseButton::Left,
+    });
+    press(&mut app, "ctrl+c");
+    let t2 = app.clipboard_text().unwrap_or_default();
+    assert!(
+        !t2.is_empty() && t2.len() < t.len(),
+        "partial selection: {t2:?}"
+    );
+    render_hash(&mut app, 900, 600);
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}

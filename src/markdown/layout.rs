@@ -66,6 +66,8 @@ pub enum Element {
         h: f32,
         buffer: Buffer,
         color: Color,
+        /// Part of selectable / copyable text (false for list bullets).
+        sel: bool,
     },
     Fill {
         x: f32,
@@ -370,6 +372,7 @@ fn layout_block(
                 h,
                 buffer: buf,
                 color: theme::MD_HEADING,
+                sel: true,
             });
             let mut y = y + h;
             if *level <= 2 {
@@ -447,6 +450,7 @@ fn layout_block(
                 h,
                 buffer: buf,
                 color,
+                sel: true,
             });
             y + h
         }
@@ -496,6 +500,7 @@ fn layout_block(
                     h,
                     buffer: buf,
                     color: theme::SYNTAX_NORMAL,
+                    sel: true,
                 });
                 cy += h;
             }
@@ -520,6 +525,7 @@ fn layout_block(
                     h,
                     buffer: buf,
                     color: theme::MD_MUTED,
+                    sel: true,
                 });
                 cy += h;
             }
@@ -574,6 +580,7 @@ fn layout_block(
                     h,
                     buffer: buf,
                     color: bar_color,
+                    sel: true,
                 });
                 cy += h + ctx.px(4.0);
             }
@@ -630,6 +637,7 @@ fn layout_block(
                 h,
                 buffer: buf,
                 color: theme::MD_MUTED,
+                sel: true,
             });
             layout_blocks(blocks, ctx, out, x + lw, w - lw, y, depth + 1, Tone::Muted).max(y + h)
         }
@@ -688,6 +696,7 @@ fn layout_list(
                 h,
                 buffer: buf,
                 color: theme::MD_MUTED,
+                sel: false,
             });
         }
         let end = layout_blocks(
@@ -821,6 +830,7 @@ fn layout_table(
                 h: row_h,
                 buffer: buf,
                 color: theme::MD_TEXT,
+                sel: true,
             });
         }
         row_tops.push(cy);
