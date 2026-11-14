@@ -1,9 +1,11 @@
 [package]
 name = "litedit"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
+authors = ["Joe Chun"]
 description = "Ultralight markdown-first text editor for Windows"
 license = "MIT"
+repository = "https://github.com/wildelmo/litedit"
 
 [dependencies]
 winit = "0.30"

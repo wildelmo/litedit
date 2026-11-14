@@ -9,17 +9,18 @@ An ultralight, memory-safe text editor for Windows, written in Rust.
 
 Designed after [lite-xl](https://github.com/lite-xl/lite-xl) — see `NOTICE`.
 
-> **Status:** Epics 1–3 complete: markdown preview (default) and editing,
-> side-by-side live preview, tabs, find/replace, find in folder, command
-> palette, quick open, file tree with file actions, safe saving, session
-> restore. Epic 4 (polish) is next.
-> See [ROADMAP.md](ROADMAP.md) and [DECISIONS.md](DECISIONS.md).
+> **Version 1.0.0.** Markdown preview (default) and editing, side-by-side
+> live preview, tabs, find/replace, find in folder, command palette, quick
+> open, file tree with file actions, safe saving, session restore, light and
+> dark themes, settings file. See [CHANGELOG.md](CHANGELOG.md),
+> [ROADMAP.md](ROADMAP.md) and [DECISIONS.md](DECISIONS.md).
 
 ## Try it
 
-Download `litedit.exe` from the latest successful
-[windows workflow run](../../actions/workflows/windows.yml) (artifact
-`litedit-windows`). Then open a file or folder:
+Download `litedit.exe` (or the zip with the licence files) from the
+[latest release](../../releases/latest). Builds of every commit are also
+attached to each [windows workflow run](../../actions/workflows/windows.yml)
+(artifact `litedit-windows`). Then open a file or folder:
 
 ```
 litedit.exe notes\todo.md
@@ -71,4 +72,7 @@ litedit --screenshot out.png [--size 1280x800] [--scale 1.5] [--theme light] <fi
 
 ## License
 
-MIT. See `LICENSE` and `NOTICE`.
+MIT © 2026 Joe Chun. See `LICENSE`, `NOTICE` (lite-xl, the design this
+follows) and `THIRD-PARTY-NOTICES.txt` (the open-source libraries and syntax
+definitions built into the exe; regenerate with
+`python3 scripts/third-party-notices.py` after changing dependencies).

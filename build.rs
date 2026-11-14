@@ -14,7 +14,11 @@ fn main() {
                 "litedit - ultralight markdown-first text editor",
             );
             res.set("ProductName", "litedit");
-            res.set("LegalCopyright", "MIT License");
+            res.set("CompanyName", "Joe Chun");
+            res.set(
+                "LegalCopyright",
+                "Copyright (c) 2026 Joe Chun. MIT License.",
+            );
             if let Err(e) = res.compile() {
                 panic!("could not embed the icon and version info: {e}");
             }

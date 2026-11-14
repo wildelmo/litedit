@@ -3,6 +3,7 @@ name: windows
 on:
   push:
     branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -223,3 +224,33 @@ jobs:
           path: |
             target/release/litedit.exe
             out/
+
+  # A pushed tag like v1.0.0 publishes a GitHub Release with the exe (built and
+  # fully tested by the job above) plus the licence files.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: litedit-windows
+          path: artifact
+      - name: Check the tag matches Cargo.toml
+        run: |
+          want="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $want"; exit 1; }
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="litedit-$GITHUB_REF_NAME-windows-x64"
+          mkdir "$dir"
+          cp artifact/target/release/litedit.exe LICENSE NOTICE THIRD-PARTY-NOTICES.txt README.md "$dir/"
+          zip -r "$dir.zip" "$dir"
+          notes=$(awk -v v="## ${GITHUB_REF_NAME#v}" '$0 ~ "^## " {p = index($0, v) == 1} p' CHANGELOG.md)
+          gh release create "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe \
+            --title "litedit $GITHUB_REF_NAME" --notes "$notes"
