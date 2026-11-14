@@ -15,6 +15,7 @@ use crate::menu::{Menu, MenuAction, MenuResult};
 use crate::nag::{Nag, NagAction, Pending};
 use crate::palette::{Action, Outcome, Palette, index_files};
 use crate::session::{Session, push_recent};
+use crate::settings::{self, Settings};
 use crate::text::Fonts;
 use crate::theme;
 use crate::tree::Tree;
@@ -86,6 +87,12 @@ pub struct App {
     notice: Option<String>,
     /// Set when a view may have deferred work; cleared when `tick` finishes it.
     pending: bool,
+    /// The settings file (window mode only; headless runs use defaults).
+    settings_path: Option<PathBuf>,
+    /// Soft wrap for newly opened code files (setting `wrap_code`).
+    wrap_code: bool,
+    /// Extra ignored names currently in effect (setting `ignore`).
+    ignore: Vec<String>,
 }
 
 struct TabSlot {
@@ -150,6 +157,176 @@ impl App {
             after_lossy: None,
             notice: None,
             pending: false,
+            settings_path: None,
+            wrap_code: false,
+            ignore: Vec::new(),
+        }
+    }
+
+    /// Read settings from `path` and keep it as the settings file (the
+    /// window does this at startup; problems go to the status bar).
+    pub fn use_settings(&mut self, path: PathBuf) {
+        let (s, problems) = Settings::load(&path);
+        self.settings_path = Some(path);
+        self.apply_settings(&s, &problems);
+    }
+
+    /// Make `s` current: palette, font sizes and the wrap default.
+    fn apply_settings(&mut self, s: &Settings, problems: &[String]) {
+        let sizes_before = (
+            theme::font_size(),
+            theme::code_font_size(),
+            theme::md_font_size(),
+        );
+        let light_before = theme::is_light();
+        let ignore_changed = self.ignore != s.ignore;
+        s.apply_globals();
+        if ignore_changed {
+            self.ignore = s.ignore.clone();
+            crate::tree::set_extra_ignored(s.ignore.clone());
+            self.tree.reload_all();
+            self.file_index = None;
+        }
+        self.wrap_code = s.wrap_code;
+        if theme::is_light() != light_before {
+            self.each_view(|v| v.theme_changed());
+        }
+        let sizes = (
+            theme::font_size(),
+            theme::code_font_size(),
+            theme::md_font_size(),
+        );
+        if sizes != sizes_before {
+            self.each_view(|v| v.metrics_changed());
+        }
+        if let Some(first) = problems.first() {
+            let more = if problems.len() > 1 {
+                format!(" (+{} more)", problems.len() - 1)
+            } else {
+                String::new()
+            };
+            self.notice = Some(format!("Settings: {first}{more}"));
+        }
+        self.pending = true;
+    }
+
+    /// Switch palettes now (script `theme`, `--theme`, the toggle command).
+    pub fn set_light(&mut self, light: bool) {
+        if theme::is_light() != light {
+            theme::set_light(light);
+            self.each_view(|v| v.theme_changed());
+            self.pending = true;
+        }
+    }
+
+    fn each_view(&mut self, mut f: impl FnMut(&mut dyn View)) {
+        f(&mut *self.view);
+        for t in &mut self.tabs {
+            if let Some(v) = t.view.as_mut() {
+                f(&mut **v);
+            }
+        }
+    }
+
+    fn is_settings_file(&self, p: &Path) -> bool {
+        self.settings_path
+            .as_deref()
+            .is_some_and(|s| settings::same_path(s, p))
+    }
+
+    /// After saving `p`: if it is the settings file, apply it.
+    fn after_save(&mut self, p: &Path) {
+        if self.is_settings_file(p) {
+            let (s, problems) = Settings::load(p);
+            self.apply_settings(&s, &problems);
+            if problems.is_empty() {
+                self.notice = Some("Settings applied".into());
+            }
+        }
+    }
+
+    /// "Preferences: Open Settings" (Ctrl+,): open the file, creating it from
+    /// the template if there is none (an existing file is never replaced).
+    fn open_settings(&mut self) {
+        let Some(path) = self.settings_path.clone() else {
+            self.notice = Some("No settings file in this mode".into());
+            return;
+        };
+        if !path.exists() {
+            let created = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|_| {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)?
+                        .write_all(settings::TEMPLATE.as_bytes())
+                });
+            if let Err(e) = created
+                && !path.exists()
+            {
+                self.nag = Some(Nag::error(format!(
+                    "Could not create {}: {e}",
+                    path.display()
+                )));
+                return;
+            }
+        }
+        self.open(&path);
+    }
+
+    /// "View: Toggle Light / Dark Theme": switch now and record it in the
+    /// settings file (only its `theme` line changes). If the settings file is
+    /// open with unsaved edits the file is left alone.
+    fn toggle_theme(&mut self) {
+        let light = !theme::is_light();
+        self.set_light(light);
+        let name = if light { "Light" } else { "Dark" };
+        let Some(path) = self.settings_path.clone() else {
+            self.notice = Some(format!("{name} theme"));
+            return;
+        };
+        let dirty_open = (0..self.tabs.len()).any(|i| {
+            let v = self.tab_view(i);
+            v.is_dirty() && v.path().is_some_and(|p| settings::same_path(p, &path))
+        });
+        if dirty_open {
+            self.notice = Some(format!(
+                "{name} theme for now; settings.txt has unsaved edits, so it was not changed"
+            ));
+            return;
+        }
+        let old = match std::fs::metadata(&path) {
+            Ok(m) if m.len() > settings::MAX_BYTES => {
+                self.notice = Some(format!("{name} theme for now; settings.txt is too large"));
+                return;
+            }
+            Ok(_) => std::fs::read(&path)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .ok(),
+            Err(_) => Some(settings::TEMPLATE.to_string()),
+        };
+        let Some(old) = old else {
+            self.notice = Some(format!("{name} theme for now; could not read settings.txt"));
+            return;
+        };
+        let new = settings::with_theme(&old, light);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match crate::editor::save::save_bytes(&path, new.as_bytes()) {
+            Ok(()) => {
+                self.notice = Some(format!("{name} theme (saved in settings)"));
+                // A clean tab showing the file picks up the change.
+                self.handle(Input::FsChanged(vec![path]));
+            }
+            Err(e) => {
+                self.notice = Some(format!(
+                    "{name} theme for now; could not save settings: {e}"
+                ));
+            }
         }
     }
 
@@ -347,6 +524,9 @@ impl App {
         match self.view.save(allow_lossy) {
             Ok(n) => {
                 self.notice = Some(format!("Saved {name} ({})", human_size(n)));
+                if let Some(p) = self.view.path().map(Path::to_path_buf) {
+                    self.after_save(&p);
+                }
                 if let Some(p) = then {
                     self.perform(p);
                 }
@@ -376,6 +556,7 @@ impl App {
                 self.notice = Some(format!("Saved as {} ({})", path.display(), human_size(n)));
                 self.tree.invalidate(&[path.to_path_buf()]);
                 self.tree.reveal(path);
+                self.after_save(path);
             }
             Err(SaveError::Failed(e)) => {
                 self.nag = Some(Nag::error(format!(
@@ -453,6 +634,7 @@ impl App {
                 }
             }
             Outcome::Run(Action::Open(p)) => self.open(&p),
+            Outcome::Run(Action::ToggleTheme) => self.toggle_theme(),
             Outcome::Run(Action::RevealInExplorer) => {
                 if let Some(p) = self.view.path() {
                     self.requests
@@ -757,7 +939,11 @@ impl App {
         }
         let view: Box<dyn View> = match Document::open(path) {
             Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
-            Ok(doc) => Box::new(CodeView::new(doc)),
+            Ok(doc) => {
+                let mut v = CodeView::new(doc);
+                v.wrap = self.wrap_code;
+                Box::new(v)
+            }
             Err(e) => Box::new(MessageView::error(
                 "Error",
                 format!("Could not open {}: {e}", path.display()),
@@ -836,7 +1022,9 @@ impl App {
     }
 
     fn ui_line_height(&self) -> f32 {
-        let s = (theme::FONT_SIZE * self.scale * self.zoom).round().max(4.0);
+        let s = (theme::font_size() * self.scale * self.zoom)
+            .round()
+            .max(4.0);
         (s * theme::LINE_HEIGHT).round()
     }
 
@@ -1212,6 +1400,10 @@ impl App {
                     Key::Char('=') | Key::Char('+') => self.set_zoom(self.zoom * 1.1),
                     Key::Char('-') => self.set_zoom(self.zoom / 1.1),
                     Key::Char('0') => self.set_zoom(1.0),
+                    Key::Char(',') if !mods.shift => {
+                        self.open_settings();
+                        true
+                    }
                     _ => false,
                 };
                 if handled {

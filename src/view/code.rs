@@ -1355,6 +1355,11 @@ impl View for CodeView {
         self.char_w = None;
     }
 
+    fn theme_changed(&mut self) {
+        self.highlighter.retheme();
+        self.metrics_changed();
+    }
+
     fn is_dirty(&self) -> bool {
         self.doc.is_dirty()
     }

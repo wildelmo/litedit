@@ -8,6 +8,8 @@
 //! size 1280 800          # window size in physical pixels
 //! scale 1.5              # DPI scale
 //! open README.md         # open a file or folder
+//! theme light            # switch palette (headless runs start dark)
+//! settings path.txt      # use this settings file (as the window does)
 //! move 100 200           # mouse move
 //! click 100 200 [right|middle] [double]
 //! down 100 200 / up 100 200
@@ -61,6 +63,12 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
                 app.handle(Input::Scale(num(0)?.clamp(0.5, 4.0)));
             }
             "open" => app.open(&resolve_arg_path(rest)),
+            "theme" => match rest {
+                "light" => app.set_light(true),
+                "dark" => app.set_light(false),
+                _ => return Err(err("theme needs light or dark")),
+            },
+            "settings" => app.use_settings(resolve_arg_path(rest)),
             "drop" => {
                 app.handle(Input::Drop(resolve_arg_path(rest)));
             }

@@ -38,12 +38,12 @@ impl Ctx<'_> {
     }
 
     pub fn ui_metrics(&self) -> Metrics {
-        let s = self.font_px(theme::FONT_SIZE);
+        let s = self.font_px(theme::font_size());
         Metrics::new(s, (s * theme::LINE_HEIGHT).round())
     }
 
     pub fn code_metrics(&self) -> Metrics {
-        let s = self.font_px(theme::CODE_FONT_SIZE);
+        let s = self.font_px(theme::code_font_size());
         Metrics::new(s, (s * theme::LINE_HEIGHT).round())
     }
 

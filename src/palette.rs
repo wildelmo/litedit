@@ -10,7 +10,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::input::{Input, MouseButton};
 use crate::inputbar::{BarEvent, InputBar};
 use crate::theme;
-use crate::tree::{IGNORED, read_dir_sorted};
+use crate::tree::{is_ignored, read_dir_sorted};
 use crate::ui::{Ctx, FontKind};
 
 /// Quick open lists at most this many files.
@@ -23,6 +23,7 @@ pub enum Action {
     Keys(&'static str),
     Open(PathBuf),
     RevealInExplorer,
+    ToggleTheme,
 }
 
 #[derive(Clone, Debug)]
@@ -93,6 +94,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("View: Zoom In", "ctrl+plus"),
     ("View: Zoom Out", "ctrl+minus"),
     ("View: Reset Zoom", "ctrl+0"),
+    ("Preferences: Open Settings", "ctrl+,"),
     ("Tab: Next", "ctrl+tab"),
     ("Tab: Previous", "ctrl+shift+tab"),
 ];
@@ -144,11 +146,7 @@ pub fn index_files(root: &Path) -> Vec<PathBuf> {
                 return out;
             }
             if e.is_dir {
-                if !e.is_link
-                    && depth < 24
-                    && !IGNORED.iter().any(|i| i.eq_ignore_ascii_case(&e.name))
-                    && !is_cache_dir(&e.path)
-                {
+                if !e.is_link && depth < 24 && !is_ignored(&e.name) && !is_cache_dir(&e.path) {
                     stack.push((e.path, depth + 1));
                 }
             } else {
@@ -175,6 +173,11 @@ impl Palette {
                 action: Action::Keys(k),
             })
             .collect();
+        items.push(Item {
+            label: "View: Toggle Light / Dark Theme".into(),
+            detail: String::new(),
+            action: Action::ToggleTheme,
+        });
         if has_file {
             items.push(Item {
                 label: "File: Show in Explorer".into(),

@@ -11,7 +11,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Window, WindowId};
+use winit::window::{CursorIcon, Theme, Window, WindowId};
 
 use crate::app::App;
 use crate::canvas::Canvas;
@@ -43,6 +43,8 @@ struct Runner {
     mouse: (f32, f32),
     last_click: Option<(Instant, (f32, f32), u32)>,
     title: String,
+    /// Last theme given to the title bar.
+    light: Option<bool>,
     cursor: Cursor,
 }
 
@@ -88,6 +90,12 @@ impl Runner {
         self.watcher.set_targets(self.app.watch_targets());
         if self.app.take_session_dirty() {
             self.save_session();
+        }
+        // Title bar follows the palette (dark title bar on the dark theme).
+        let light = crate::theme::is_light();
+        if Some(light) != self.light {
+            window.set_theme(Some(if light { Theme::Light } else { Theme::Dark }));
+            self.light = Some(light);
         }
         let title = self.app.title();
         if title != self.title {
@@ -169,6 +177,11 @@ impl ApplicationHandler<UserEvent> for Runner {
         let attrs = Window::default_attributes()
             .with_window_icon(app_icon())
             .with_title(self.app.title())
+            .with_theme(Some(if crate::theme::is_light() {
+                Theme::Light
+            } else {
+                Theme::Dark
+            }))
             .with_inner_size(LogicalSize::new(1100.0, 750.0))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0));
         #[cfg(windows)]
@@ -353,6 +366,7 @@ pub fn run(app: App) {
         mouse: (0.0, 0.0),
         last_click: None,
         title: String::new(),
+        light: Some(crate::theme::is_light()),
         cursor: Cursor::Default,
     };
     event_loop.run_app(&mut runner).expect("event loop run");

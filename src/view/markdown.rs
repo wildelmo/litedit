@@ -902,6 +902,11 @@ impl View for MarkdownView {
         self.editor.metrics_changed();
     }
 
+    fn theme_changed(&mut self) {
+        self.layout = None;
+        self.editor.theme_changed();
+    }
+
     fn is_dirty(&self) -> bool {
         self.editor.is_dirty()
     }
@@ -966,7 +971,7 @@ impl MarkdownView {
             self.sync_preview();
             self.ensure_layout(rect.w.max(1), ctx);
         }
-        let lh = ctx.font_px(theme::MD_FONT_SIZE) * theme::MD_LINE_HEIGHT;
+        let lh = ctx.font_px(theme::md_font_size()) * theme::MD_LINE_HEIGHT;
         let before = self.scroll.y;
         match input {
             Input::Wheel { .. } => {

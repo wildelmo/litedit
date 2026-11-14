@@ -57,6 +57,11 @@ pub trait View {
     /// Called when metrics change (DPI scale or zoom).
     fn metrics_changed(&mut self) {}
 
+    /// Called after the palette changed: drop everything holding colours.
+    fn theme_changed(&mut self) {
+        self.metrics_changed();
+    }
+
     /// Unsaved edits?
     fn is_dirty(&self) -> bool {
         false

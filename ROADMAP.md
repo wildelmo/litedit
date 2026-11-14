@@ -130,8 +130,8 @@ asks for each dirty tab.
 
 ## Epic 4 — Polish
 
-- [ ] S4.1 Light theme + theme setting
-- [ ] S4.2 Settings file (fonts, sizes, ignore list)
+- [x] S4.1 Light theme + theme setting (palette command; title bar follows)
+- [x] S4.2 Settings file (theme, fonts, sizes, wrap, ignore list; D-024)
 - [-] S4.3 Smooth scrolling — dropped (D-023); dirty-rect redraw not needed (bench: frames well under 16 ms)
 - [x] S4.4 Large-file performance pass (litedit --bench; numbers in every Windows CI summary)
 - [x] S4.5 App icon + version info (file associations: not done, D-006)
@@ -145,6 +145,15 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S4.1 + S4.2 done: colours are a runtime Palette (refactor
+  committed alone; dark render hashes byte-identical). Light palette
+  (GitHub-like); "View: Toggle Light / Dark Theme" switches every tab and
+  rewrites only the `theme` line of settings.txt. `%APPDATA%\litedit\settings.txt`
+  (Ctrl+, opens it, created from a commented template): theme, three font
+  sizes, ui/code font, wrap_code, ignore list; saving it applies it; bad lines
+  reported in the status bar. Headless modes never read it (`--theme` and
+  script `theme` for light shots). Tests: switched render == fresh render
+  (incl. inactive tab, split view) and back to dark == baseline; mutation-checked.
 - 2026-11-14 — S4.5 done: app icon (assets/, cyan→pink rounded square with a page)
   embedded with version info via build.rs/winresource on Windows; window and
   taskbar icon set at runtime; CI checks icon + ProductName in the exe.

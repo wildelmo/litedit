@@ -146,18 +146,18 @@ impl LayoutCtx<'_> {
     }
 
     fn body(&self) -> Metrics {
-        let s = self.px(theme::MD_FONT_SIZE).max(4.0);
+        let s = self.px(theme::md_font_size()).max(4.0);
         Metrics::new(s, (s * theme::MD_LINE_HEIGHT).round())
     }
 
     fn code(&self) -> Metrics {
-        let s = self.px(theme::MD_CODE_SIZE).max(4.0);
+        let s = self.px(theme::md_code_size()).max(4.0);
         Metrics::new(s, (s * 1.45).round())
     }
 
     fn heading(&self, level: u8) -> Metrics {
         let f = [2.0, 1.55, 1.3, 1.12, 1.0, 0.92][(level.clamp(1, 6) - 1) as usize];
-        let s = self.px(theme::MD_FONT_SIZE * f).max(4.0);
+        let s = self.px(theme::md_font_size() * f).max(4.0);
         Metrics::new(s, (s * 1.3).round())
     }
 }

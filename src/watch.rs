@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::tree::IGNORED;
+use crate::tree::is_ignored;
 
 const BATCH_WINDOW: Duration = Duration::from_millis(150);
 
@@ -19,7 +19,7 @@ const BATCH_WINDOW: Duration = Duration::from_millis(150);
 pub fn interesting(p: &Path) -> bool {
     !p.components().any(|c| {
         let s = c.as_os_str().to_string_lossy();
-        IGNORED.iter().any(|i| i.eq_ignore_ascii_case(&s))
+        is_ignored(&s)
     })
 }
 

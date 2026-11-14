@@ -2,7 +2,7 @@
 //! (`data/colors/default.lua`); the light palette is GitHub-like. All pixel
 //! metrics are multiplied by the DPI scale.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::cell::Cell;
 
 use crate::canvas::Color;
 
@@ -102,7 +102,7 @@ pub const LIGHT: Palette = Palette {
     text: Color::hex(0x5f5f66),
     accent: Color::hex(0x1f1f24),
     dim: Color::hex(0xa4a4ab),
-    divider: Color::hex(0xdedee3),
+    divider: Color::hex(0xd0d0d8),
     line_number: Color::hex(0xc2c2c8),
     line_number2: Color::hex(0x707078),
     caret: Color::hex(0x1f6feb),
@@ -140,27 +140,63 @@ pub const LIGHT: Palette = Palette {
     md_caution: Color::hex(0xcf222e),
 };
 
-static LIGHT_MODE: AtomicBool = AtomicBool::new(false);
+/// Live appearance state. Thread-local: everything that draws runs on the
+/// UI thread (background threads only read files and decode images), and
+/// parallel tests each get their own state.
+struct Live {
+    light: Cell<bool>,
+    /// (ui, code, markdown) font sizes in points.
+    sizes: Cell<(f32, f32, f32)>,
+}
+
+thread_local! {
+    static LIVE: Live = const {
+        Live {
+            light: Cell::new(false),
+            sizes: Cell::new((FONT_SIZE, CODE_FONT_SIZE, MD_FONT_SIZE)),
+        }
+    };
+}
 
 /// The active palette.
 pub fn p() -> &'static Palette {
-    if LIGHT_MODE.load(Ordering::Relaxed) {
-        &LIGHT
-    } else {
-        &DARK
-    }
+    if is_light() { &LIGHT } else { &DARK }
 }
 
 pub fn is_light() -> bool {
-    LIGHT_MODE.load(Ordering::Relaxed)
+    LIVE.with(|l| l.light.get())
 }
 
 /// Switch palettes. Views must drop colour caches afterwards
 /// (`View::theme_changed`).
 pub fn set_light(light: bool) {
-    LIGHT_MODE.store(light, Ordering::Relaxed);
+    LIVE.with(|l| l.light.set(light));
 }
 
+/// Set (ui, code, markdown) font sizes. Views must drop layout caches
+/// afterwards (`View::metrics_changed`).
+pub fn set_sizes(ui: f32, code: f32, markdown: f32) {
+    LIVE.with(|l| l.sizes.set((ui, code, markdown)));
+}
+
+pub fn font_size() -> f32 {
+    LIVE.with(|l| l.sizes.get().0)
+}
+
+pub fn code_font_size() -> f32 {
+    LIVE.with(|l| l.sizes.get().1)
+}
+
+pub fn md_font_size() -> f32 {
+    LIVE.with(|l| l.sizes.get().2)
+}
+
+/// Code inside markdown keeps the default 14:16 ratio to body text.
+pub fn md_code_size() -> f32 {
+    md_font_size() * (MD_CODE_SIZE / MD_FONT_SIZE)
+}
+
+/// Default sizes (settings can change the font sizes at run time).
 pub const MD_FONT_SIZE: f32 = 16.0;
 pub const MD_LINE_HEIGHT: f32 = 1.55;
 pub const MD_CODE_SIZE: f32 = 14.0;

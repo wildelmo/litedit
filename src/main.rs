@@ -20,6 +20,7 @@ mod palette;
 mod platform;
 mod script;
 mod session;
+mod settings;
 mod syntax;
 mod text;
 mod theme;
@@ -47,6 +48,7 @@ struct Args {
     size: (u32, u32),
     scale: f32,
     stats: Option<PathBuf>,
+    light: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -58,6 +60,7 @@ fn parse_args() -> Result<Args, String> {
         size: (1280, 800),
         scale: 1.0,
         stats: None,
+        light: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -89,6 +92,11 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--scale out of range".into());
                 }
             }
+            "--theme" => match it.next().as_deref() {
+                Some("light") => a.light = true,
+                Some("dark") => a.light = false,
+                _ => return Err("--theme needs light or dark".into()),
+            },
             "--version" => {
                 println!("litedit {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -126,6 +134,15 @@ fn install_panic_hook() {
     }));
 }
 
+/// `--theme` wins; otherwise the window follows settings, headless is dark.
+fn app_light(args: &Args, user: &settings::Settings, window_mode: bool) -> bool {
+    if std::env::args().any(|a| a == "--theme") {
+        args.light
+    } else {
+        window_mode && user.light
+    }
+}
+
 fn main() {
     let started = Instant::now();
     install_panic_hook();
@@ -137,9 +154,21 @@ fn main() {
         }
     };
 
-    let fonts = Fonts::load();
+    // Only the window reads the user's settings; headless runs (screenshot,
+    // script, bench) use the defaults so their output is reproducible.
+    let window_mode = args.script.is_none() && args.screenshot.is_none() && args.bench.is_none();
+    let settings_path = window_mode.then(settings::settings_file).flatten();
+    let user = settings_path
+        .as_deref()
+        .map(|p| settings::Settings::load(p).0)
+        .unwrap_or_default();
+    let fonts = Fonts::load_with(user.ui_font.as_deref(), user.code_font.as_deref());
     let font_ms = fonts.load_ms;
     let mut app = App::new(fonts, args.scale);
+    if let Some(p) = settings_path {
+        app.use_settings(p);
+    }
+    app.set_light(app_light(&args, &user, window_mode));
     // Window mode: load the saved session first (recents, preferences; the
     // folder and tabs only when started without files), then open arguments.
     if let Some(out) = &args.bench {
@@ -149,7 +178,6 @@ fn main() {
         }
         return;
     }
-    let window_mode = args.script.is_none() && args.screenshot.is_none();
     if window_mode && let Some(f) = session::session_file() {
         app.start_with_session(session::Session::load(&f), args.paths.is_empty());
     }

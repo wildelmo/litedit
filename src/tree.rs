@@ -28,6 +28,24 @@ pub const IGNORED: &[&str] = &[
     "$RECYCLE.BIN",
     "System Volume Information",
 ];
+/// Extra names from the `ignore` setting (shared with the watcher thread).
+static EXTRA_IGNORED: std::sync::RwLock<Vec<String>> = std::sync::RwLock::new(Vec::new());
+
+/// Set the user's extra ignored names (setting `ignore`).
+pub fn set_extra_ignored(names: Vec<String>) {
+    if let Ok(mut v) = EXTRA_IGNORED.write() {
+        *v = names;
+    }
+}
+
+/// Hidden from the tree, quick open, find in folder and the watcher?
+pub fn is_ignored(name: &str) -> bool {
+    IGNORED.iter().any(|i| i.eq_ignore_ascii_case(name))
+        || EXTRA_IGNORED
+            .read()
+            .is_ok_and(|v| v.iter().any(|i| i.eq_ignore_ascii_case(name)))
+}
+
 /// At most this many entries are listed per directory.
 pub const MAX_ENTRIES: usize = 5000;
 
@@ -87,7 +105,7 @@ pub fn read_dir_sorted(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
     };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if IGNORED.iter().any(|i| i.eq_ignore_ascii_case(&name)) {
+        if is_ignored(&name) {
             continue;
         }
         let Ok(ft) = e.file_type() else { continue };
@@ -171,6 +189,12 @@ impl Tree {
         self.expanded.insert(dir.to_path_buf());
         self.selected = None;
         self.scroll = Scroll::default();
+        self.rows_dirty = true;
+    }
+
+    /// Re-read every directory (after the ignore list changed).
+    pub fn reload_all(&mut self) {
+        self.entries.clear();
         self.rows_dirty = true;
     }
 

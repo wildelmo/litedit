@@ -54,6 +54,7 @@ or drag a file or folder onto the window.
 | `Ctrl+Shift+H` | Show / hide hidden files in the tree |
 | Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
 | `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
+| `Ctrl+,` | Settings (theme, font sizes, fonts, wrap, ignored folders) |
 | Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |
 
 ## Build
@@ -65,7 +66,7 @@ cargo build --release
 Headless render (used for testing):
 
 ```
-litedit --screenshot out.png [--size 1280x800] [--scale 1.5] <file>
+litedit --screenshot out.png [--size 1280x800] [--scale 1.5] [--theme light] <file>
 ```
 
 ## License

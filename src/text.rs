@@ -83,6 +83,13 @@ pub struct Fonts {
 
 impl Fonts {
     pub fn load() -> Self {
+        Self::load_with(None, None)
+    }
+
+    /// Load fonts, preferring the families named in settings. The system
+    /// font folder is only scanned in full when a requested family is not
+    /// among the usual files (so startup stays fast for everyone else).
+    pub fn load_with(ui: Option<&str>, code: Option<&str>) -> Self {
         let start = Instant::now();
         let mut db = fontdb::Database::new();
 
@@ -101,12 +108,31 @@ impl Fonts {
                 }
             }
         }
-        if !loaded_any || db.len() == 0 {
+        let missing = [ui, code]
+            .into_iter()
+            .flatten()
+            .any(|f| has_family(&db, f).is_none());
+        if !loaded_any || db.len() == 0 || missing {
             db.load_system_fonts();
         }
 
-        let sans = pick_family(&db, SANS_PREFERENCE);
-        let mono = pick_family(&db, MONO_PREFERENCE);
+        let with = |first: Option<&str>, rest: &[&'static str]| -> Vec<String> {
+            first
+                .into_iter()
+                .map(str::to_string)
+                .chain(rest.iter().map(|s| s.to_string()))
+                .collect()
+        };
+        let sans_prefs = with(ui, SANS_PREFERENCE);
+        let mono_prefs = with(code, MONO_PREFERENCE);
+        let sans = pick_family(
+            &db,
+            &sans_prefs.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        let mono = pick_family(
+            &db,
+            &mono_prefs.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
         db.set_sans_serif_family(sans.clone());
         db.set_monospace_family(mono.clone());
 
@@ -199,15 +225,20 @@ impl cosmic_text::Renderer for RectRenderer<'_, '_> {
     fn glyph(&mut self, _g: cosmic_text::PhysicalGlyph, _c: cosmic_text::Color) {}
 }
 
+/// The database's own spelling of `want`, if any face has that family.
+fn has_family(db: &fontdb::Database, want: &str) -> Option<String> {
+    db.faces().find_map(|f| {
+        f.families
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(want))
+            .map(|(name, _)| name.clone())
+    })
+}
+
 fn pick_family(db: &fontdb::Database, prefs: &[&str]) -> String {
     for want in prefs {
-        let found = db.faces().any(|f| {
-            f.families
-                .iter()
-                .any(|(name, _)| name.eq_ignore_ascii_case(want))
-        });
-        if found {
-            return (*want).to_string();
+        if let Some(name) = has_family(db, want) {
+            return name;
         }
     }
     db.faces()

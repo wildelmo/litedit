@@ -11,6 +11,7 @@ use crate::canvas::Canvas;
 use crate::input::{Input, Key, Mods, Request, parse_key_combo};
 use crate::session::Session;
 use crate::text::Fonts;
+use crate::{settings, theme};
 
 pub fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1657,4 +1658,182 @@ fn print_scene_hashes() {
         out.push_str(&format!("{f} {:?}\n", render_hash(&mut app, 1000, 700)));
     }
     std::fs::write(std::env::var("HASH_OUT").unwrap(), out).unwrap();
+}
+
+/// Render after `steps`, settling first.
+fn settled_hash(app: &mut App) -> u64 {
+    app.settle(Duration::from_secs(5));
+    render_hash(app, 1000, 700)
+}
+
+#[test]
+fn theme_switch_matches_a_fresh_render_both_ways() {
+    // (files to open in order, keys afterwards)
+    let scenes: Vec<(Vec<&str>, Vec<&str>)> = vec![
+        (vec!["sample.rs"], vec![]),
+        (vec!["sample.md"], vec![]),
+        (vec!["sample.md"], vec!["ctrl+shift+v"]),
+        (vec!["sample.rs"], vec!["ctrl+f"]),
+        // Inactive tab, switched to after the theme change.
+        (vec!["sample.rs", "sample.md"], vec!["@switch", "ctrl+tab"]),
+        (vec!["sample.md", "sample.rs"], vec!["@switch", "ctrl+tab"]),
+    ];
+    for (files, keys) in scenes {
+        let run = |app: &mut App, switch_at_marker: bool| {
+            for f in &files {
+                app.open(&fixture(f));
+            }
+            for k in &keys {
+                if *k == "@switch" {
+                    if switch_at_marker {
+                        app.settle(Duration::from_secs(5));
+                        app.set_light(true);
+                    }
+                } else {
+                    key(app, k);
+                }
+            }
+        };
+        let has_marker = keys.contains(&"@switch");
+        // Dark, then switched to light (at the marker, or at the end).
+        theme::set_light(false);
+        let mut a = new_app();
+        run(&mut a, true);
+        let dark = (!has_marker).then(|| settled_hash(&mut a));
+        a.set_light(true);
+        let switched = settled_hash(&mut a);
+        // A fresh app that was light from the start.
+        let mut b = new_app();
+        run(&mut b, false);
+        let fresh = settled_hash(&mut b);
+        assert_eq!(
+            switched, fresh,
+            "{files:?} {keys:?}: switched vs fresh light"
+        );
+        if let Some(dark) = dark {
+            assert_ne!(dark, fresh, "{files:?}: light differs from dark");
+            a.set_light(false);
+            assert_eq!(settled_hash(&mut a), dark, "{files:?}: back to dark");
+        }
+    }
+    theme::set_light(false);
+}
+
+fn settings_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("litedit-settings-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+fn run_command(app: &mut App, label: &str) {
+    key(app, "ctrl+shift+p");
+    app.handle(Input::Text(label.into()));
+    key(app, "enter");
+}
+
+#[test]
+fn open_settings_creates_the_template_once_and_saving_applies_it() {
+    let dir = settings_dir("open");
+    let path = dir.join("sub").join("settings.txt");
+    let mut app = new_app();
+    app.use_settings(path.clone());
+    key(&mut app, "ctrl+,");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), settings::TEMPLATE);
+    assert!(app.title().contains("settings.txt"));
+    // Edit the theme line and save: applied immediately.
+    key(&mut app, "ctrl+f");
+    app.handle(Input::Text("theme = dark".into()));
+    key(&mut app, "escape");
+    app.handle(Input::Text("theme = light".into()));
+    assert!(!theme::is_light());
+    key(&mut app, "ctrl+s");
+    assert!(theme::is_light(), "saving the settings file applies it");
+    assert!(
+        app.status_text().contains("Settings applied"),
+        "{}",
+        app.status_text()
+    );
+    // Bad lines are reported, not fatal.
+    key(&mut app, "ctrl+end");
+    app.handle(Input::Text("\nbogus = 1\n".into()));
+    key(&mut app, "ctrl+s");
+    assert!(
+        app.status_text().contains("unknown setting 'bogus'"),
+        "{}",
+        app.status_text()
+    );
+    assert!(theme::is_light());
+    // Opening again never replaces an existing file.
+    let before = std::fs::read_to_string(&path).unwrap();
+    key(&mut app, "ctrl+w");
+    key(&mut app, "ctrl+,");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    // Font sizes apply to every tab.
+    std::fs::write(&path, "code_font_size = 30\n").unwrap();
+    app.use_settings(path.clone());
+    assert_eq!(theme::code_font_size(), 30.0);
+    assert!(!theme::is_light(), "missing theme line means dark");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn toggle_theme_rewrites_only_the_theme_line() {
+    let dir = settings_dir("toggle");
+    let path = dir.join("settings.txt");
+    std::fs::write(
+        &path,
+        "# mine\r\ncode_font_size = 15 # keep\r\ntheme = dark\r\n",
+    )
+    .unwrap();
+    let mut app = new_app();
+    app.use_settings(path.clone());
+    run_command(&mut app, "toggle light");
+    assert!(theme::is_light());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "# mine\r\ncode_font_size = 15 # keep\r\ntheme = light\r\n"
+    );
+    // Open (clean) in a tab: toggling reloads the tab with the new text.
+    key(&mut app, "ctrl+,");
+    run_command(&mut app, "toggle light");
+    assert!(!theme::is_light());
+    assert!(
+        app.status_text().contains("saved in settings"),
+        "{}",
+        app.status_text()
+    );
+    key(&mut app, "ctrl+a");
+    key(&mut app, "ctrl+c");
+    assert!(app.clipboard_text().unwrap().contains("theme = dark"));
+    // Dirty in a tab: the file is left alone, the theme still switches.
+    key(&mut app, "ctrl+end");
+    app.handle(Input::Text("# unsaved".into()));
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    run_command(&mut app, "toggle light");
+    assert!(theme::is_light());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), on_disk);
+    assert!(
+        app.status_text().contains("unsaved edits"),
+        "{}",
+        app.status_text()
+    );
+    // No file yet: the toggle creates one from the template.
+    let fresh = dir.join("new").join("settings.txt");
+    let mut app2 = new_app();
+    app2.use_settings(fresh.clone());
+    run_command(&mut app2, "toggle light");
+    let (s, problems) = settings::Settings::parse(&std::fs::read_to_string(&fresh).unwrap());
+    assert!(problems.is_empty());
+    assert_eq!(s.light, theme::is_light());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn headless_script_theme_command() {
+    let mut app = new_app();
+    app.open(&fixture("sample.rs"));
+    crate::script::run(&mut app, "theme light\nexpect title sample.rs\n").unwrap();
+    assert!(theme::is_light());
+    assert!(crate::script::run(&mut app, "theme purple\n").is_err());
 }

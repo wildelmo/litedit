@@ -22,6 +22,17 @@ library reports it. **Question:** if you use such a layout, check that @ and
 
 ## Decided — review when convenient
 
+### D-024 Settings are a small text file, applied when saved
+`%APPDATA%\litedit\settings.txt`, `key = value` lines (lite-xl uses a Lua
+user module; litedit runs no user code, so it is plain data). Ctrl+, or
+"Preferences: Open Settings" opens it, creating a commented template the
+first time. Saving it from litedit applies theme, font sizes, wrap default
+and ignore list at once; font *families* apply at next start (reloading fonts
+while running is not worth the complexity). Unknown keys or bad values are
+named in the status bar and the defaults are used — never an error dialog.
+The theme toggle command edits only the `theme` line, so comments and other
+settings are kept. Edits made in another program apply at next start.
+
 ### D-023 No smooth (animated) scrolling
 Animating scrolls means redrawing for many frames per wheel notch, which
 costs CPU for no functional gain; litedit jumps directly and stays idle.
@@ -102,7 +113,8 @@ kept behind one type so it can be swapped if S4.4 shows a need.
 
 ### D-007 Default theme is dark (lite-xl default palette)
 lite-xl's default dark palette is the blueprint and looks good. A light theme
-is planned in Epic 4 (S4.1). *Change if you prefer light by default.*
+exists (palette: "Toggle Light / Dark Theme", or `theme = light` in settings;
+D-024). *Say if you want light as the default.*
 
 ### D-006 No automatic file associations
 litedit will not register itself as the `.md` handler. Doing it silently is

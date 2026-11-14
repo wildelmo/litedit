@@ -64,3 +64,14 @@ key d
 expect request Quit
 open tests/fixtures/does-not-exist.txt
 shot out/error.png
+# Light theme: switched at run time (all tabs re-colour).
+theme light
+open tests/fixtures/sample.md
+shot out/light-markdown.png
+key ctrl+shift+v
+shot out/light-split.png
+open tests/fixtures/sample.rs
+key ctrl+f
+text fn
+shot out/light-code.png
+theme dark

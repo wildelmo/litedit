@@ -201,6 +201,12 @@ impl LineHighlighter {
         }
     }
 
+    /// Start over with the active palette's colours (theme switch): every
+    /// span, parse state and checkpoint is rebuilt.
+    pub fn retheme(&mut self) {
+        *self = Self::new(self.syntax);
+    }
+
     pub fn name(&self) -> &str {
         &self.syntax.name
     }
