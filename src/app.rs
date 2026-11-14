@@ -11,6 +11,7 @@ use crate::doc::Document;
 use crate::editor::doc::SaveError;
 use crate::input::parse_key_combo;
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
+use crate::menu::{Menu, MenuAction, MenuResult};
 use crate::nag::{Nag, NagAction, Pending};
 use crate::palette::{Action, Outcome, Palette, index_files};
 use crate::text::Fonts;
@@ -60,6 +61,10 @@ pub struct App {
     palette: Option<Palette>,
     /// Files under the tree root for quick open (rebuilt after changes).
     file_index: Option<(PathBuf, Vec<PathBuf>)>,
+    /// Right-click menu (tree).
+    menu: Option<Menu>,
+    /// What the open text prompt is for.
+    prompt_for: Option<MenuAction>,
     /// What to do after "save anyway" for a lossy file.
     after_lossy: Option<Pending>,
     /// One-shot message in the status bar (e.g. "Saved").
@@ -118,6 +123,8 @@ impl App {
             nag: None,
             palette: None,
             file_index: None,
+            menu: None,
+            prompt_for: None,
             after_lossy: None,
             notice: None,
             pending: false,
@@ -371,6 +378,22 @@ impl App {
                 self.view.reload_discarding(&mut ctx);
                 self.pending = true;
             }
+            NagAction::Recycle(path) => {
+                match crate::fsops::move_to_recycle_bin(&path) {
+                    Ok(()) => {
+                        self.close_clean_tabs_under(&path);
+                        self.notice =
+                            Some(format!("Moved {} to the Recycle Bin", display_name(&path)));
+                    }
+                    Err(e) => {
+                        self.nag = Some(Nag::error(format!(
+                            "Could not delete {}: {e}",
+                            display_name(&path)
+                        )))
+                    }
+                }
+                self.after_fs_change(&path);
+            }
             NagAction::KeepMine | NagAction::Dismiss => {}
         }
     }
@@ -402,12 +425,172 @@ impl App {
                         .push(Request::RevealInExplorer(p.to_path_buf()));
                 }
             }
+            Outcome::Text(t) => {
+                if let Some(kind) = self.prompt_for.take() {
+                    self.finish_prompt(kind, &t);
+                }
+            }
             Outcome::GoToLine(n) => {
                 self.view.goto_line(n);
                 self.focus = Focus::Main;
             }
         }
         self.pending = true;
+    }
+
+    /// Paths of tabs at or under `path`, with their dirty state.
+    fn tabs_under(&self, path: &Path) -> Vec<(u64, PathBuf, bool)> {
+        (0..self.tabs.len())
+            .filter_map(|i| {
+                let v = self.tab_view(i);
+                let p = v.path()?.to_path_buf();
+                p.starts_with(path)
+                    .then(|| (self.tabs[i].id, p, v.is_dirty()))
+            })
+            .collect()
+    }
+
+    fn close_clean_tabs_under(&mut self, path: &Path) {
+        for (id, _, dirty) in self.tabs_under(path) {
+            if !dirty {
+                self.remove_tab(id);
+            }
+        }
+    }
+
+    fn after_fs_change(&mut self, path: &Path) {
+        self.tree.invalidate(&[path.to_path_buf()]);
+        self.file_index = None;
+        self.pending = true;
+    }
+
+    /// Right-click on the tree: open a menu for that entry.
+    fn open_tree_menu(&mut self, x: f32, y: f32, tree_rect: Rect) {
+        let row = {
+            let ctx = ctx!(self);
+            self.tree.entry_at(tree_rect, y, &ctx)
+        };
+        let Some(root) = self.tree.root().map(Path::to_path_buf) else {
+            return;
+        };
+        let (path, is_dir, is_root) = match &row {
+            Some(r) => (r.entry.path.clone(), r.entry.is_dir, r.depth == 0),
+            None => (root.clone(), true, true),
+        };
+        let dir = if is_dir {
+            path.clone()
+        } else {
+            path.parent().map(Path::to_path_buf).unwrap_or(root)
+        };
+        let mut items = vec![
+            ("New file…", MenuAction::NewFile(dir.clone())),
+            ("New folder…", MenuAction::NewFolder(dir)),
+        ];
+        if !is_root {
+            items.push(("Rename…", MenuAction::Rename(path.clone())));
+            items.push(("Delete (to Recycle Bin)", MenuAction::Delete(path.clone())));
+        }
+        items.push(("Show in Explorer", MenuAction::Reveal(path.clone())));
+        items.push(("Copy path", MenuAction::CopyPath(path)));
+        self.menu = Some(Menu::new(x, y, items));
+    }
+
+    fn run_menu(&mut self, a: MenuAction) {
+        match &a {
+            MenuAction::NewFile(_) => {
+                self.palette = Some(Palette::text(
+                    "New file",
+                    "",
+                    "Name of the new file, then Enter",
+                ))
+            }
+            MenuAction::NewFolder(_) => {
+                self.palette = Some(Palette::text(
+                    "New folder",
+                    "",
+                    "Name of the new folder, then Enter",
+                ))
+            }
+            MenuAction::Rename(p) => {
+                if self.tabs_under(p).iter().any(|(_, _, dirty)| *dirty) {
+                    self.nag = Some(Nag::error(format!(
+                        "Save or close the open file(s) in {} before renaming.",
+                        display_name(p)
+                    )));
+                    return;
+                }
+                self.palette = Some(Palette::text(
+                    "Rename",
+                    &display_name(p),
+                    "New name, then Enter",
+                ));
+            }
+            MenuAction::Delete(p) => {
+                if self.tabs_under(p).iter().any(|(_, _, dirty)| *dirty) {
+                    self.nag = Some(Nag::error(format!(
+                        "Save or close the open file(s) in {} before deleting.",
+                        display_name(p)
+                    )));
+                    return;
+                }
+                self.nag = Some(Nag::new(
+                    format!("Move {} to the Recycle Bin?", display_name(p)),
+                    vec![
+                        ("Move to Recycle Bin", NagAction::Recycle(p.clone())),
+                        ("Cancel", NagAction::Dismiss),
+                    ],
+                    false,
+                ));
+                return;
+            }
+            MenuAction::Reveal(p) => {
+                self.requests.push(Request::RevealInExplorer(p.clone()));
+                return;
+            }
+            MenuAction::CopyPath(p) => {
+                self.clipboard.set(p.display().to_string());
+                self.notice = Some("Path copied".into());
+                return;
+            }
+        }
+        self.prompt_for = Some(a);
+    }
+
+    fn finish_prompt(&mut self, kind: MenuAction, text: &str) {
+        let result = match &kind {
+            MenuAction::NewFile(dir) => crate::fsops::create_file(dir, text).map(|p| {
+                self.after_fs_change(&p);
+                self.open(&p);
+                p
+            }),
+            MenuAction::NewFolder(dir) => crate::fsops::create_folder(dir, text).inspect(|p| {
+                self.after_fs_change(p);
+                self.tree.reveal(&p.join("x"));
+            }),
+            MenuAction::Rename(old) => {
+                let open: Vec<(u64, PathBuf)> = self
+                    .tabs_under(old)
+                    .into_iter()
+                    .map(|(id, p, _)| (id, p))
+                    .collect();
+                crate::fsops::rename(old, text).inspect(|new| {
+                    // Reopen clean tabs at their new paths.
+                    for (id, p) in &open {
+                        self.remove_tab(*id);
+                        let moved = new.join(p.strip_prefix(old).unwrap_or(Path::new("")));
+                        let target = if p == old { new.clone() } else { moved };
+                        self.open(&target);
+                    }
+                    self.after_fs_change(old);
+                    self.after_fs_change(new);
+                    self.tree.reveal(new);
+                })
+            }
+            _ => return,
+        };
+        if let Err(e) = result {
+            self.nag = Some(Nag::error(e));
+        }
     }
 
     #[cfg(test)]
@@ -637,6 +820,25 @@ impl App {
     fn handle_inner(&mut self, input: &Input) -> bool {
         if matches!(input, Input::Key { .. } | Input::MouseDown { .. }) {
             self.notice = None;
+        }
+        // Right-click menu.
+        if self.nag.is_none()
+            && self.palette.is_none()
+            && self.menu.is_some()
+            && matches!(
+                input,
+                Input::Key { .. } | Input::MouseDown { .. } | Input::MouseMove { .. }
+            )
+        {
+            match self.menu.as_mut().map(|m| m.handle(input)) {
+                Some(MenuResult::Run(a)) => {
+                    self.menu = None;
+                    self.run_menu(a);
+                }
+                Some(MenuResult::Close) => self.menu = None,
+                _ => {}
+            }
+            return true;
         }
         // The palette is modal (below the question bar).
         if self.nag.is_none()
@@ -938,6 +1140,20 @@ impl App {
         }
 
         let in_tree = layout.tree.is_some_and(|t| self.mouse.0 < t.right() as f32);
+        if let (
+            Input::MouseDown {
+                x,
+                y,
+                button: MouseButton::Right,
+                ..
+            },
+            Some(t),
+        ) = (input, layout.tree)
+            && *x < t.right() as f32
+        {
+            self.open_tree_menu(*x, *y, t);
+            return true;
+        }
         let target = match input {
             Input::MouseMove { .. }
             | Input::MouseDown { .. }
@@ -1114,6 +1330,11 @@ impl App {
             canvas.set_clip(layout.main);
             p.render(canvas, layout.main, &mut ctx);
         }
+        if let Some(m) = self.menu.as_mut() {
+            let all = canvas.bounds();
+            canvas.set_clip(all);
+            m.render(canvas, all, &mut ctx);
+        }
 
         // Status bar (lite-xl StatusView).
         canvas.set_clip(layout.status);
@@ -1162,6 +1383,12 @@ impl App {
         }
         canvas.set_clip(canvas.bounds());
     }
+}
+
+fn display_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.display().to_string())
 }
 
 fn human_size(n: usize) -> String {

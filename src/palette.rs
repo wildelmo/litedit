@@ -37,6 +37,8 @@ pub enum Mode {
     Commands,
     Files,
     GoToLine,
+    /// A free-text prompt (new file name, rename).
+    Text,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,6 +46,7 @@ pub enum Outcome {
     Close,
     Run(Action),
     GoToLine(usize),
+    Text(String),
 }
 
 pub struct Palette {
@@ -55,6 +58,7 @@ pub struct Palette {
     selected: usize,
     rows: Vec<Rect>,
     max_line: usize,
+    hint: String,
 }
 
 /// The command list: (label, shortcut).
@@ -197,6 +201,14 @@ impl Palette {
         Self::new(Mode::Files, "Open file", items, 0)
     }
 
+    /// Ask for a line of text (e.g. a file name), prefilled with `initial`.
+    pub fn text(label: &str, initial: &str, hint: &str) -> Self {
+        let mut p = Self::new(Mode::Text, label, Vec::new(), 0);
+        p.bar.set_text(initial);
+        p.hint = hint.to_string();
+        p
+    }
+
     pub fn goto_line(max_line: usize) -> Self {
         Self::new(Mode::GoToLine, "Go to line", Vec::new(), max_line)
     }
@@ -210,6 +222,7 @@ impl Palette {
             selected: 0,
             rows: Vec::new(),
             max_line,
+            hint: String::new(),
         };
         p.refilter();
         p
@@ -268,6 +281,7 @@ impl Palette {
                     let n: usize = self.bar.text().trim().parse().ok()?;
                     Some(Outcome::GoToLine(n.clamp(1, self.max_line.max(1))))
                 }
+                Mode::Text => Some(Outcome::Text(self.bar.text().to_string())),
                 _ => self
                     .shown
                     .get(self.selected)
@@ -289,6 +303,7 @@ impl Palette {
         let n = self.shown.len().min(MAX_ROWS);
         let hint = match self.mode {
             Mode::GoToLine => Some(format!("Line number (1–{})", self.max_line)),
+            Mode::Text => Some(self.hint.clone()),
             _ if self.shown.is_empty() => Some("No matches".to_string()),
             _ => None,
         };

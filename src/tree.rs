@@ -304,6 +304,12 @@ impl Tree {
         (i < self.rows().len()).then_some(i)
     }
 
+    /// The entry under window y, if any.
+    pub fn entry_at(&mut self, rect: Rect, y: f32, ctx: &Ctx) -> Option<Row> {
+        let i = self.row_at(rect, y, ctx)?;
+        self.rows().get(i).cloned()
+    }
+
     fn activate(&mut self, i: usize, ctx: &mut Ctx) {
         let Some(row) = self.rows().get(i).cloned() else {
             return;

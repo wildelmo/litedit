@@ -24,6 +24,8 @@ pub enum NagAction {
     ReloadFromDisk,
     KeepMine,
     SaveAnyway,
+    /// Move this path to the Recycle Bin.
+    Recycle(std::path::PathBuf),
     Dismiss,
 }
 

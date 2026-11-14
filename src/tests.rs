@@ -1156,3 +1156,70 @@ fn palette_quick_open_and_goto_line() {
     assert!(app.status_text().starts_with("Markdown side by side"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn tree_context_menu_new_rename_delete() {
+    let dir = std::env::temp_dir().join(format!("litedit-ctx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("a.md"), "# A\n").unwrap();
+    let mut app = new_app();
+    app.open(&dir);
+    render_hash(&mut app, 900, 600);
+    let rh = (15.0f32 * 1.4).round() + 6.0;
+    let row_y = |i: f32| 7.0 + rh * i + rh / 2.0;
+    let right_click = |app: &mut App, y: f32| {
+        app.handle(Input::MouseMove { x: 60.0, y });
+        app.handle(Input::MouseDown {
+            x: 60.0,
+            y,
+            button: crate::input::MouseButton::Right,
+            clicks: 1,
+        });
+    };
+    // New file via the menu (first item) and the name prompt.
+    right_click(&mut app, row_y(1.0)); // a.md
+    render_hash(&mut app, 900, 600);
+    press(&mut app, "down");
+    press(&mut app, "enter");
+    type_text(&mut app, "new note.md");
+    press(&mut app, "enter");
+    assert!(dir.join("new note.md").is_file());
+    assert!(app.title().starts_with("new note.md"), "{}", app.title());
+    // Invalid names are refused with a message.
+    right_click(&mut app, row_y(1.0));
+    press(&mut app, "down");
+    press(&mut app, "enter");
+    type_text(&mut app, "bad/name");
+    press(&mut app, "enter");
+    assert!(app.nag_message().unwrap().contains("cannot contain"));
+    press(&mut app, "enter");
+    // Rename a.md (row 1: a.md sorts before 'new note.md'); the open tab follows.
+    app.open(&dir.join("a.md"));
+    right_click(&mut app, row_y(1.0));
+    for _ in 0..3 {
+        press(&mut app, "down");
+    }
+    press(&mut app, "enter");
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "b.md");
+    press(&mut app, "enter");
+    assert!(dir.join("b.md").is_file() && !dir.join("a.md").exists());
+    assert!(app.title().starts_with("b.md"), "{}", app.title());
+    // Delete asks first; on non-Windows the Recycle Bin is unavailable, so
+    // nothing is deleted and an error is shown.
+    right_click(&mut app, row_y(1.0));
+    for _ in 0..4 {
+        press(&mut app, "down");
+    }
+    press(&mut app, "enter");
+    assert!(app.nag_message().unwrap().contains("Recycle Bin"));
+    press(&mut app, "enter");
+    if cfg!(windows) {
+        assert!(!dir.join("b.md").exists());
+    } else {
+        assert!(dir.join("b.md").exists());
+        assert!(app.nag_message().unwrap().contains("Could not delete"));
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

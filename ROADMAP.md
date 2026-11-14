@@ -121,7 +121,7 @@ asks for each dirty tab.
        re-parse, scroll follows the caret
 - [x] S3.4 Command palette (Ctrl+Shift+P), quick open file (Ctrl+P, fuzzy),
        go to line (Ctrl+G)
-- [ ] S3.5 Tree actions (right-click menu): new file, new folder, rename,
+- [x] S3.5 Tree actions (right-click menu): new file, new folder, rename,
        delete → Recycle Bin, Show in Explorer
 - [ ] S3.6 Find in folder (Ctrl+Shift+F): background search, results list,
        click opens at line
@@ -145,6 +145,10 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.5 done: tree right-click menu (new file / folder, rename, delete
+  to Recycle Bin with Windows' own warning when it would be permanent, Show in
+  Explorer, copy path); names validated as one Windows-legal component; never
+  overwrites; dirty open files block rename/delete; clean tabs follow renames.
 - 2026-11-14 — S3.4 done: command palette (Ctrl+Shift+P; commands replay their
   shortcuts), quick open (Ctrl+P, lite-xl fuzzy match, tree rules + CACHEDIR.TAG
   skip, 20k cap, rebuilt after changes), go to line (Ctrl+G). Windows CI (find/

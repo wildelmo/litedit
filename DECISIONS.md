@@ -22,6 +22,12 @@ library reports it. **Question:** if you use such a layout, check that @ and
 
 ## Decided — review when convenient
 
+### D-020 Delete from the tree goes to the Recycle Bin, with Windows' warning
+litedit asks "Move X to the Recycle Bin?" first. Where Windows can't recycle
+(network drives, very large items), Windows itself shows its "delete
+permanently?" warning rather than litedit silently destroying the file.
+Files with unsaved edits must be saved or closed before rename/delete.
+
 ### D-017 Saving a file another program holds open
 Saves normally write a temporary copy and swap it in (so a crash mid-save
 can't leave a half-written file). If another program holds the file open in
