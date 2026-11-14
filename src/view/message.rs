@@ -27,6 +27,19 @@ impl MessageView {
         }
     }
 
+    pub fn folder_opened() -> Self {
+        Self {
+            title: String::new(),
+            lines: vec![
+                "Folder opened".into(),
+                String::new(),
+                "Pick a file in the tree on the left".into(),
+                "Ctrl+\\  show / hide the tree    Ctrl+Shift+E  focus the tree".into(),
+            ],
+            color: theme::TEXT,
+        }
+    }
+
     pub fn error(title: &str, msg: String) -> Self {
         Self {
             title: title.to_string(),

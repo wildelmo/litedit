@@ -98,6 +98,7 @@ fn long_lines_scroll_horizontally() {
     let mut app = new_app();
     app.open(&path);
     let a = render_hash(&mut app, 800, 600);
+    app.handle(Input::MouseMove { x: 600.0, y: 300.0 }); // over the main view, not the tree
     assert!(app.handle(Input::Wheel {
         dx: 5.0,
         dy: 0.0,
@@ -299,4 +300,75 @@ fn every_prefix_of_sample_markdown_renders() {
         render_hash(&mut app, 300, 200);
     }
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn folder_tree_click_opens_files_and_keyboard_navigates() {
+    let dir = std::env::temp_dir().join(format!("litedit-treeapp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("notes")).unwrap();
+    std::fs::write(dir.join("notes/todo.md"), "# Todo\n\n- [ ] thing\n").unwrap();
+    std::fs::write(dir.join("readme.txt"), "hello\n").unwrap();
+    let mut app = new_app();
+    app.open(&dir);
+    assert_eq!(app.focus(), crate::app::Focus::Tree);
+    render_hash(&mut app, 800, 600);
+    // Rows: [root, notes/, readme.txt]. Keyboard: down to notes, expand, down to todo.md, open.
+    for k in ["down", "right", "down", "enter"] {
+        key(&mut app, k);
+    }
+    assert!(app.title().starts_with("todo.md"), "got {}", app.title());
+    assert_eq!(app.focus(), crate::app::Focus::Main);
+    assert!(app.status_text().contains("Markdown preview"));
+    // Ctrl+\ hides the tree; the main view gets the full width.
+    let with_tree = render_hash(&mut app, 800, 600);
+    key(&mut app, "ctrl+\\");
+    assert_ne!(with_tree, render_hash(&mut app, 800, 600));
+    key(&mut app, "ctrl+\\");
+    // Mouse: click the readme row (third row) in the tree.
+    let rh = (15.0f32 * 1.4).round() + 6.0;
+    let y = 7.0 + rh * 2.0 + rh / 2.0;
+    app.handle(Input::MouseMove { x: 60.0, y });
+    app.handle(Input::MouseDown {
+        x: 60.0,
+        y,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    // todo.md is expanded under notes, so row 3 is todo.md, row 4 readme.
+    let y4 = 7.0 + rh * 3.0 + rh / 2.0;
+    app.handle(Input::MouseDown {
+        x: 60.0,
+        y: y4,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    assert!(app.title().starts_with("readme.txt"), "got {}", app.title());
+    // External change: a new file appears in the tree.
+    std::fs::write(dir.join("new.md"), "x").unwrap();
+    assert!(app.handle(Input::FsChanged(vec![dir.join("new.md")])));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn dragging_the_divider_resizes_the_tree() {
+    let mut app = new_app();
+    app.open(&fixture("sample.rs")); // opens the fixtures folder in the tree
+    let before = render_hash(&mut app, 800, 600);
+    let x0 = 260.0;
+    app.handle(Input::MouseMove { x: x0, y: 200.0 });
+    assert_eq!(app.cursor(), crate::input::Cursor::ResizeHorizontal);
+    app.handle(Input::MouseDown {
+        x: x0,
+        y: 200.0,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseMove { x: 380.0, y: 200.0 });
+    app.handle(Input::MouseUp {
+        x: 380.0,
+        y: 200.0,
+        button: crate::input::MouseButton::Left,
+    });
+    assert_ne!(before, render_hash(&mut app, 800, 600));
 }

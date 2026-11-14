@@ -13,8 +13,10 @@ mod script;
 mod syntax;
 mod text;
 mod theme;
+mod tree;
 mod ui;
 mod view;
+mod watch;
 mod window;
 
 #[cfg(test)]

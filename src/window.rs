@@ -9,13 +9,14 @@ use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::app::App;
 use crate::canvas::Canvas;
 use crate::input::{Cursor, Input, Key, Mods, MouseButton, Request, WheelUnit};
+use crate::watch::FsWatcher;
 
 /// Events sent to the UI thread from other threads (file watcher, etc.).
 #[derive(Debug)]
@@ -37,8 +38,7 @@ struct Gfx {
 struct Runner {
     app: App,
     gfx: Option<Gfx>,
-    #[allow(dead_code)]
-    proxy: EventLoopProxy<UserEvent>,
+    watcher: FsWatcher,
     mods: ModifiersState,
     mouse: (f32, f32),
     last_click: Option<(Instant, (f32, f32), u32)>,
@@ -47,12 +47,13 @@ struct Runner {
 }
 
 impl Runner {
-    fn after_input(&mut self, event_loop: &ActiveEventLoop, redraw: bool) {
-        let Some(gfx) = self.gfx.as_ref() else { return };
+    fn after_input(&mut self, event_loop: &ActiveEventLoop, mut redraw: bool) {
+        let Some(window) = self.gfx.as_ref().map(|g| g.window.clone()) else {
+            return;
+        };
         for req in self.app.take_requests() {
             match req {
                 Request::Quit => event_loop.exit(),
-                // Implemented in later stories (dialogs: S1.11, links: S1.7).
                 // Handled inside the app; never reaches the window.
                 Request::OpenPath(_) => {}
                 Request::OpenUrl(url) => {
@@ -61,18 +62,29 @@ impl Runner {
                 Request::RevealInExplorer(p) => {
                     let _ = crate::platform::reveal_in_explorer(&p);
                 }
-                // Dialogs arrive in S1.11.
-                Request::OpenFileDialog | Request::OpenFolderDialog => {}
+                Request::OpenFileDialog => {
+                    if let Some(p) = pick(&window, false) {
+                        self.app.open(&p);
+                        redraw = true;
+                    }
+                }
+                Request::OpenFolderDialog => {
+                    if let Some(p) = pick(&window, true) {
+                        self.app.open(&p);
+                        redraw = true;
+                    }
+                }
             }
         }
+        self.watcher.set_targets(self.app.watch_targets());
         let title = self.app.title();
         if title != self.title {
-            gfx.window.set_title(&title);
+            window.set_title(&title);
             self.title = title;
         }
         let cursor = self.app.cursor();
         if cursor != self.cursor {
-            gfx.window.set_cursor(match cursor {
+            window.set_cursor(match cursor {
                 Cursor::Default => CursorIcon::Default,
                 Cursor::Pointer => CursorIcon::Pointer,
                 Cursor::Text => CursorIcon::Text,
@@ -81,7 +93,7 @@ impl Runner {
             self.cursor = cursor;
         }
         if redraw {
-            gfx.window.request_redraw();
+            window.request_redraw();
         }
     }
 
@@ -152,6 +164,7 @@ impl ApplicationHandler<UserEvent> for Runner {
         self.app.handle(Input::Resize(size.width, size.height));
         window.request_redraw();
         self.gfx = Some(Gfx { window, surface });
+        self.watcher.set_targets(self.app.watch_targets());
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
@@ -301,10 +314,12 @@ pub fn run(app: App) {
         .expect("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let proxy = event_loop.create_proxy();
+    let watcher =
+        FsWatcher::new(move |paths| proxy.send_event(UserEvent::FsChanged(paths)).is_ok());
     let mut runner = Runner {
         app,
         gfx: None,
-        proxy,
+        watcher,
         mods: ModifiersState::empty(),
         mouse: (0.0, 0.0),
         last_click: None,
@@ -312,4 +327,34 @@ pub fn run(app: App) {
         cursor: Cursor::Default,
     };
     event_loop.run_app(&mut runner).expect("event loop run");
+}
+
+/// Native open dialog (Windows). Blocks while the modal dialog is shown.
+#[cfg(windows)]
+fn pick(window: &Window, folder: bool) -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new().set_parent(window);
+    if let Ok(dir) = std::env::current_dir() {
+        d = d.set_directory(dir);
+    }
+    if folder {
+        d.set_title("Open folder").pick_folder()
+    } else {
+        d.set_title("Open file")
+            .add_filter("Markdown", &["md", "markdown", "mdown", "mkd"])
+            .add_filter(
+                "Text and code",
+                &[
+                    "txt", "rs", "py", "js", "ts", "json", "toml", "yaml", "yml", "c", "h", "cpp",
+                    "cs", "go", "java", "html", "css", "xml", "ps1", "bat", "sh", "ini", "log",
+                    "csv",
+                ],
+            )
+            .add_filter("All files", &["*"])
+            .pick_file()
+    }
+}
+
+#[cfg(not(windows))]
+fn pick(_window: &Window, _folder: bool) -> Option<PathBuf> {
+    None
 }

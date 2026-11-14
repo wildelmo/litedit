@@ -14,6 +14,7 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-fa
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+notify = "8"
 
 [profile.release]
 opt-level = 3
@@ -28,3 +29,4 @@ opt-level = 2
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+rfd = { version = "0.18", default-features = false }

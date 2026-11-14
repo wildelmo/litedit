@@ -10,6 +10,12 @@ _None yet._
 
 ## Decided — review when convenient
 
+### D-012 Opening a single file shows its folder in the tree
+When you open a file and no folder is open yet (double-click a .md in
+Explorer, drag a file in), the tree shows that file's folder with the file
+selected — handy for notes folders. Open a different folder any time with
+Ctrl+Shift+O. *Change if you prefer the tree to stay closed.*
+
 ### D-011 Preview size limits
 For speed and safety the preview shows at most 3000 lines per code block,
 30k characters per paragraph and 2000 rows × 64 columns per table, with a

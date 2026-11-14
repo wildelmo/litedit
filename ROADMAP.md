@@ -57,11 +57,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 - [x] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
        lazy highlighting, scrolling
 - [x] S1.9 Theme: lite-xl default dark palette for UI + syntax
-- [ ] S1.10 File tree: open folder, lazy expand/collapse, icons, ignore list,
+- [x] S1.10 File tree: open folder, lazy expand/collapse, icons, ignore list,
         hidden toggle, keyboard nav, resize, highlight current file, Ctrl+\
-- [ ] S1.11 Open file / folder: CLI arg, Ctrl+O, Ctrl+Shift+O, drag-drop
-- [ ] S1.12 File watching (notify): tree refresh, reload open file
-- [ ] S1.13 Status bar; zoom (Ctrl +/-); DPI awareness
+- [x] S1.11 Open file / folder: CLI arg, Ctrl+O, Ctrl+Shift+O, drag-drop
+- [x] S1.12 File watching (notify): tree refresh, reload open file
+- [x] S1.13 Status bar; zoom (Ctrl +/-); DPI awareness
 
 ## Epic 2 — Editor
 
@@ -99,6 +99,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Epic 1 complete. S1.10–S1.13: file tree (lazy, sorted, ignore
+  list, hidden toggle Ctrl+Shift+H, symlinks never expanded, keyboard nav,
+  draggable divider, Ctrl+\ / Ctrl+Shift+E), native open dialogs (rfd, Windows
+  only), folder watching (notify, reads filtered, 150 ms batches), status bar
+  + zoom. Windows (prev. commit): 5.9 MB exe, 23.6 MB working set, 8.5 MB private.
 - 2026-11-14 — S1.6/S1.7/S1.14 done: local images (background decode, size and
   allocation limits, downscaled storage); links open via ShellExecuteW only
   after re-validation; hostile-file test found a cosmic-text assertion crash

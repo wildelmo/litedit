@@ -9,21 +9,34 @@ An ultralight, memory-safe text editor for Windows, written in Rust.
 
 Designed after [lite-xl](https://github.com/lite-xl/lite-xl) — see `NOTICE`.
 
-> **Status:** early. The current build is a thin slice: it opens one file and
-> displays it with line numbers. See [ROADMAP.md](ROADMAP.md) for the plan.
+> **Status:** Epic 1 (viewer) is complete: markdown preview, syntax-coloured
+> code view, file tree, images, live reload. Editing arrives in Epic 2.
+> See [ROADMAP.md](ROADMAP.md) and [DECISIONS.md](DECISIONS.md).
 
 ## Try it
 
 Download `litedit.exe` from the latest successful
 [windows workflow run](../../actions/workflows/windows.yml) (artifact
-`litedit-windows`), then:
+`litedit-windows`). Then open a file or folder:
 
 ```
-litedit.exe path\to\file.md
+litedit.exe notes\todo.md
+litedit.exe C:\path\to\folder
 ```
 
-or drag a file onto the window. Scroll with the mouse wheel, PageUp/PageDown,
-arrows, Home/End.
+or drag a file or folder onto the window.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| `Ctrl+O` / `Ctrl+Shift+O` | Open file / open folder |
+| `Ctrl+E` | Markdown: switch preview ↔ source |
+| `Ctrl+\` | Show / hide the file tree |
+| `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
+| `Ctrl+Shift+H` | Show / hide hidden files in the tree |
+| `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
+| Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |
 
 ## Build
 
