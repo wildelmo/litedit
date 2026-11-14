@@ -29,10 +29,12 @@ the exe, command line) opens just that file. Stored in
 `%APPDATA%\litedit\session.txt`; delete it to start fresh.
 
 ### D-020 Delete from the tree goes to the Recycle Bin, with Windows' warning
-litedit asks "Move X to the Recycle Bin?" first. Where Windows can't recycle
-(network drives, very large items), Windows itself shows its "delete
-permanently?" warning rather than litedit silently destroying the file.
-Files with unsaved edits must be saved or closed before rename/delete.
+litedit asks "Move X to the Recycle Bin?" first. Windows CI verifies the item
+really lands in the Recycle Bin (item count goes up). Where Windows can't
+recycle (network drives, very large items), litedit passes the flag that
+makes Windows show its own "delete permanently?" warning — that case can't
+be reproduced on CI, so it rests on Windows' documented behaviour. Files
+with unsaved edits must be saved or closed before rename/delete.
 
 ### D-017 Saving a file another program holds open
 Saves normally write a temporary copy and swap it in (so a crash mid-save

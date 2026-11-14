@@ -207,6 +207,8 @@ pub struct CodeView {
     find_note: Option<String>,
     /// Center this line on the next render (go to line).
     goto_center: Option<usize>,
+    /// Match count text keyed by (version, pattern, case, regex).
+    find_count: Option<((u64, String, bool, bool), String)>,
 }
 
 impl CodeView {
@@ -235,6 +237,7 @@ impl CodeView {
             find_origin: Pos::default(),
             find_note: None,
             goto_center: None,
+            find_count: None,
         }
     }
 
@@ -800,16 +803,26 @@ impl CodeView {
         canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::DIVIDER);
         let focused = self.find_focus && ctx.focused;
         let buf = &self.doc.buf;
+        let version = self.doc.version();
         let Some(f) = self.find.as_mut() else { return };
-        // Info on the right: count / error, then toggles.
-        let info = match f.error() {
-            Some(e) => e,
-            None if f.pattern().is_empty() => String::new(),
-            None => match f.count(buf) {
-                (0, _) => "no matches".into(),
-                (n, false) => format!("{n} {}", if n == 1 { "match" } else { "matches" }),
-                (n, true) => format!("{n}+ matches"),
-            },
+        // Info on the right: count / error (cached: counting scans the whole
+        // document), then toggles.
+        let key = (version, f.pattern().to_string(), f.case_sensitive, f.regex);
+        let info = match &self.find_count {
+            Some((k, v)) if *k == key => v.clone(),
+            _ => {
+                let v = match f.error() {
+                    Some(e) => e,
+                    None if f.pattern().is_empty() => String::new(),
+                    None => match f.count(buf) {
+                        (0, _) => "no matches".into(),
+                        (n, false) => format!("{n} {}", if n == 1 { "match" } else { "matches" }),
+                        (n, true) => format!("{n}+ matches"),
+                    },
+                };
+                self.find_count = Some((key, v.clone()));
+                v
+            }
         };
         let info = match &self.find_note {
             Some(n) => format!("{n} · {info}"),

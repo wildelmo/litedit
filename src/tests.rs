@@ -1288,3 +1288,211 @@ fn session_round_trip_and_recent() {
     assert!(app2.title().starts_with("two.txt"));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn starting_with_a_file_does_not_overwrite_the_saved_workspace() {
+    let dir = std::env::temp_dir().join(format!("litedit-own-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["a.md", "b.md", "other.txt"] {
+        std::fs::write(dir.join(f), f).unwrap();
+    }
+    let saved = Session {
+        root: Some(dir.clone()),
+        tabs: vec![dir.join("a.md"), dir.join("b.md")],
+        active: 1,
+        recent: vec![dir.join("a.md")],
+        ..Session::default()
+    };
+    // Like double-clicking other.txt in Explorer: litedit other.txt
+    let mut app = new_app();
+    app.start_with_session(saved.clone(), false);
+    app.open(&dir.join("other.txt"));
+    let s = app.session();
+    assert_eq!(s.root, saved.root, "folder kept");
+    assert_eq!(s.tabs, saved.tabs, "tabs kept");
+    assert_eq!(s.active, 1);
+    assert_eq!(s.recent[0], dir.join("other.txt"), "recents still updated");
+    assert!(s.recent.contains(&dir.join("a.md")));
+    // Started without files: the workspace is restored and owned.
+    let mut app2 = new_app();
+    app2.start_with_session(saved, true);
+    assert_eq!(app2.tab_count(), 2);
+    app2.open(&dir.join("other.txt"));
+    assert_eq!(app2.session().tabs.len(), 3);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn cancelling_a_quit_midway_keeps_every_edit() {
+    let a = temp_file("qa.txt", "a");
+    let b = a.parent().unwrap().join("qb.txt");
+    std::fs::write(&b, "b").unwrap();
+    let mut app = new_app();
+    app.open(&a);
+    type_text(&mut app, "1");
+    app.open(&b);
+    type_text(&mut app, "2");
+    app.handle(Input::CloseRequested);
+    press(&mut app, "d"); // Don't save the first…
+    assert!(app.nag_message().is_some(), "asks about the second");
+    press(&mut app, "escape"); // …then Cancel
+    assert_eq!(app.tab_count(), 2, "nothing was dropped");
+    assert!(!app.take_requests().contains(&Request::Quit));
+    // Both tabs are still dirty: quitting again asks about both again.
+    app.handle(Input::CloseRequested);
+    press(&mut app, "d");
+    press(&mut app, "d");
+    assert!(app.take_requests().contains(&Request::Quit));
+    assert_eq!(std::fs::read_to_string(&a).unwrap(), "a");
+    std::fs::remove_dir_all(a.parent().unwrap()).ok();
+}
+
+/// Whole-app fuzz covering Epic 3: find/replace, split preview, palette,
+/// quick open, go to line, tabs, prompts answered at random, tree
+/// right-clicks, close requests and resizes down to 1x1. Invariant: never
+/// panic, carets stay on char boundaries, every frame renders.
+#[test]
+fn fuzz_whole_app_with_epic3_features() {
+    let keys = [
+        "ctrl+f",
+        "ctrl+h",
+        "enter",
+        "shift+enter",
+        "f3",
+        "shift+f3",
+        "escape",
+        "ctrl+enter",
+        "alt+c",
+        "alt+r",
+        "ctrl+shift+v",
+        "ctrl+e",
+        "ctrl+p",
+        "ctrl+shift+p",
+        "ctrl+g",
+        "ctrl+r",
+        "ctrl+tab",
+        "ctrl+shift+tab",
+        "ctrl+w",
+        "tab",
+        "down",
+        "up",
+        "left",
+        "right",
+        "ctrl+z",
+        "ctrl+y",
+        "ctrl+s",
+        "backspace",
+        "ctrl+a",
+        "ctrl+shift+f",
+        "ctrl+\\",
+        "ctrl+shift+e",
+        "ctrl+plus",
+        "ctrl+minus",
+        "alt+2",
+        "d",
+        "c",
+        "s",
+        "r",
+        "k",
+        "pagedown",
+        "ctrl+end",
+        "home",
+    ];
+    let pieces = ["a", "b", "line", "#", "(", "*", "1", "é", "\t", " ", "md"];
+    for seed in 0..6u64 {
+        let dir = std::env::temp_dir().join(format!("litedit-fz3-{seed}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(
+            dir.join("notes.md"),
+            "# Notes\n\n- one\n- two **bold**\n\n```rust\nfn x() {}\n```\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("code.rs"),
+            "fn main() {\n    let a = 1; // line\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("sub/plain.txt"), "line one\nline two\n").unwrap();
+        let mut app = new_app();
+        app.open(&dir);
+        app.open(&dir.join("notes.md"));
+        app.open(&dir.join("code.rs"));
+        let mut x = seed.wrapping_mul(0xA24BAED4963EE407) | 1;
+        let mut rnd = |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n as u64) as usize
+        };
+        let mut size = (900u32, 600u32);
+        for _ in 0..300 {
+            match rnd(14) {
+                0..=4 => {
+                    key(&mut app, keys[rnd(keys.len())]);
+                }
+                5..=7 => {
+                    app.handle(Input::Text(pieces[rnd(pieces.len())].to_string()));
+                }
+                8 | 9 => {
+                    let (cx, cy) = (rnd(size.0 as usize) as f32, rnd(size.1 as usize) as f32);
+                    let button = match rnd(4) {
+                        0 => crate::input::MouseButton::Right,
+                        1 => crate::input::MouseButton::Middle,
+                        _ => crate::input::MouseButton::Left,
+                    };
+                    app.handle(Input::MouseMove { x: cx, y: cy });
+                    app.handle(Input::MouseDown {
+                        x: cx,
+                        y: cy,
+                        button,
+                        clicks: 1 + rnd(2) as u32,
+                    });
+                    app.handle(Input::MouseUp {
+                        x: cx,
+                        y: cy,
+                        button,
+                    });
+                }
+                10 => {
+                    app.handle(Input::Wheel {
+                        dx: 0.0,
+                        dy: rnd(9) as f32 - 4.0,
+                        unit: crate::input::WheelUnit::Lines,
+                    });
+                }
+                11 => {
+                    size = [(1, 1), (40, 30), (320, 200), (900, 600), (1400, 500)][rnd(5)];
+                    app.handle(Input::Resize(size.0, size.1));
+                }
+                12 => {
+                    app.handle(Input::CloseRequested);
+                }
+                _ => {
+                    app.handle(Input::FsChanged(vec![
+                        dir.join("code.rs"),
+                        dir.join("notes.md"),
+                    ]));
+                }
+            }
+            app.take_requests();
+            app.settle(Duration::from_millis(200));
+            render_hash(&mut app, size.0, size.1);
+            if let Some((text, pts)) = app.snapshot() {
+                let chunk = crate::editor::buffer::Chunk::parse(&text);
+                for p in pts {
+                    assert!(
+                        p.line < chunk.lines.len(),
+                        "seed {seed}: caret line out of range"
+                    );
+                    assert!(
+                        chunk.lines[p.line].is_char_boundary(p.col),
+                        "seed {seed}: caret inside a char"
+                    );
+                }
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

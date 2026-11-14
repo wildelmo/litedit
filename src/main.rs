@@ -136,6 +136,12 @@ fn main() {
     let fonts = Fonts::load();
     let font_ms = fonts.load_ms;
     let mut app = App::new(fonts, args.scale);
+    // Window mode: load the saved session first (recents, preferences; the
+    // folder and tabs only when started without files), then open arguments.
+    let window_mode = args.script.is_none() && args.screenshot.is_none();
+    if window_mode && let Some(f) = session::session_file() {
+        app.start_with_session(session::Session::load(&f), args.paths.is_empty());
+    }
     // Each path opens in its own tab (a folder goes to the tree).
     for p in &args.paths {
         app.open(&app::resolve_arg_path(p));
@@ -178,11 +184,5 @@ fn main() {
         return;
     }
 
-    // Started without files: pick up where the last session left off.
-    if args.paths.is_empty()
-        && let Some(f) = session::session_file()
-    {
-        app.restore(session::Session::load(&f));
-    }
     window::run(app);
 }

@@ -50,24 +50,52 @@ pub struct SearchView {
     last_rect: Rect,
 }
 
-/// Search one file's text: case-insensitive, literal, per line.
-pub fn search_text(path: &Path, text: &str, needle_lower: &str, out: &mut Vec<Hit>) {
+/// Lines longer than this are not searched (minified files).
+const MAX_LINE_BYTES: usize = 100_000;
+
+/// Lower-case `line` in one pass, remembering for each lower-case byte
+/// offset where it came from in the original (so offsets map back in O(log n)).
+fn lower_with_map(line: &str) -> (String, Vec<(usize, usize)>) {
+    let mut lower = String::with_capacity(line.len());
+    let mut map = Vec::with_capacity(line.len() + 1);
+    for (b, c) in line.char_indices() {
+        map.push((lower.len(), b));
+        lower.extend(c.to_lowercase());
+    }
+    map.push((lower.len(), line.len()));
+    (lower, map)
+}
+
+fn to_orig(map: &[(usize, usize)], lower_off: usize) -> usize {
+    match map.binary_search_by_key(&lower_off, |m| m.0) {
+        Ok(i) => map[i].1,
+        Err(i) => map[i.saturating_sub(1)].1,
+    }
+}
+
+/// Search one file's text: case-insensitive, literal, per line. Linear in
+/// the text size; stops early when `cancel` is set.
+pub fn search_text(
+    path: &Path,
+    text: &str,
+    needle_lower: &str,
+    out: &mut Vec<Hit>,
+    cancel: &AtomicBool,
+) {
+    if needle_lower.is_empty() {
+        return;
+    }
     for (i, line) in text.lines().enumerate() {
-        let lower = line.to_lowercase();
+        if cancel.load(Ordering::Relaxed) || out.len() >= MAX_RESULTS {
+            return;
+        }
+        if line.len() > MAX_LINE_BYTES {
+            continue;
+        }
+        let (lower, map) = lower_with_map(line);
         if let Some(pos) = lower.find(needle_lower) {
-            // Map the lower-cased offset back to the original line safely.
-            let start = line
-                .char_indices()
-                .map(|(b, _)| b)
-                .find(|&b| line[..b].to_lowercase().len() >= pos)
-                .unwrap_or(0);
-            let end_target = pos + needle_lower.len();
-            let end = line
-                .char_indices()
-                .map(|(b, _)| b)
-                .chain(std::iter::once(line.len()))
-                .find(|&b| b >= start && line[..b].to_lowercase().len() >= end_target)
-                .unwrap_or(line.len());
+            let start = to_orig(&map, pos);
+            let end = to_orig(&map, pos + needle_lower.len()).max(start);
             let shown = crate::ui::clip_chars(line, 300);
             let end = end.min(shown.len());
             out.push(Hit {
@@ -76,9 +104,6 @@ pub fn search_text(path: &Path, text: &str, needle_lower: &str, out: &mut Vec<Hi
                 text: shown.to_string(),
                 range: (start.min(end), end),
             });
-            if out.len() >= MAX_RESULTS {
-                return;
-            }
         }
     }
 }
@@ -117,7 +142,7 @@ impl SearchView {
                     }
                     let (text, _) = crate::doc::decode(&bytes);
                     let mut hits = Vec::new();
-                    search_text(f, &text, &needle, &mut hits);
+                    search_text(f, &text, &needle, &mut hits, &stop);
                     total += hits.len();
                     if !hits.is_empty() && tx.send(Msg::Hits(hits)).is_err() {
                         return;
@@ -389,15 +414,46 @@ mod tests {
     #[test]
     fn literal_case_insensitive_hits() {
         let mut out = Vec::new();
+        let no = AtomicBool::new(false);
         search_text(
             Path::new("x"),
             "Hello World\nnothing\nworld again",
             "world",
             &mut out,
+            &no,
         );
         assert_eq!(out.len(), 2);
         assert_eq!((out[0].line, out[0].range), (1, (6, 11)));
         assert_eq!(&out[1].text[out[1].range.0..out[1].range.1], "world");
+    }
+
+    #[test]
+    fn huge_lines_and_unicode_are_fast_and_safe() {
+        let no = AtomicBool::new(false);
+        // A 2 MB minified line with the needle at the end must not hang.
+        let big = "x".repeat(2_000_000) + "needle";
+        let t = std::time::Instant::now();
+        let mut out = Vec::new();
+        search_text(Path::new("x"), &big, "needle", &mut out, &no);
+        assert!(t.elapsed().as_millis() < 500, "took {:?}", t.elapsed());
+        // A long-but-allowed line is searched in linear time.
+        let long = "ab ".repeat(30_000) + "Needle";
+        let t = std::time::Instant::now();
+        search_text(Path::new("x"), &long, "needle", &mut out, &no);
+        assert!(t.elapsed().as_millis() < 500, "took {:?}", t.elapsed());
+        assert_eq!(out.len(), 1);
+        // Case folding that changes byte length keeps offsets on char boundaries.
+        let mut out = Vec::new();
+        let line = "İstanbul and STRASSE Straße";
+        search_text(Path::new("x"), line, "straße", &mut out, &no);
+        for h in &out {
+            assert!(h.text.is_char_boundary(h.range.0) && h.text.is_char_boundary(h.range.1));
+        }
+        // Cancel stops immediately.
+        let yes = AtomicBool::new(true);
+        let mut out = Vec::new();
+        search_text(Path::new("x"), "needle\nneedle", "needle", &mut out, &yes);
+        assert!(out.is_empty());
     }
 
     #[test]

@@ -181,15 +181,40 @@ mod tests {
         );
     }
 
+    /// Number of items in the Recycle Bin for the drive holding `p`.
+    #[cfg(windows)]
+    fn recycle_bin_items(p: &Path) -> i64 {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::{SHQUERYRBINFO, SHQueryRecycleBinW};
+        let root: String = p.to_string_lossy().chars().take(3).collect(); // "C:\"
+        let w: Vec<u16> = std::ffi::OsStr::new(&root)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut info = SHQUERYRBINFO {
+            cbSize: std::mem::size_of::<SHQUERYRBINFO>() as u32,
+            i64Size: 0,
+            i64NumItems: 0,
+        };
+        // SAFETY: valid NUL-terminated root path and a correctly sized struct.
+        let hr = unsafe { SHQueryRecycleBinW(w.as_ptr(), &mut info) };
+        assert_eq!(hr, 0, "SHQueryRecycleBinW failed");
+        info.i64NumItems
+    }
+
+    /// The file must land in the Recycle Bin — not be deleted permanently.
     #[cfg(windows)]
     #[test]
-    fn recycle_removes_the_file() {
+    fn recycle_puts_the_file_in_the_recycle_bin() {
         let d = std::env::temp_dir().join(format!("litedit-recycle-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("trash-me.txt");
         std::fs::write(&p, "x").unwrap();
+        let before = recycle_bin_items(&p);
         move_to_recycle_bin(&p).unwrap();
         assert!(!p.exists());
+        let after = recycle_bin_items(&d);
+        assert_eq!(after, before + 1, "the file should be in the Recycle Bin");
         std::fs::remove_dir_all(&d).ok();
     }
 }

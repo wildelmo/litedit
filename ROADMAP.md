@@ -145,6 +145,13 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Epic 3 hardening (advisor review): folder search made linear
+  (one-pass lowercase map; per-line cancel; huge lines skipped; timed test);
+  starting with a file no longer overwrites the saved workspace (only recents and
+  preferences are written); cancelling a quit midway keeps every edit; find count
+  cached; whole-app fuzz now covers Epic 3 features, prompts, resizes to 1×1;
+  Recycle Bin verified on Windows by item count. Epic 3 CI: exe 6.39 MB, 10 tabs
+  32.3 MB WS / 14.4 MB private, all real-window tests PASS.
 - 2026-11-14 — Epic 3 complete. S3.7: session restore (folder, tabs, active tab,
   tree width/visibility, zoom) when started without arguments; recent folders and
   files (Ctrl+R); stored in %APPDATA%\litedit\session.txt (tolerant text format,

@@ -71,6 +71,15 @@ pub struct App {
     recent: Vec<PathBuf>,
     /// Something worth remembering changed (the window saves the session).
     session_dirty: bool,
+    /// The session as loaded at startup.
+    stored: Session,
+    /// This instance restored the workspace, so it may write folder and
+    /// tabs back. An instance started with a file argument only updates
+    /// recents and preferences, never the saved workspace.
+    owns_workspace: bool,
+    /// Tabs whose edits the user chose to drop during a quit sequence; they
+    /// are only dropped once every prompt is answered.
+    quit_skip: Vec<u64>,
     /// What to do after "save anyway" for a lossy file.
     after_lossy: Option<Pending>,
     /// One-shot message in the status bar (e.g. "Saved").
@@ -133,6 +142,11 @@ impl App {
             prompt_for: None,
             recent: Vec::new(),
             session_dirty: false,
+            stored: Session::default(),
+            // No saved session loaded: this instance's workspace is the one
+            // to save. `start_with_session(.., false)` turns this off.
+            owns_workspace: true,
+            quit_skip: Vec::new(),
             after_lossy: None,
             notice: None,
             pending: false,
@@ -295,8 +309,12 @@ impl App {
         match p {
             Pending::CloseTab(id) => self.remove_tab(id),
             Pending::Quit => {
-                // Ask about each dirty tab in turn, then quit.
-                match (0..self.tabs.len()).find(|&i| self.tab_view(i).is_dirty()) {
+                // Ask about each dirty tab in turn (skipping ones already
+                // answered with "Don't save"), then quit.
+                let skip = self.quit_skip.clone();
+                match (0..self.tabs.len())
+                    .find(|&i| self.tab_view(i).is_dirty() && !skip.contains(&self.tabs[i].id))
+                {
                     Some(i) => {
                         self.activate(i);
                         let name = self.view_name();
@@ -377,8 +395,10 @@ impl App {
                 self.save_with(false, Some(p));
             }
             NagAction::DiscardThen(Pending::Quit) => {
+                // Remember the answer; nothing is dropped unless the whole
+                // quit goes ahead.
                 let id = self.tabs[self.active].id;
-                self.remove_tab(id);
+                self.quit_skip.push(id);
                 self.perform(Pending::Quit);
             }
             NagAction::DiscardThen(p) => self.perform(p),
@@ -407,7 +427,8 @@ impl App {
                 }
                 self.after_fs_change(&path);
             }
-            NagAction::KeepMine | NagAction::Dismiss => {}
+            // Cancel (or an error acknowledged) aborts any quit in progress.
+            NagAction::KeepMine | NagAction::Dismiss => self.quit_skip.clear(),
         }
     }
 
@@ -624,8 +645,34 @@ impl App {
         }
     }
 
+    /// Apply the saved session at startup: recents and preferences always;
+    /// the workspace (folder, tabs) only when `restore` (no file arguments).
+    pub fn start_with_session(&mut self, s: Session, restore: bool) {
+        self.stored = s.clone();
+        self.owns_workspace = restore;
+        if restore {
+            self.restore(s);
+        } else {
+            self.recent = s.recent;
+            self.tree.width = s.tree_width;
+            self.tree.visible = s.tree_visible;
+            self.zoom = s.zoom;
+        }
+        self.session_dirty = false;
+    }
+
     /// What to remember for next time.
     pub fn session(&self) -> Session {
+        let mut s = self.current_session();
+        if !self.owns_workspace {
+            s.root = self.stored.root.clone();
+            s.tabs = self.stored.tabs.clone();
+            s.active = self.stored.active;
+        }
+        s
+    }
+
+    fn current_session(&self) -> Session {
         let mut tabs = Vec::new();
         let mut active = 0;
         for i in 0..self.tabs.len() {
