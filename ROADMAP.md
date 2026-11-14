@@ -65,14 +65,43 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 ## Epic 2 — Editor
 
-- [ ] S2.1 Text buffer (ropey), load/save preserving line endings + encoding
-- [ ] S2.2 Cursor, selection (mouse + keyboard), multi-cursor (later)
-- [ ] S2.3 Typing, delete, indent/outdent, auto-indent
-- [ ] S2.4 Undo/redo (lite-xl doc/init.lua model)
-- [ ] S2.5 Clipboard (arboard)
-- [ ] S2.6 Save, Save As, dirty marker, confirm on close
-- [~] S2.7 Ctrl+E preview/edit toggle (preview ↔ read-only source done)
-- [ ] S2.8 IME / non-English input
+Design (reviewed with advisor): `editor/buffer.rs` (lines + per-line EOLs),
+`editor/doc.rs` (buffer, selections, undo, change ids, path, encoding),
+CodeView grows into the editor; MarkdownView owns the editor and re-parses
+the preview from its text. Prompts use an in-app nag bar (D-013).
+
+Acceptance criteria that protect the user's text:
+- **Byte-exact round trip:** open → save with no edits is byte-identical for
+  every fixture (CRLF, LF, mixed, BOM, UTF-16, no final newline, empty).
+  Lossy-decoded files need a second Ctrl+S (warned in the status bar).
+- **One discard gate:** every path that replaces or closes a dirty document
+  (open, drop, tree click, link click, dialogs, window close, external
+  change) goes through one function that raises the nag bar. Script-tested.
+- **Model-based fuzz:** random insert/delete/undo/redo vs a String model,
+  undo-all restores the original, render after each step. Caret moves by
+  grapheme cluster.
+- **Windows save:** atomic temp + replace (ReplaceFileW keeps ACLs and
+  attributes); read-only target → error; file held open → fallback/clear
+  error; symlink → write the target. Failure keeps the buffer dirty and
+  removes the temp file. Own saves don't trigger "changed on disk".
+  Script `expect file` asserts bytes.
+- **Key translation is a pure, tested function:** AltGr (Ctrl+Alt) produces
+  text, not shortcuts. One real-window SendKeys CI step (report-only).
+- Reserved Windows device names (CON, NUL, COM1…) rejected everywhere.
+
+- [ ] S2.1 Buffer: lines + per-line EOLs, positions, insert/remove, exact
+       load/serialize for all encodings, undo/redo with merge; fuzz tests
+- [ ] S2.2 Cursor + selection (keyboard, mouse, word/line), grapheme-aware;
+       one col↔x mapping shared by caret drawing and hit-testing
+- [ ] S2.3 Typing, Backspace/Delete (word), Enter auto-indent, Tab/Shift+Tab;
+       pure key-translation function with AltGr tests
+- [ ] S2.4 Undo/redo wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+- [ ] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
+- [ ] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
+       single discard gate, external-change prompt for dirty docs
+- [ ] S2.7 Ctrl+E: markdown preview ↔ editable source (preview from buffer)
+- [ ] S2.8 IME (commit → text, candidate window at caret); unverifiable here,
+       tracked in DECISIONS as open
 
 ## Epic 3 — Daily driver
 

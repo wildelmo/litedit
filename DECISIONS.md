@@ -10,6 +10,12 @@ _None yet._
 
 ## Decided — review when convenient
 
+### D-013 Prompts appear as a bar inside the window, not as pop-up dialogs
+"Save changes?", "File changed on disk — reload?" and similar questions
+appear as a bar at the top of the editor (like lite-xl's NagView), answered
+with a click or the keyboard. Native pop-ups can't be exercised by the
+automated tests, and the in-window bar never hides behind other windows.
+
 ### D-012 Opening a single file shows its folder in the tree
 When you open a file and no folder is open yet (double-click a .md in
 Explorer, drag a file in), the tree shows that file's folder with the file
