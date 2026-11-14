@@ -568,6 +568,37 @@ impl EditDoc {
         parts.join("\n")
     }
 
+    /// Text for copy/cut: the selection, or whole line(s) when nothing is
+    /// selected (returns `true` for line mode, as in lite-xl).
+    pub fn copy_text(&self) -> (String, bool) {
+        if self.sels.iter().any(|s| !s.is_empty()) {
+            return (self.selected_text(), false);
+        }
+        let mut lines: Vec<usize> = self.sels.iter().map(|s| s.head.line).collect();
+        lines.sort_unstable();
+        lines.dedup();
+        let mut t = String::new();
+        for l in lines {
+            t.push_str(self.buf.line(l));
+            t.push('\n');
+        }
+        (t, true)
+    }
+
+    /// Paste whole lines above each caret (after a line-mode copy).
+    pub fn paste_lines(&mut self, text: &str) {
+        let chunk = Chunk::typed(text, self.buf.default_eol());
+        self.edit_each(GroupKind::Other, |_, sel| {
+            let at = Pos::new(sel.head.line, 0);
+            let op = Op::Insert {
+                at,
+                chunk: chunk.clone(),
+            };
+            let caret = transform(sel.head, &op, true);
+            (vec![op], Some(caret))
+        });
+    }
+
     pub fn delete_selection(&mut self) {
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
@@ -924,6 +955,21 @@ mod tests {
         d.set_caret(Pos::new(2, 0), false);
         d.delete_lines();
         assert_eq!(d.buf.to_text(), "one\ntwo");
+    }
+
+    #[test]
+    fn line_mode_copy_and_paste() {
+        let mut d = doc("one\ntwo");
+        d.set_caret(Pos::new(1, 2), false);
+        let (t, line_mode) = d.copy_text();
+        assert_eq!((t.as_str(), line_mode), ("two\n", true));
+        d.set_caret(Pos::new(0, 1), false);
+        d.paste_lines(&t);
+        assert_eq!(d.buf.to_text(), "two\none\ntwo");
+        assert_eq!(d.primary().head, Pos::new(1, 1));
+        d.set_caret(Pos::new(0, 0), false);
+        d.set_caret(Pos::new(0, 3), true);
+        assert_eq!(d.copy_text(), ("two".to_string(), false));
     }
 
     #[test]

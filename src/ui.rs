@@ -23,6 +23,7 @@ pub struct Ctx<'a> {
     pub cursor: &'a mut Cursor,
     /// Whether the view being drawn has keyboard focus (caret shown).
     pub focused: bool,
+    pub clipboard: &'a mut dyn crate::clipboard::Clipboard,
 }
 
 impl Ctx<'_> {

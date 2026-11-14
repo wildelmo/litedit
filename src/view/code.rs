@@ -189,6 +189,8 @@ pub struct CodeView {
     /// Scroll so the caret is visible at the next render.
     reveal_caret: bool,
     pub read_only: bool,
+    /// Text of the last line-mode copy (pasting it inserts whole lines).
+    line_clip: Option<String>,
 }
 
 impl CodeView {
@@ -209,6 +211,7 @@ impl CodeView {
             dragging: false,
             reveal_caret: false,
             read_only: false,
+            line_clip: None,
         }
     }
 
@@ -454,6 +457,37 @@ impl CodeView {
             (Key::Char('y'), true, false) | (Key::Char('z'), true, false) if !ro => {
                 if self.doc.redo() {
                     self.after_edit(0);
+                }
+            }
+            (Key::Char('c'), true, false) | (Key::Insert, true, false) => {
+                let (t, line_mode) = self.doc.copy_text();
+                self.line_clip = line_mode.then(|| t.clone());
+                ctx.clipboard.set(t);
+            }
+            (Key::Char('x'), true, false) | (Key::Delete, false, false)
+                if !ro && (mods.ctrl || shift) =>
+            {
+                let (t, line_mode) = self.doc.copy_text();
+                self.line_clip = line_mode.then(|| t.clone());
+                ctx.clipboard.set(t);
+                if line_mode {
+                    self.doc.delete_lines();
+                } else {
+                    self.doc.delete_selection();
+                }
+                self.after_edit(edit_from);
+            }
+            (Key::Char('v'), true, false) | (Key::Insert, false, false)
+                if !ro && (mods.ctrl || shift) =>
+            {
+                if let Some(t) = ctx.clipboard.get().filter(|t| !t.is_empty()) {
+                    let all_carets = self.doc.sels.iter().all(|s| s.is_empty());
+                    if all_carets && self.line_clip.as_deref() == Some(t.as_str()) {
+                        self.doc.paste_lines(&t);
+                    } else {
+                        self.doc.insert_text(&t);
+                    }
+                    self.after_edit(edit_from);
                 }
             }
             (Key::Char('d'), true, false) if !ro && shift => {

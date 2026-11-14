@@ -493,3 +493,32 @@ fn mouse_places_caret_and_selects_words() {
     render_hash(&mut app, 800, 600);
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+#[test]
+fn copy_cut_paste_through_the_app() {
+    let p = temp_file("clip.txt", "alpha\nbeta\n");
+    let mut app = new_app();
+    app.open(&p);
+    // Line-mode copy (no selection) then paste above line 2.
+    key(&mut app, "ctrl+c");
+    assert_eq!(app.clipboard_text().as_deref(), Some("alpha\n"));
+    key(&mut app, "down");
+    key(&mut app, "ctrl+v");
+    // The caret stayed on "beta" (now line 3): select it and cut.
+    assert!(
+        app.status_text().starts_with("Ln 3, Col 1"),
+        "{}",
+        app.status_text()
+    );
+    key(&mut app, "shift+end");
+    key(&mut app, "ctrl+x");
+    assert_eq!(app.clipboard_text().as_deref(), Some("beta"));
+    key(&mut app, "ctrl+home");
+    key(&mut app, "ctrl+v");
+    assert!(
+        app.status_text().starts_with("Ln 1, Col 5"),
+        "{}",
+        app.status_text()
+    );
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}

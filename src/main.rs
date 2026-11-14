@@ -3,6 +3,7 @@
 
 mod app;
 mod canvas;
+mod clipboard;
 mod doc;
 mod editor;
 mod images;

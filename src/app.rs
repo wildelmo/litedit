@@ -41,6 +41,7 @@ pub struct App {
     cursor: Cursor,
     mouse: (f32, f32),
     dragging_divider: bool,
+    clipboard: Box<dyn crate::clipboard::Clipboard>,
     /// Set when a view may have deferred work; cleared when `tick` finishes it.
     pending: bool,
 }
@@ -61,6 +62,7 @@ macro_rules! ctx {
             requests: &mut $s.requests,
             cursor: &mut $s.cursor,
             focused: $s.focus == Focus::Main,
+            clipboard: &mut *$s.clipboard,
         }
     };
 }
@@ -79,8 +81,19 @@ impl App {
             cursor: Cursor::Default,
             mouse: (0.0, 0.0),
             dragging_divider: false,
+            clipboard: Box::new(crate::clipboard::MemClipboard::default()),
             pending: false,
         }
+    }
+
+    /// Use the system clipboard (the real window does this).
+    pub fn set_clipboard(&mut self, c: Box<dyn crate::clipboard::Clipboard>) {
+        self.clipboard = c;
+    }
+
+    #[cfg(test)]
+    pub fn clipboard_text(&mut self) -> Option<String> {
+        self.clipboard.get()
     }
 
     /// Open a file (into the main view) or a folder (into the tree).

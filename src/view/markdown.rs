@@ -661,6 +661,7 @@ mod tests {
         fonts: Fonts,
         requests: Vec<Request>,
         cursor: Cursor,
+        clip: crate::clipboard::MemClipboard,
     }
 
     impl Harness {
@@ -669,6 +670,7 @@ mod tests {
                 fonts: Fonts::load(),
                 requests: Vec::new(),
                 cursor: Cursor::Default,
+                clip: crate::clipboard::MemClipboard::default(),
             }
         }
         fn ctx(&mut self) -> Ctx<'_> {
@@ -679,6 +681,7 @@ mod tests {
                 requests: &mut self.requests,
                 cursor: &mut self.cursor,
                 focused: true,
+                clipboard: &mut self.clip,
             }
         }
     }

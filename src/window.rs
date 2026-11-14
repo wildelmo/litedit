@@ -311,6 +311,8 @@ pub fn run(app: App) {
     let proxy = event_loop.create_proxy();
     let watcher =
         FsWatcher::new(move |paths| proxy.send_event(UserEvent::FsChanged(paths)).is_ok());
+    let mut app = app;
+    app.set_clipboard(crate::clipboard::system());
     let mut runner = Runner {
         app,
         gfx: None,

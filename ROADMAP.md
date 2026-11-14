@@ -96,7 +96,7 @@ Acceptance criteria that protect the user's text:
 - [x] S2.3 Typing, Backspace/Delete (word), Enter auto-indent, Tab/Shift+Tab;
        pure key-translation function with AltGr tests
 - [x] S2.4 Undo/redo wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
-- [ ] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
+- [x] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
 - [ ] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
        single discard gate, external-change prompt for dirty docs
 - [ ] S2.7 Ctrl+E: markdown preview ↔ editable source (preview from buffer)
@@ -128,6 +128,8 @@ Acceptance criteria that protect the user's text:
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S2.5 done: clipboard trait (arboard on Windows, memory in scripts/tests),
+  Ctrl+C/X/V + Ctrl/Shift+Insert, Shift+Delete, lite-xl line-mode copy/paste.
 - 2026-11-14 — S2.2–S2.4 done: editor/doc.rs (commands on all selections, grapheme
   caret moves, lite-xl word rules, smart Home, auto-indent, indent detection,
   Tab/Shift+Tab, word delete, duplicate/delete line, undo/redo); CodeView is
