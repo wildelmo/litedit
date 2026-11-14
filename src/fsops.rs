@@ -214,10 +214,13 @@ mod tests {
         let d = std::env::temp_dir().join(format!("litedit-case-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        // Probe the folder with separate files first.
+        std::fs::write(d.join("probe"), "x").unwrap();
+        let case_sensitive = !d.join("PROBE").exists();
+        std::fs::remove_file(d.join("probe")).unwrap();
         std::fs::write(d.join("a.md"), "lower").unwrap();
-        let case_sensitive = std::fs::write(d.join("A.md"), "upper").is_ok()
-            && std::fs::read_to_string(d.join("a.md")).unwrap() == "lower";
         if case_sensitive {
+            std::fs::write(d.join("A.md"), "upper").unwrap();
             // Two distinct files: renaming one onto the other is refused.
             assert!(rename(&d.join("a.md"), "A.md").is_err());
             assert_eq!(std::fs::read_to_string(d.join("A.md")).unwrap(), "upper");
