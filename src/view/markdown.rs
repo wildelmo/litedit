@@ -919,8 +919,8 @@ impl View for MarkdownView {
         self.editor.save(allow_lossy)
     }
 
-    fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
-        let n = self.editor.save_as(path)?;
+    fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+        let n = self.editor.save_as(path, allow_lossy)?;
         self.layout = None;
         self.images.clear();
         self.request_images();

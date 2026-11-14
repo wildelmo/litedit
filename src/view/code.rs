@@ -1372,8 +1372,8 @@ impl View for CodeView {
         self.doc.save(allow_lossy)
     }
 
-    fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
-        let n = self.doc.save_as(path)?;
+    fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+        let n = self.doc.save_as(path, allow_lossy)?;
         let first = self.doc.buf.line(0).to_string();
         self.highlighter = LineHighlighter::new(find_syntax(path, &first));
         self.cache.clear();
@@ -1382,7 +1382,8 @@ impl View for CodeView {
 
     fn disk_state(&self) -> DiskState {
         match Document::open(self.doc.path()) {
-            Ok(d) if d.text == self.doc.buf.to_text() => DiskState::Same,
+            // Our own save, a touch, or nothing new: not a conflict.
+            Ok(d) if self.doc.disk_matches(&d.text) => DiskState::Same,
             Ok(_) => DiskState::Differs,
             Err(_) if !self.doc.path().exists() => DiskState::Missing,
             Err(_) => DiskState::Same,

@@ -83,7 +83,7 @@ pub trait View {
         Err(SaveError::Failed("nothing to save here".into()))
     }
 
-    fn save_as(&mut self, _path: &std::path::Path) -> Result<usize, SaveError> {
+    fn save_as(&mut self, _path: &std::path::Path, _allow_lossy: bool) -> Result<usize, SaveError> {
         Err(SaveError::Failed("nothing to save here".into()))
     }
 

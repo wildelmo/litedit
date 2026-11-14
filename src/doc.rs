@@ -30,6 +30,9 @@ pub struct Document {
     /// Decoded text with original line endings.
     pub text: String,
     pub encoding: Encoding,
+    /// Saving would not write back the exact bytes that were read (invalid
+    /// UTF-8, broken UTF-16, …): the user must confirm before saving.
+    pub lossy: bool,
 }
 
 impl Document {
@@ -49,10 +52,13 @@ impl Document {
         }
         let bytes = std::fs::read(path)?;
         let (text, encoding) = decode(&bytes);
+        // The only reliable test: does it encode back to the same bytes?
+        let lossy = encoding == Encoding::Utf8Lossy || encode(&text, encoding) != bytes;
         Ok(Self {
             path: path.to_path_buf(),
             text,
             encoding,
+            lossy,
         })
     }
 

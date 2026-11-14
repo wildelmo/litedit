@@ -29,6 +29,12 @@ pub enum NagAction {
     SaveAnyway,
     /// Move this path to the Recycle Bin.
     Recycle(std::path::PathBuf),
+    /// Save As anyway although the file had invalid characters.
+    SaveAsAnyway(std::path::PathBuf),
+    /// The file changed on disk since it was opened: save over it anyway.
+    Overwrite(Option<Pending>),
+    /// Show the file on disk next to the unsaved text.
+    CompareWithDisk,
     /// Move an entry into a folder (tree drag and drop).
     MoveInto(std::path::PathBuf, std::path::PathBuf),
     Dismiss,
@@ -73,8 +79,10 @@ impl Nag {
         Nag::new(
             format!("{name} changed on disk, and you have unsaved edits."),
             vec![
-                ("Reload from disk", NagAction::ReloadFromDisk),
+                // The safe answer first (Enter / Space pick it).
                 ("Keep my version", NagAction::KeepMine),
+                ("Compare", NagAction::CompareWithDisk),
+                ("Reload from disk", NagAction::ReloadFromDisk),
             ],
             false,
         )

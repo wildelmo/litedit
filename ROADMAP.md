@@ -172,6 +172,15 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.0 part 1 (data safety, from the adversarial review): a
+  question bar answers for the tab it asked about (owner recorded; drops and
+  link opens wait); "changed on disk" compares disk with what we last
+  read/wrote (hash), so our own save or a touch is no conflict, and its safe
+  answer (Keep my version) is the default, plus Compare; saving re-checks the
+  disk and asks Compare / Save mine over it / Cancel; any file that won't
+  encode back to its exact bytes (BOM + invalid UTF-8, broken UTF-16) asks
+  before saving, Save As included; the theme toggle leaves non-UTF-8
+  settings files alone. Tests mutation-checked.
 - 2026-11-14 — S5.2 compare view (diff.rs model on the `similar` crate with a
   1.5 s deadline and 20 MB / 500k-line caps; view/diff.rs). Tests: diff rows
   cover every line once, inline highlights on char boundaries, 60k-line

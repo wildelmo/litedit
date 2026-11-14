@@ -2426,3 +2426,188 @@ fn compare_view_theme_switch_matches_fresh() {
     a.set_light(false);
     assert_eq!(settled_hash(&mut a), dark);
 }
+
+fn tmp_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("litedit-s50-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn a_question_is_answered_for_its_own_tab_even_if_a_file_is_dropped() {
+    let d = tmp_dir("nagtab");
+    std::fs::write(d.join("a.txt"), "A").unwrap();
+    std::fs::write(d.join("c.txt"), "C").unwrap();
+    let mut app = new_app();
+    app.open(&d.join("c.txt"));
+    app.handle(Input::Text("c-edit ".into()));
+    app.open(&d.join("a.txt"));
+    app.handle(Input::Text("a-edit ".into()));
+    key(&mut app, "ctrl+w");
+    assert_eq!(app.nag_message().as_deref(), Some("Save changes to a.txt?"));
+    app.handle(Input::Drop(d.join("c.txt")));
+    assert!(
+        app.title().contains("a.txt"),
+        "drop doesn't switch tabs under a question"
+    );
+    key(&mut app, "s");
+    assert_eq!(
+        std::fs::read_to_string(d.join("a.txt")).unwrap(),
+        "a-edit A"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("c.txt")).unwrap(),
+        "C",
+        "c untouched"
+    );
+    assert_eq!(app.tab_titles(), vec![("c.txt".to_string(), true)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn own_saves_and_touches_are_not_disk_conflicts() {
+    let d = tmp_dir("touch");
+    let f = d.join("fs.txt");
+    std::fs::write(&f, "start").unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    app.handle(Input::Text("A".into()));
+    app.handle(Input::FsChanged(vec![f.clone()]));
+    assert!(app.nag_message().is_none(), "a touch is not a change");
+    key(&mut app, "ctrl+s");
+    app.handle(Input::Text("B".into()));
+    // The watcher reports our own save a moment later.
+    app.handle(Input::FsChanged(vec![f.clone()]));
+    assert!(app.nag_message().is_none(), "{:?}", app.nag_message());
+    app.handle(Input::Text(" ".into()));
+    assert!(
+        app.view_text().contains("AB "),
+        "typing continues: {}",
+        app.view_text()
+    );
+    // A real external change while dirty asks; Enter keeps my version.
+    std::fs::write(&f, "EXTERNAL").unwrap();
+    app.handle(Input::FsChanged(vec![f.clone()]));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("changed on disk")
+    );
+    key(&mut app, "enter");
+    assert!(app.view_text().contains("AB "), "Enter is the safe answer");
+    // Saving now warns that another program changed the file.
+    key(&mut app, "ctrl+s");
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("changed by another program"),
+        "{:?}",
+        app.nag_message()
+    );
+    key(&mut app, "escape");
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "EXTERNAL",
+        "Cancel writes nothing"
+    );
+    key(&mut app, "ctrl+s");
+    run_nag_option(&mut app, "Save mine over it");
+    assert!(std::fs::read_to_string(&f).unwrap().contains("AB "));
+    // And after that, saving again is quiet.
+    app.handle(Input::Text("!".into()));
+    key(&mut app, "ctrl+s");
+    assert!(app.nag_message().is_none());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Pick a question-bar button by label.
+fn run_nag_option(app: &mut App, label: &str) {
+    let opts = app.nag_options();
+    let i = opts
+        .iter()
+        .position(|o| o == label)
+        .unwrap_or_else(|| panic!("no option {label} in {opts:?}"));
+    for _ in 0..i {
+        key(app, "right");
+    }
+    key(app, "enter");
+}
+
+#[test]
+fn files_that_cannot_round_trip_always_ask_before_saving() {
+    let d = tmp_dir("lossy");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "bom-invalid.txt",
+            vec![0xEF, 0xBB, 0xBF, b'a', 0xFF, 0xFE, b'b', 0xE9],
+        ),
+        (
+            "utf16-surrogate.txt",
+            vec![0xFF, 0xFE, b'a', 0, 0x00, 0xD8, b'b', 0],
+        ),
+        ("utf16-odd.txt", vec![0xFF, 0xFE, b'a', 0, b'b']),
+        ("plain-invalid.txt", vec![b'a', 0xFF, b'b']),
+    ];
+    for (name, bytes) in &cases {
+        let f = d.join(name);
+        std::fs::write(&f, bytes).unwrap();
+        let mut app = new_app();
+        app.open(&f);
+        app.handle(Input::Text("x".into()));
+        key(&mut app, "ctrl+s");
+        assert!(
+            app.nag_message()
+                .unwrap_or_default()
+                .contains("invalid characters"),
+            "{name}: {:?}",
+            app.nag_message()
+        );
+        key(&mut app, "escape");
+        assert_eq!(
+            &std::fs::read(&f).unwrap(),
+            bytes,
+            "{name}: Cancel keeps the bytes"
+        );
+        // Save As onto itself asks too.
+        app.save_as(&f);
+        assert!(
+            app.nag_message()
+                .unwrap_or_default()
+                .contains("invalid characters"),
+            "{name}"
+        );
+        key(&mut app, "escape");
+        assert_eq!(&std::fs::read(&f).unwrap(), bytes);
+    }
+    // Valid files still save without a question, byte for byte.
+    let ok = d.join("ok.txt");
+    std::fs::write(&ok, b"\xEF\xBB\xBFline\r\n").unwrap();
+    let mut app = new_app();
+    app.open(&ok);
+    key(&mut app, "ctrl+end");
+    app.handle(Input::Text("x".into()));
+    key(&mut app, "ctrl+s");
+    assert!(app.nag_message().is_none());
+    assert_eq!(std::fs::read(&ok).unwrap(), b"\xEF\xBB\xBFline\r\nx");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn theme_toggle_never_rewrites_a_settings_file_it_cannot_read_exactly() {
+    let d = tmp_dir("setenc");
+    let path = d.join("settings.txt");
+    let ansi = b"# caf\xe9 \xff\ntheme = dark\n".to_vec();
+    std::fs::write(&path, &ansi).unwrap();
+    let mut app = new_app();
+    app.use_settings(path.clone());
+    run_command(&mut app, "toggle light");
+    assert!(theme::is_light(), "still switches for this session");
+    assert_eq!(std::fs::read(&path).unwrap(), ansi);
+    assert!(
+        app.status_text().contains("isn't UTF-8"),
+        "{}",
+        app.status_text()
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -2,6 +2,12 @@
 
 ## 1.1.0 — unreleased
 
+- Safer saving (from an end-to-end review): a question bar always answers
+  for the file it asked about; your own save no longer looks like an outside
+  change; when another program really changed a file you are editing, the
+  safe answer is the default and you can compare first; saving over another
+  program's change asks first; files that can't be saved back exactly (odd
+  encodings) always ask before saving, including Save As.
 - File tree: drag a file or folder onto a folder to move it (asks first,
   never overwrites); F2 renames and Delete deletes the selected entry.
 - Tabs with unsaved changes show a dot in place of the close button.

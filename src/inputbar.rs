@@ -43,6 +43,7 @@ impl InputBar {
             path: PathBuf::from("<input>"),
             text: single_line(initial),
             encoding: Encoding::Utf8,
+            lossy: false,
         });
         doc.select_all();
         Self {

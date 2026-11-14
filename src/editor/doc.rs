@@ -90,6 +90,13 @@ pub enum Move {
     PageDown(usize),
 }
 
+fn text_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
 pub struct EditDoc {
     pub buf: Buffer,
     pub sels: Vec<Sel>,
@@ -102,6 +109,11 @@ pub struct EditDoc {
     /// History state at the last save (None = modified no matter what,
     /// e.g. the file was deleted on disk).
     saved_state: Option<u64>,
+    /// Saving needs confirmation: the file could not be decoded exactly.
+    pub lossy: bool,
+    /// Hash of the text as last read from or written to disk (to tell a
+    /// real external change from our own save or a touch).
+    disk_hash: u64,
     /// Remembered column (in chars) for up/down movement.
     goal_col: Option<usize>,
 }
@@ -120,7 +132,14 @@ impl EditDoc {
             version: 0,
             saved_state: Some(0),
             goal_col: None,
+            lossy: doc.lossy,
+            disk_hash: text_hash(&doc.text),
         }
+    }
+
+    /// Is `disk_text` what we last read or wrote (or what we're showing)?
+    pub fn disk_matches(&self, disk_text: &str) -> bool {
+        text_hash(disk_text) == self.disk_hash || disk_text == self.buf.to_text()
     }
 
     pub fn path(&self) -> &Path {
@@ -149,21 +168,24 @@ impl EditDoc {
     }
 
     /// Save to a new path and switch to it.
-    pub fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
-        let n = self.save_to(path, true)?;
+    pub fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+        let n = self.save_to(path, allow_lossy)?;
         self.path = path.to_path_buf();
         Ok(n)
     }
 
     fn save_to(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
-        if self.encoding == Encoding::Utf8Lossy && !allow_lossy {
+        if self.lossy && !allow_lossy {
             return Err(SaveError::NeedsLossyConfirm);
         }
-        let bytes = crate::doc::encode(&self.buf.to_text(), self.encoding);
+        let text = self.buf.to_text();
+        let bytes = crate::doc::encode(&text, self.encoding);
         crate::editor::save::save_bytes(path, &bytes).map_err(SaveError::Failed)?;
         if self.encoding == Encoding::Utf8Lossy {
             self.encoding = Encoding::Utf8; // now it is valid UTF-8
         }
+        self.lossy = false;
+        self.disk_hash = text_hash(&text);
         self.mark_saved();
         Ok(bytes.len())
     }
@@ -181,6 +203,8 @@ impl EditDoc {
     pub fn replace_all_from_disk(&mut self, doc: Document) {
         self.buf = Buffer::from_text(&doc.text);
         self.encoding = doc.encoding;
+        self.lossy = doc.lossy;
+        self.disk_hash = text_hash(&doc.text);
         self.hist = History::default();
         for s in &mut self.sels {
             s.anchor = self.buf.clamp(s.anchor);
@@ -937,6 +961,7 @@ mod tests {
             path: PathBuf::from("t.txt"),
             text: text.into(),
             encoding: Encoding::Utf8,
+            lossy: false,
         })
     }
 

@@ -84,6 +84,10 @@ pub struct App {
     quit_skip: Vec<u64>,
     /// What to do after "save anyway" for a lossy file.
     after_lossy: Option<Pending>,
+    /// That save had already been confirmed over an external change.
+    lossy_overwrite: bool,
+    /// The tab a showing question is about (answers apply to it).
+    nag_tab: Option<u64>,
     /// One-shot message in the status bar (e.g. "Saved").
     notice: Option<String>,
     /// Set when a view may have deferred work; cleared when `tick` finishes it.
@@ -166,6 +170,8 @@ impl App {
             owns_workspace: true,
             quit_skip: Vec::new(),
             after_lossy: None,
+            lossy_overwrite: false,
+            nag_tab: None,
             notice: None,
             pending: false,
             settings_path: None,
@@ -348,9 +354,19 @@ impl App {
                 self.notice = Some(format!("{name} theme for now; settings.txt is too large"));
                 return;
             }
-            Ok(_) => std::fs::read(&path)
-                .map(|b| String::from_utf8_lossy(&b).into_owned())
-                .ok(),
+            // Only plain UTF-8 is rewritten; anything else would be damaged.
+            Ok(_) => match std::fs::read(&path) {
+                Ok(b) => match String::from_utf8(b) {
+                    Ok(t) => Some(t),
+                    Err(_) => {
+                        self.notice = Some(format!(
+                            "{name} theme for now; settings.txt isn't UTF-8, so it was not changed"
+                        ));
+                        return;
+                    }
+                },
+                Err(_) => None,
+            },
             Err(_) => Some(settings::TEMPLATE.to_string()),
         };
         let Some(old) = old else {
@@ -633,10 +649,28 @@ impl App {
     }
 
     fn save_with(&mut self, allow_lossy: bool, then: Option<Pending>) -> bool {
+        self.save_checked(allow_lossy, then, false)
+    }
+
+    /// Save the active tab. Unless `overwrite`, first check that nobody else
+    /// changed the file since it was opened or last saved.
+    fn save_checked(&mut self, allow_lossy: bool, then: Option<Pending>, overwrite: bool) -> bool {
         if self.view.path().is_none() {
             return false;
         }
         let name = self.view_name();
+        if !overwrite && self.view.disk_state() == DiskState::Differs {
+            self.nag = Some(Nag::new(
+                format!("{name} was changed by another program since you opened it."),
+                vec![
+                    ("Compare", NagAction::CompareWithDisk),
+                    ("Save mine over it", NagAction::Overwrite(then)),
+                    ("Cancel", NagAction::Dismiss),
+                ],
+                false,
+            ));
+            return true;
+        }
         match self.view.save(allow_lossy) {
             Ok(n) => {
                 self.notice = Some(format!("Saved {name} ({})", human_size(n)));
@@ -649,6 +683,7 @@ impl App {
             }
             Err(SaveError::NeedsLossyConfirm) => {
                 self.after_lossy = then;
+                self.lossy_overwrite = overwrite;
                 self.nag = Some(Nag::new(
                     format!("{name} had invalid characters (shown as �). Saving writes them as �."),
                     vec![
@@ -667,7 +702,11 @@ impl App {
 
     /// Save the current file under a new name (from the Save As dialog).
     pub fn save_as(&mut self, path: &Path) {
-        match self.view.save_as(path) {
+        self.save_as_with(path, false);
+    }
+
+    fn save_as_with(&mut self, path: &Path, allow_lossy: bool) {
+        match self.view.save_as(path, allow_lossy) {
             Ok(n) => {
                 self.notice = Some(format!("Saved as {} ({})", path.display(), human_size(n)));
                 self.tree.invalidate(&[path.to_path_buf()]);
@@ -680,13 +719,42 @@ impl App {
                     path.display()
                 )));
             }
-            Err(SaveError::NeedsLossyConfirm) => {}
+            Err(SaveError::NeedsLossyConfirm) => {
+                self.nag = Some(Nag::new(
+                    format!(
+                        "{} had invalid characters (shown as �). Saving writes them as �.",
+                        self.view_name()
+                    ),
+                    vec![
+                        ("Save anyway", NagAction::SaveAsAnyway(path.to_path_buf())),
+                        ("Cancel", NagAction::Dismiss),
+                    ],
+                    false,
+                ));
+            }
         }
         self.pending = true;
     }
 
     fn apply_nag(&mut self, action: NagAction) {
         self.nag = None;
+        // Answer for the tab the question was about, even if another tab
+        // came to the front meanwhile.
+        if let Some(id) = self.nag_tab.take() {
+            match self.tab_index(id) {
+                Some(i) if i != self.active => self.activate(i),
+                Some(_) => {}
+                None if !matches!(action, NagAction::Dismiss | NagAction::KeepMine) => {
+                    self.notice = Some("That tab is gone; nothing was done".into());
+                    return;
+                }
+                None => {}
+            }
+            // `activate` may have raised that tab's own pending question.
+            if self.nag.is_some() {
+                return;
+            }
+        }
         match action {
             NagAction::SaveThen(p) => {
                 self.save_with(false, Some(p));
@@ -706,7 +774,16 @@ impl App {
             NagAction::DiscardThen(p) => self.perform(p),
             NagAction::SaveAnyway => {
                 let then = self.after_lossy.take();
-                self.save_with(true, then);
+                let overwrite = std::mem::take(&mut self.lossy_overwrite);
+                self.save_checked(true, then, overwrite);
+            }
+            NagAction::SaveAsAnyway(path) => self.save_as_with(&path, true),
+            NagAction::Overwrite(then) => {
+                self.save_checked(false, then, true);
+            }
+            NagAction::CompareWithDisk => {
+                let id = self.tabs[self.active].id;
+                self.compare_with_saved(id);
             }
             NagAction::ReloadFromDisk => {
                 let mut ctx = ctx!(self);
@@ -1166,6 +1243,21 @@ impl App {
         self.nag.as_ref().map(|n| n.message.clone())
     }
 
+    /// Button labels of the open question (tests).
+    #[cfg(test)]
+    pub fn nag_options(&self) -> Vec<String> {
+        self.nag
+            .as_ref()
+            .map(|n| n.options.iter().map(|(l, _)| l.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Full text of the active view (tests).
+    #[cfg(test)]
+    pub fn view_text(&self) -> String {
+        self.view.text().unwrap_or_default()
+    }
+
     pub fn nag_text(&self) -> String {
         self.nag
             .as_ref()
@@ -1513,6 +1605,7 @@ impl App {
     /// Handle one input event. Returns true if the window should redraw.
     pub fn handle(&mut self, input: Input) -> bool {
         let redraw = self.handle_inner(&input);
+        self.sync_nag_owner();
         // Requests the app handles itself (opening a file from a link or the tree).
         let mut open = None;
         self.requests.retain(|r| match r {
@@ -1527,6 +1620,10 @@ impl App {
             _ => true,
         });
         if let Some((p, line)) = open {
+            if self.nag.is_some() {
+                // Don't switch tabs under an open question.
+                return redraw;
+            }
             self.open(&p);
             if let Some(l) = line {
                 self.view.goto_line(l);
@@ -1537,6 +1634,16 @@ impl App {
             self.pending = true;
         }
         redraw
+    }
+
+    /// A question bar is about the tab that was active when it appeared;
+    /// remember which, so the answer goes to that tab.
+    fn sync_nag_owner(&mut self) {
+        match (&self.nag, self.nag_tab) {
+            (None, _) => self.nag_tab = None,
+            (Some(_), None) => self.nag_tab = self.tabs.get(self.active).map(|t| t.id),
+            _ => {}
+        }
     }
 
     fn handle_inner(&mut self, input: &Input) -> bool {
@@ -1613,6 +1720,10 @@ impl App {
                 return true;
             }
             Input::Drop(p) => {
+                if self.nag.is_some() {
+                    self.notice = Some("Answer the question above first".into());
+                    return true;
+                }
                 let p = p.clone();
                 self.open(&p);
                 return true;
@@ -2046,6 +2157,7 @@ impl App {
 
     /// Run deferred work for at most `budget`.
     pub fn tick(&mut self, budget: Duration) -> Tick {
+        self.sync_nag_owner();
         let mut ctx = ctx!(self);
         let t = self.view.tick(&mut ctx, budget);
         self.pending = t.more;
