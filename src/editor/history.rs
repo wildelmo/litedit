@@ -115,6 +115,10 @@ pub struct History {
     undo: Vec<Group>,
     redo: Vec<Group>,
     next_id: u64,
+    /// State id with nothing left to undo. 0 = as loaded; once old groups
+    /// are dropped (MAX_UNDO) it is the state after the last dropped group,
+    /// so undoing everything can't look like the saved file.
+    base: u64,
 }
 
 impl History {
@@ -150,7 +154,8 @@ impl History {
             time: now,
         });
         if self.undo.len() > MAX_UNDO {
-            self.undo.remove(0);
+            let dropped = self.undo.remove(0);
+            self.base = dropped.id;
         }
     }
 
@@ -194,7 +199,7 @@ impl History {
 
     /// Id of the state the document is in (0 = as loaded).
     pub fn state_id(&self) -> u64 {
-        self.undo.last().map_or(0, |g| g.id)
+        self.undo.last().map_or(self.base, |g| g.id)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -225,6 +230,25 @@ mod tests {
         assert_eq!(transform(Pos::new(2, 1), &rem, true), Pos::new(1, 2)); // inside → start
         assert_eq!(transform(Pos::new(2, 4), &rem, true), Pos::new(1, 4));
         assert_eq!(transform(Pos::new(5, 1), &rem, true), Pos::new(4, 1));
+    }
+
+    #[test]
+    fn dropping_old_groups_never_fakes_the_loaded_state() {
+        let mut h = History::default();
+        let mut b = Buffer::from_text("");
+        assert_eq!(h.state_id(), 0);
+        for i in 0..MAX_UNDO + 5 {
+            let op = Op::Insert {
+                at: Pos::new(0, 0),
+                chunk: Chunk::typed("x", Eol::Lf),
+            };
+            let inv = op.apply(&mut b);
+            h.record(vec![inv], vec![], vec![], GroupKind::Other);
+            let _ = i;
+        }
+        while h.undo(&mut b).is_some() {}
+        assert_ne!(h.state_id(), 0, "text still differs from the loaded file");
+        assert_eq!(b.to_text().len(), 5);
     }
 
     #[test]

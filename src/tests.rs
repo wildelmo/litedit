@@ -2611,3 +2611,28 @@ fn theme_toggle_never_rewrites_a_settings_file_it_cannot_read_exactly() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn zooming_out_to_the_limit_with_small_fonts_never_panics() {
+    let d = tmp_dir("zoom");
+    let set = d.join("settings.txt");
+    std::fs::write(&set, "ui_font_size = 8\n").unwrap();
+    let (_, files) = many_files("zoomfiles", 6);
+    for size in [(1280u32, 800u32), (300, 200), (90, 60)] {
+        let mut app = new_app();
+        app.use_settings(set.clone());
+        for f in &files {
+            app.open(f);
+        }
+        app.handle(Input::Resize(size.0, size.1));
+        for _ in 0..30 {
+            key(&mut app, "ctrl+minus");
+            render_hash(&mut app, size.0, size.1);
+        }
+        for _ in 0..60 {
+            key(&mut app, "ctrl+plus");
+        }
+        render_hash(&mut app, size.0, size.1);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

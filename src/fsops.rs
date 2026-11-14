@@ -67,12 +67,22 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     if target == path {
         return Ok(target);
     }
-    // Allow case-only renames on Windows (same file, different case).
-    let case_only = target
-        .to_string_lossy()
-        .eq_ignore_ascii_case(&path.to_string_lossy());
-    if target.exists() && !case_only {
-        return Err("something with that name already exists".into());
+    if target.exists() {
+        // A case-only rename (a.md → A.md) is allowed when it is the same
+        // file: on a case-insensitive folder `exists` sees ourselves. If an
+        // entry with exactly the new name is listed, it is another file
+        // (case-sensitive folder) and must not be overwritten.
+        let case_only =
+            target.to_string_lossy().to_lowercase() == path.to_string_lossy().to_lowercase();
+        let exact_exists = std::fs::read_dir(parent)
+            .map(|rd| {
+                rd.flatten()
+                    .any(|e| e.file_name() == std::ffi::OsStr::new(name))
+            })
+            .unwrap_or(true);
+        if !case_only || exact_exists {
+            return Err("something with that name already exists".into());
+        }
     }
     std::fs::rename(path, &target).map_err(|e| e.to_string())?;
     Ok(target)
@@ -197,6 +207,29 @@ mod tests {
             "names are a single component"
         );
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn case_only_rename_never_overwrites_another_file() {
+        let d = std::env::temp_dir().join(format!("litedit-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.md"), "lower").unwrap();
+        let case_sensitive = std::fs::write(d.join("A.md"), "upper").is_ok()
+            && std::fs::read_to_string(d.join("a.md")).unwrap() == "lower";
+        if case_sensitive {
+            // Two distinct files: renaming one onto the other is refused.
+            assert!(rename(&d.join("a.md"), "A.md").is_err());
+            assert_eq!(std::fs::read_to_string(d.join("A.md")).unwrap(), "upper");
+            std::fs::remove_file(d.join("A.md")).unwrap();
+        }
+        // Same file, new case: allowed (Windows-style rename).
+        let new = rename(&d.join("a.md"), "A.md").unwrap();
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "lower");
+        // Non-ASCII case change of the same file.
+        std::fs::write(d.join("é.md"), "e").unwrap();
+        assert!(rename(&d.join("é.md"), "É.md").is_ok());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

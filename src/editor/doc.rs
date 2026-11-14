@@ -380,8 +380,10 @@ impl EditDoc {
     /// Tab: indent selected lines, or insert one indent at the caret.
     pub fn indent_lines(&mut self) {
         let unit = self.indent.unit();
-        if self.sels.iter().all(|s| s.anchor.line == s.head.line) {
-            // Insert an indent unit (spaces up to the next stop).
+        if self.sels.iter().all(|s| s.anchor == s.head) {
+            // No selection: insert an indent unit (spaces up to the next
+            // stop). With a selection, indent the lines (lite-xl) — never
+            // replace the selected text.
             let indent = self.indent;
             self.edit_each(GroupKind::Other, |buf, sel| {
                 let (a, b) = sel.range();
@@ -746,6 +748,7 @@ impl EditDoc {
     pub fn delete_lines(&mut self) {
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
+            let b = last_line_of(a, b);
             let start = Pos::new(a.line, 0);
             let end = if b.line + 1 < buf.line_count() {
                 Pos::new(b.line + 1, 0)
@@ -782,6 +785,7 @@ impl EditDoc {
         let eol = self.buf.default_eol();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
+            let b = last_line_of(a, b);
             let text: Vec<String> = (a.line..=b.line).map(|l| buf.line(l).to_string()).collect();
             let at = Pos::new(b.line, buf.line(b.line).len());
             let mut lines = vec![String::new()];
@@ -796,6 +800,16 @@ impl EditDoc {
                 Some(Pos::new(sel.head.line + n, sel.head.col)),
             )
         });
+    }
+}
+
+/// A selection ending at column 0 of a later line (Ctrl+L, Shift+Down)
+/// doesn't include that line: its end is the previous line's end.
+fn last_line_of(a: Pos, b: Pos) -> Pos {
+    if b.col == 0 && b.line > a.line {
+        Pos::new(b.line - 1, 0)
+    } else {
+        b
     }
 }
 
@@ -955,6 +969,43 @@ pub fn sel_range(s: &Sel) -> (Pos, Pos) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_commands_respect_a_selection_ending_at_column_zero() {
+        // Ctrl+L on line 1 selects "1\n" (ends at 2:0): only line 1 counts.
+        let mut d = doc("1\n2\n3\n4\n");
+        d.select_line_at(0);
+        d.delete_lines();
+        assert_eq!(d.buf.to_text(), "2\n3\n4\n");
+        let mut d = doc("1\n2\n3\n4\n");
+        d.select_line_at(0);
+        d.duplicate_lines();
+        assert_eq!(d.buf.to_text(), "1\n1\n2\n3\n4\n");
+        // Shift+Down selection over two lines ending at column 0.
+        let mut d = doc("a\nb\nc\nd\n");
+        d.set_caret(Pos::new(1, 0), false);
+        d.set_caret(Pos::new(3, 0), true);
+        d.delete_lines();
+        assert_eq!(d.buf.to_text(), "a\nd\n");
+    }
+
+    #[test]
+    fn tab_on_a_selection_indents_instead_of_replacing() {
+        let mut d = doc("hello world");
+        d.select_all();
+        d.indent_lines();
+        assert_eq!(d.buf.to_text(), "    hello world");
+        let mut d = doc("x\nlast");
+        d.set_caret(Pos::new(1, 0), false);
+        d.set_caret(Pos::new(1, 2), true);
+        d.indent_lines();
+        assert_eq!(d.buf.to_text(), "x\n    last");
+        // No selection: still inserts spaces at the caret.
+        let mut d = doc("ab");
+        d.set_caret(Pos::new(0, 1), false);
+        d.indent_lines();
+        assert_eq!(d.buf.to_text(), "a   b");
+    }
 
     fn doc(text: &str) -> EditDoc {
         EditDoc::new(Document {

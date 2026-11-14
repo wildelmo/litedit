@@ -172,6 +172,11 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.0 part 2: delete/duplicate line respect a selection ending
+  at column 0 (Ctrl+L); Tab on any selection indents lines (never replaces
+  text); undo history overflow can't fake the saved state; case-only rename
+  never overwrites a different file (exact-name check, Unicode case); zoom
+  to the limit with small fonts is a regression test (old code panicked).
 - 2026-11-14 — S5.0 part 1 (data safety, from the adversarial review): a
   question bar answers for the tab it asked about (owner recorded; drops and
   link opens wait); "changed on disk" compares disk with what we last
