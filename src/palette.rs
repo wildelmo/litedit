@@ -10,7 +10,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::input::{Input, MouseButton};
 use crate::inputbar::{BarEvent, InputBar};
 use crate::theme;
-use crate::tree::{is_ignored, read_dir_sorted};
+use crate::tree::{is_ignored, read_dir_all};
 use crate::ui::{Ctx, FontKind};
 
 /// Quick open lists at most this many files.
@@ -141,7 +141,7 @@ pub fn index_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let (entries, _) = read_dir_sorted(&dir, false);
+        let (entries, _) = read_dir_all(&dir, false);
         for e in entries {
             if out.len() >= MAX_INDEX_FILES {
                 return out;
@@ -313,7 +313,15 @@ impl Palette {
             }
             BarEvent::Submit { .. } => match self.mode {
                 Mode::GoToLine => {
-                    let n: usize = self.bar.text().trim().parse().ok()?;
+                    let t = self.bar.text().trim().to_string();
+                    // All digits but too big to parse: the last line.
+                    let n: usize = match t.parse() {
+                        Ok(n) => n,
+                        Err(_) if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) => {
+                            usize::MAX
+                        }
+                        Err(_) => return None,
+                    };
                     Some(Outcome::GoToLine(n.clamp(1, self.max_line.max(1))))
                 }
                 Mode::Text => Some(Outcome::Text(self.bar.text().to_string())),
@@ -430,6 +438,20 @@ fn pretty_keys(k: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_sees_every_file_of_a_big_folder() {
+        let d = std::env::temp_dir().join(format!("litedit-bigdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for i in 0..crate::tree::MAX_ENTRIES + 200 {
+            std::fs::write(d.join(format!("file{i:05}.txt")), "").unwrap();
+        }
+        let idx = index_files(&d);
+        assert_eq!(idx.len(), crate::tree::MAX_ENTRIES + 200);
+        assert!(idx.iter().any(|p| p.ends_with("file05199.txt")));
+        let _ = std::fs::remove_dir_all(&d);
+    }
     use crate::input::parse_key_combo;
 
     #[test]

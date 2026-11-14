@@ -5,13 +5,20 @@
 //! always advance), the regex engine has a backtracking limit so a bad pattern
 //! cannot hang the editor, and counts/replace-all are capped.
 
+use std::time::{Duration, Instant};
+
 use fancy_regex::{Regex, RegexBuilder};
 
 use crate::editor::buffer::{Buffer, Pos};
 use crate::inputbar::InputBar;
 
 /// Backtracking steps per search before fancy-regex gives up on a line.
-const BACKTRACK_LIMIT: usize = 200_000;
+const BACKTRACK_LIMIT: usize = 50_000;
+/// Whole-document searches (next match, count) give up after this long, so
+/// a pathological regex can't freeze the window.
+pub const SEARCH_BUDGET: Duration = Duration::from_millis(300);
+/// Replace all may take longer (the user asked for it explicitly).
+pub const REPLACE_BUDGET: Duration = Duration::from_secs(3);
 /// Matches reported per line (highlighting) and in total (count/replace all).
 pub const MAX_LINE_MATCHES: usize = 1000;
 pub const MAX_TOTAL_MATCHES: usize = 100_000;
@@ -25,6 +32,8 @@ pub struct Finder {
     pub regex: bool,
     /// Keyboard focus is on the replace field.
     pub on_replace: bool,
+    /// The last whole-document search ran out of time (pattern too slow).
+    pub stopped: bool,
     compiled: Option<(String, bool, bool, Result<Regex, String>)>,
 }
 
@@ -36,6 +45,7 @@ impl Finder {
             case_sensitive: false,
             regex: false,
             on_replace: false,
+            stopped: false,
             compiled: None,
         }
     }
@@ -96,8 +106,14 @@ impl Finder {
         };
         let re = re.clone();
         let n = buf.line_count();
+        let deadline = Instant::now() + SEARCH_BUDGET;
+        self.stopped = false;
         if back {
             for k in 0..=n {
+                if k % 64 == 63 && Instant::now() > deadline {
+                    self.stopped = true;
+                    return None;
+                }
                 let line = (from.line + n - k % n) % n;
                 let text = buf.line(line);
                 let ms = matches_in(&re, text);
@@ -108,6 +124,10 @@ impl Finder {
             }
         } else {
             for k in 0..=n {
+                if k % 64 == 63 && Instant::now() > deadline {
+                    self.stopped = true;
+                    return None;
+                }
                 let line = (from.line + k) % n;
                 let text = buf.line(line);
                 let ms = matches_in(&re, text);
@@ -127,7 +147,13 @@ impl Finder {
         };
         let re = re.clone();
         let mut total = 0;
-        for l in buf.lines() {
+        let deadline = Instant::now() + SEARCH_BUDGET;
+        self.stopped = false;
+        for (i, l) in buf.lines().iter().enumerate() {
+            if i % 64 == 63 && Instant::now() > deadline {
+                self.stopped = true;
+                return (total, true);
+            }
             total += matches_in(&re, l).len();
             if total >= MAX_TOTAL_MATCHES {
                 return (MAX_TOTAL_MATCHES, true);
@@ -163,7 +189,13 @@ impl Finder {
         };
         let re = re.clone();
         let mut out = Vec::new();
+        let deadline = Instant::now() + REPLACE_BUDGET;
+        self.stopped = false;
         for (i, l) in buf.lines().iter().enumerate() {
+            if i % 64 == 63 && Instant::now() > deadline {
+                self.stopped = true;
+                return out;
+            }
             for (a, b) in matches_in(&re, l) {
                 out.push((Pos::new(i, a), Pos::new(i, b)));
                 if out.len() >= MAX_TOTAL_MATCHES {
@@ -248,6 +280,27 @@ mod tests {
             "wraps back"
         );
         assert_eq!(f.count(&buf), (2, false));
+    }
+
+    #[test]
+    fn pathological_patterns_stop_quickly() {
+        let text: String = (0..20_000)
+            .map(|_| format!("{}!\n", "a".repeat(28)))
+            .collect();
+        let buf = Buffer::from_text(&text);
+        for p in ["^(a|aa)+(?!.)", "^((a+)+)(?<!!)$"] {
+            let mut f = finder(p);
+            f.regex = true;
+            let t = Instant::now();
+            let _ = f.count(&buf);
+            let _ = f.next(&buf, Pos::new(0, 0), false);
+            let _ = f.next(&buf, Pos::new(0, 0), true);
+            assert!(
+                t.elapsed() < Duration::from_secs(3),
+                "{p} took {:?}",
+                t.elapsed()
+            );
+        }
     }
 
     #[test]

@@ -28,6 +28,16 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-026 Known cosmetic limitations left after the 1.1 review
+Not worth the risk or size right now; tell me if any bothers you:
+- Soft wrap counts every character as one column, so CJK lines can run past
+  the right edge, and a break can fall between a letter and its accent.
+- Home on a wrapped row goes to the start of the whole line.
+- Regex search skips empty matches (`^`, `\b`), so "add text at every line
+  start" with `^` is not possible; use Alt+Shift selection later (S5.4).
+- Path comparisons for open tabs are exact (case-sensitive). On Windows two
+  spellings of one path (`Notes.md` / `notes.md`) could open twice.
+
 
 ### D-024 Settings are a small text file, applied when saved
 `%APPDATA%\litedit\settings.txt`, `key = value` lines (lite-xl uses a Lua

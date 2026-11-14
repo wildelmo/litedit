@@ -396,7 +396,15 @@ impl View for SearchView {
 
     fn status(&self) -> Vec<String> {
         vec![
-            format!("{} results", self.hits.len()),
+            format!(
+                "{} {}",
+                self.hits.len(),
+                if self.hits.len() == 1 {
+                    "result"
+                } else {
+                    "results"
+                }
+            ),
             if self.done {
                 "done".into()
             } else {

@@ -712,6 +712,24 @@ impl App {
                 self.tree.invalidate(&[path.to_path_buf()]);
                 self.tree.reveal(path);
                 self.after_save(path);
+                // Another tab showing the old contents of that file: close it
+                // if it has no edits, so one file isn't open twice.
+                let active_id = self.tabs[self.active].id;
+                let others: Vec<(u64, bool)> = (0..self.tabs.len())
+                    .filter(|&i| self.tabs[i].id != active_id)
+                    .filter(|&i| self.tab_view(i).path() == Some(path))
+                    .map(|i| (self.tabs[i].id, self.tab_view(i).is_dirty()))
+                    .collect();
+                for (id, dirty) in others {
+                    if dirty {
+                        self.notice = Some(format!(
+                            "Another tab still has unsaved edits for {}",
+                            display_name(path)
+                        ));
+                    } else {
+                        self.remove_tab(id);
+                    }
+                }
             }
             Err(SaveError::Failed(e)) => {
                 self.nag = Some(Nag::error(format!(

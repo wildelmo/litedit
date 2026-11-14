@@ -1242,7 +1242,7 @@ fn find_in_folder_opens_results_at_line() {
     app.settle(Duration::from_secs(5));
     render_hash(&mut app, 900, 600);
     assert!(
-        app.status_text().starts_with("1 results"),
+        app.status_text().starts_with("1 result "),
         "{}",
         app.status_text()
     );
@@ -2634,5 +2634,78 @@ fn zooming_out_to_the_limit_with_small_fonts_never_panics() {
         }
         render_hash(&mut app, size.0, size.1);
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn files_with_millions_of_lines_are_refused_politely() {
+    let d = tmp_dir("lines");
+    let f = d.join("many.txt");
+    std::fs::write(&f, "\n".repeat(crate::doc::MAX_LINES + 1)).unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    render_hash(&mut app, 800, 600);
+    assert!(app.title().starts_with("Error"), "{}", app.title());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_line_starting_with_right_to_left_text_is_drawn_in_view() {
+    let d = tmp_dir("rtl");
+    let f = d.join("rtl.txt");
+    std::fs::write(&f, "مرحبا بالعالم\n").unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    app.settle(Duration::from_secs(2));
+    let (w, h) = (800u32, 600u32);
+    let mut buf = vec![0u32; (w * h) as usize];
+    app.render(&mut Canvas::new(&mut buf, w, h));
+    // Text pixels on the first line, right of the line numbers.
+    let bg = theme::p().background;
+    let bg = ((bg.r as u32) << 16) | ((bg.g as u32) << 8) | bg.b as u32;
+    let lit = (40..60)
+        .flat_map(|y| (330..700).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let p = buf[(y * w + x) as usize] & 0xffffff;
+            p != bg
+                && p != (((theme::p().line_highlight.r as u32) << 16)
+                    | ((theme::p().line_highlight.g as u32) << 8)
+                    | theme::p().line_highlight.b as u32)
+        })
+        .count();
+    assert!(lit > 50, "only {lit} text pixels: the line is off screen");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn small_fixes_from_the_review() {
+    let d = tmp_dir("small");
+    // Binary files are not opened as text.
+    std::fs::write(d.join("pic.png"), [0x89, b'P', b'N', b'G', 0, 0, 0, 13]).unwrap();
+    let mut app = new_app();
+    app.open(&d.join("pic.png"));
+    assert!(app.title().starts_with("Error"), "{}", app.title());
+    // Go to line with an absurd number goes to the last line.
+    std::fs::write(d.join("t.txt"), "a\nb\nc\n").unwrap();
+    app.open(&d.join("t.txt"));
+    key(&mut app, "ctrl+g");
+    app.handle(Input::Text("99999999999999999999999999".into()));
+    key(&mut app, "enter");
+    assert!(app.status_text().contains("Ln 4"), "{}", app.status_text());
+    // Save As onto a file open (unchanged) in another tab closes that tab.
+    std::fs::write(d.join("u.txt"), "old").unwrap();
+    app.open(&d.join("u.txt"));
+    key(&mut app, "ctrl+shift+tab");
+    app.save_as(&d.join("u.txt"));
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(
+        names.iter().filter(|n| *n == "u.txt").count(),
+        1,
+        "{names:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("u.txt")).unwrap(),
+        "a\nb\nc\n"
+    );
     let _ = std::fs::remove_dir_all(&d);
 }

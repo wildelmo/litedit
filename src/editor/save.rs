@@ -20,14 +20,20 @@ use crate::doc::is_reserved_name;
 
 /// Where a save to `path` should actually write (follows symlinks).
 fn resolve_target(path: &Path) -> PathBuf {
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_symlink() => match fs::read_link(path) {
-            Ok(t) if t.is_absolute() => t,
-            Ok(t) => path.parent().map(|p| p.join(&t)).unwrap_or(t),
-            Err(_) => path.to_path_buf(),
-        },
-        _ => path.to_path_buf(),
+    // Follow a chain of links (a → b → file) to the real file, so the
+    // links themselves stay links. Bounded, in case of a loop.
+    let mut cur = path.to_path_buf();
+    for _ in 0..32 {
+        match fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => match fs::read_link(&cur) {
+                Ok(t) if t.is_absolute() => cur = t,
+                Ok(t) => cur = cur.parent().map(|p| p.join(&t)).unwrap_or(t),
+                Err(_) => return cur,
+            },
+            _ => return cur,
+        }
     }
+    cur
 }
 
 fn temp_path(target: &Path) -> PathBuf {
@@ -40,8 +46,11 @@ fn temp_path(target: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
+    // Keep the temp name short: long file names plus the suffix could pass
+    // the 255-character limit and make saving impossible.
+    let short: String = name.chars().take(40).collect();
     dir.join(format!(
-        ".{name}.litedit-{}-{stamp}.tmp",
+        ".{short}.litedit-{}-{stamp}.tmp",
         std::process::id()
     ))
 }
@@ -206,6 +215,44 @@ fn replace_file(target: &Path, replacement: &Path) -> Result<(), u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn very_long_file_names_can_be_saved() {
+        let d = std::env::temp_dir().join(format!("litedit-longname-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join(format!("{}.txt", "n".repeat(240)));
+        std::fs::write(&f, "old").unwrap();
+        save_bytes(&f, b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "new");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_chain_of_links_writes_the_real_file() {
+        let d = std::env::temp_dir().join(format!("litedit-chain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("real.txt"), "old").unwrap();
+        std::os::unix::fs::symlink(d.join("real.txt"), d.join("mid")).unwrap();
+        std::os::unix::fs::symlink("mid", d.join("top")).unwrap();
+        save_bytes(&d.join("top"), b"new").unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("real.txt")).unwrap(), "new");
+        assert!(
+            std::fs::symlink_metadata(d.join("mid"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::symlink_metadata(d.join("top"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("litedit-save-{name}-{}", std::process::id()));

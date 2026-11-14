@@ -115,8 +115,17 @@ fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
     name.starts_with('.') && name != "." && name != ".."
 }
 
-/// Read one directory: ignored names removed, dirs first, case-insensitive.
+/// Read one directory: ignored names removed, dirs first, case-insensitive,
+/// cut at MAX_ENTRIES (the tree's display limit). Returns (entries, total).
 pub fn read_dir_sorted(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
+    let (mut out, total) = read_dir_all(dir, show_hidden);
+    out.truncate(MAX_ENTRIES);
+    (out, total)
+}
+
+/// Like [`read_dir_sorted`] without the display limit (quick open and find
+/// in folder must see every file; they have their own overall cap).
+pub fn read_dir_all(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
     let mut out = Vec::new();
     let Ok(rd) = std::fs::read_dir(dir) else {
         return (out, 0);
@@ -169,7 +178,6 @@ pub fn read_dir_sorted(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     let total = out.len();
-    out.truncate(MAX_ENTRIES);
     (out, total)
 }
 

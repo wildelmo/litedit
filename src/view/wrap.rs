@@ -17,7 +17,11 @@ pub fn wrap_breaks(line: &str, width_cols: usize) -> Vec<usize> {
     let mut col = 0usize; // column within the current row
     let mut abs_col = 0usize; // column within the whole line (for tabs)
     let mut last_space: Option<(usize, usize)> = None; // (byte after space, col after space)
-    for (b, c) in line.char_indices() {
+    // The view shows at most MAX_DISPLAY_CHARS of a line; wrap only that.
+    for (b, c) in line
+        .char_indices()
+        .take(crate::view::code::MAX_DISPLAY_CHARS)
+    {
         let w = if c == '\t' {
             TAB_WIDTH - abs_col % TAB_WIDTH
         } else {
@@ -76,7 +80,8 @@ impl Rows {
             let mut row = 0;
             for l in lines {
                 self.first.push(row);
-                row += if l.len() <= c {
+                // Fast path only when no tab can widen the line.
+                row += if l.len() <= c && !l.contains('\t') {
                     1
                 } else {
                     wrap_breaks(l, c).len()
@@ -203,6 +208,25 @@ mod tests {
         r.update(&lines, 1, Some(20));
         assert!(t.elapsed().as_millis() < 2000, "took {:?}", t.elapsed());
         assert!(r.total() > 170_000);
+    }
+
+    #[test]
+    fn tabs_and_very_long_lines_wrap_like_they_are_drawn() {
+        let tabbed = format!("{}{}", "\t".repeat(8), "x".repeat(20));
+        let lines = vec![tabbed.clone()];
+        let mut r = Rows::default();
+        r.update(&lines, 1, Some(40));
+        assert!(
+            r.row_count(0) > 1,
+            "8 tabs = 32 columns + 20 chars needs 2 rows"
+        );
+        assert_eq!(r.row_count(0), wrap_breaks(&tabbed, 40).len());
+        let long = "word ".repeat(10_000);
+        let rows = wrap_breaks(&long, 80).len();
+        assert!(
+            rows <= crate::view::code::MAX_DISPLAY_CHARS / 70,
+            "{rows} rows for the shown part only"
+        );
     }
 
     #[test]

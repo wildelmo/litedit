@@ -12,7 +12,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub const MAX_FILE_BYTES: u64 = 40 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 16_384;
-pub const MAX_DECODE_ALLOC: u64 = 256 * 1024 * 1024;
+pub const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
+/// Largest image decoded (a 24-megapixel photo fits). Checked from the
+/// header before decoding, so a tiny file can't ask for gigabytes.
+pub const MAX_PIXELS: u64 = 25_000_000;
 /// Images are stored at most this large (longest side), to bound memory.
 pub const STORE_MAX_SIDE: u32 = 2400;
 
@@ -148,6 +151,14 @@ pub fn decode_file(path: &Path) -> Result<Decoded, String> {
 }
 
 pub fn decode_bytes(bytes: &[u8]) -> Result<Decoded, String> {
+    let (w, h) = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("unreadable image: {e}"))?
+        .into_dimensions()
+        .map_err(|e| format!("cannot decode image: {e}"))?;
+    if w as u64 * h as u64 > MAX_PIXELS {
+        return Err(format!("image too large ({w} × {h})"));
+    }
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| format!("unreadable image: {e}"))?;
@@ -199,6 +210,27 @@ pub fn scale_to(d: &Decoded, w: u32, h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn huge_dimensions_are_refused_from_the_header_alone() {
+        // A PNG header claiming 6000 x 6000 with no pixel data.
+        let mut bytes = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut bytes, 6000, 6000);
+            enc.set_color(png::ColorType::Rgba);
+            let mut w = enc.write_header().unwrap();
+            // A tiny (incomplete) data chunk: enough for the header to be read.
+            w.write_chunk(
+                png::chunk::IDAT,
+                &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+            )
+            .unwrap();
+            std::mem::forget(w); // don't let the writer finish the stream
+        }
+        assert!(bytes.len() < 200);
+        let e = decode_bytes(&bytes).unwrap_err();
+        assert!(e.contains("too large"), "{e}");
+    }
 
     #[cfg(unix)]
     #[test]

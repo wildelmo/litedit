@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 /// Refuse to open files larger than this in one go (protects memory).
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+/// About 100 MB of memory at the most per open file.
+pub const MAX_LINES: usize = 4_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -51,7 +53,21 @@ impl Document {
             )));
         }
         let bytes = std::fs::read(path)?;
+        // Each line costs memory beyond its text; millions of tiny lines
+        // would need gigabytes.
+        let lines = bytes.iter().filter(|&&b| b == b'\n').count();
+        if lines > MAX_LINES {
+            return Err(io::Error::other(format!(
+                "file has too many lines to open ({} million)",
+                lines / 1_000_000
+            )));
+        }
         let (text, encoding) = decode(&bytes);
+        if looks_binary(&bytes, encoding) {
+            return Err(io::Error::other(
+                "this looks like a binary file (an image, program or archive), not text",
+            ));
+        }
         // The only reliable test: does it encode back to the same bytes?
         let lossy = encoding == Encoding::Utf8Lossy || encode(&text, encoding) != bytes;
         Ok(Self {
@@ -94,6 +110,12 @@ pub fn is_reserved_name(path: &Path) -> bool {
     (prefix == "COM" || prefix == "LPT")
         && rest.len() == 1
         && (rest[0].is_ascii_digit() || matches!(rest[0], '¹' | '²' | '³'))
+}
+
+/// NUL bytes in the first 8 KB of a file that isn't UTF-16: binary.
+fn looks_binary(bytes: &[u8], enc: Encoding) -> bool {
+    !matches!(enc, Encoding::Utf16Le | Encoding::Utf16Be)
+        && bytes.iter().take(8192).any(|&b| b == 0)
 }
 
 pub fn decode(bytes: &[u8]) -> (String, Encoding) {

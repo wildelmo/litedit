@@ -162,6 +162,11 @@ fn shape_display(
         (t.as_str(), a)
     });
     b.set_rich_text(rich, &base, Shaping::Advanced, None);
+    // Code is always laid out from the left edge, whatever the direction
+    // of its first character.
+    for line in b.lines.iter_mut() {
+        line.set_align(Some(cosmic_text::Align::Left));
+    }
     b
 }
 
@@ -942,6 +947,7 @@ impl CodeView {
                     Some(e) => e,
                     None if f.pattern().is_empty() => String::new(),
                     None => match f.count(buf) {
+                        (n, true) if f.stopped => format!("{n}+ (pattern too slow, stopped)"),
                         (0, _) => "no matches".into(),
                         (n, false) => format!("{n} {}", if n == 1 { "match" } else { "matches" }),
                         (n, true) => format!("{n}+ matches"),
@@ -1088,7 +1094,13 @@ impl CodeView {
             let line_len = self.doc.buf.line(i).len();
             let (row_start, row_end) = (br[k], br.get(k + 1).copied().unwrap_or(line_len));
             let last_row_of_line = k + 1 == br.len();
-            let row_x0 = self.col_to_x(i, row_start, ctx);
+            // A row starting at the line start needs no shift (in a right-to-left
+            // line the first character is drawn at the right end).
+            let row_x0 = if row_start == 0 {
+                0.0
+            } else {
+                self.col_to_x(i, row_start, ctx)
+            };
             let row_x1 = self.col_to_x(i, row_end, ctx);
             let y = (top + r as f32 * lh).round() as i32;
             let row = Rect::new(rect.x, y, rect.w, lh as i32);

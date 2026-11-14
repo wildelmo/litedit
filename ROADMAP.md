@@ -145,7 +145,8 @@ Owner asked for tabs/compare/split "like other code editors" (VS Code is the
 reference for these; lite-xl for the rest). Adversarial review findings are
 fixed first (S5.0).
 
-- [ ] S5.0 Fix confirmed findings from the end-to-end adversarial review
+- [x] S5.0 Fix confirmed findings from the end-to-end adversarial review
+       (remaining cosmetic items: D-026)
 - [x] S5.1a Tree drag-to-move, F2/Delete in tree, unsaved dot in tab close slot
 - [x] S5.1 Tabs like VS Code: shrink when crowded (to a readable minimum,
        names end in "…"), then scroll (wheel, active tab kept in view, overflow
@@ -172,6 +173,15 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.0 part 4: whole-document searches stop after 300 ms (3 s
+  for replace all) and say "pattern too slow" (two patterns that froze for
+  minutes now take ~0.3 s); backtrack limit 50k; files over 4M lines refused;
+  images over 25 MP refused from the header; code lines starting with RTL
+  text drawn in view (row shift bug); wrapped tab-indented lines and lines
+  past 4000 chars wrap as drawn; quick open / find in folder see past 5000
+  files per folder; binary files aren't opened as text; Go to line with a
+  huge number goes to the end; Save As onto a file open in another (clean)
+  tab closes it; symlink chains followed on save; long names save; "1 result".
 - 2026-11-14 — S5.0 part 3 (security): markdown paths using NT/device forms
   (`\\??\\`, `\\\\?\\`, `\\\\.\\`, `/??/`) or alternate data streams are blocked
   (they could reach UNC shares and bypass the network-path rule); symlinked
