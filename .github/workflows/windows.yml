@@ -1,0 +1,96 @@
+name: windows
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      - name: Pure-Rust regex check (no onig C library)
+        shell: pwsh
+        run: |
+          cargo tree --target x86_64-pc-windows-msvc -i onig_sys 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { Write-Error "onig_sys (C regex) is in the dependency tree"; exit 1 }
+          exit 0
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Static CRT check (no VC++ redistributable needed)
+        shell: pwsh
+        run: |
+          $deps = dumpbin /dependents target\release\litedit.exe | Out-String
+          Write-Output $deps
+          if ($deps -match "VCRUNTIME|MSVCP|api-ms-win-crt") { Write-Error "exe depends on the VC++ runtime"; exit 1 }
+
+      - name: Measure (size, startup, memory) and screenshots
+        shell: pwsh
+        run: |
+          $exe = "target\release\litedit.exe"
+          New-Item -ItemType Directory -Force out | Out-Null
+          $sizeMB = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+
+          # Headless render through the same code path as the window.
+          $t = Measure-Command {
+            Start-Process -FilePath $exe -Wait -NoNewWindow -ArgumentList @(
+              "--screenshot", "out\shot-100.png", "--stats", "out\stats-100.txt", "--size", "1280x800", "src\canvas.rs")
+          }
+          Start-Process -FilePath $exe -Wait -NoNewWindow -ArgumentList @(
+            "--screenshot", "out\shot-150.png", "--stats", "out\stats-150.txt", "--size", "1920x1200", "--scale", "1.5", "README.md")
+          $stats = Get-Content out\stats-100.txt -Raw
+
+          # Real window: open a file, let it settle, read memory.
+          $p = Start-Process -FilePath $exe -ArgumentList "ROADMAP.md" -PassThru
+          Start-Sleep -Seconds 4
+          $p.Refresh()
+          $alive = -not $p.HasExited
+          $ws = if ($alive) { [math]::Round($p.WorkingSet64 / 1MB, 1) } else { "n/a" }
+          $peak = if ($alive) { [math]::Round($p.PeakWorkingSet64 / 1MB, 1) } else { "n/a" }
+          $priv = if ($alive) { [math]::Round($p.PrivateMemorySize64 / 1MB, 1) } else { "n/a" }
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+
+          $crash = Test-Path "target\release\litedit-crash.log"
+          $summary = @"
+          ## litedit Windows metrics
+          | metric | value |
+          |---|---|
+          | exe size | $sizeMB MB |
+          | screenshot run wall time | $([math]::Round($t.TotalMilliseconds)) ms |
+          | window: working set after 4s | $ws MB |
+          | window: peak working set | $peak MB |
+          | window: private bytes | $priv MB |
+          | window still running after 4s | $alive |
+          | crash log present | $crash |
+
+          ``````
+          $stats
+          ``````
+          "@
+          $summary | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          $summary | Out-File -Encoding utf8 out\metrics.md
+          Write-Output $summary
+          if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
+          if (-not $alive) { Write-Error "window process exited early"; exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litedit-windows
+          path: |
+            target/release/litedit.exe
+            out/

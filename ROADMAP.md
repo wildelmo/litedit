@@ -1,0 +1,96 @@
+# litedit roadmap
+
+litedit is an ultralight, memory-safe text editor for Windows, written in Rust.
+It is built around one core idea: **markdown opens as a pretty preview by
+default**, and everything else (code, text) is shown with syntax colors. It uses
+[lite-xl](https://github.com/lite-xl/lite-xl) as its design blueprint — we copy
+its architecture and behaviour, not its Lua code.
+
+Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
+
+## Product rules (non-negotiable)
+
+- Single `.exe`, no installer, no runtime, no browser engine.
+- No plugins, no network access, no launching programs (except opening
+  http/https/mailto links in the user's browser, and "Show in Explorer").
+- Pure-Rust dependencies where possible (memory safety covers the whole stack).
+- Markdown preview never executes HTML and never fetches remote images.
+- Target: idle RAM in the tens of MB, exe in the single-digit-to-low-teens MB.
+
+## Decided v1 interaction model
+
+- `.md` opens in preview. `Ctrl+E` toggles to the editor. Optional side-by-side
+  live preview. (Typora-style inline editing: out of scope.)
+- File tree on the left. Open a folder via `Ctrl+Shift+O`, CLI arg, or drag-drop.
+
+---
+
+## Epic 0 — Foundation (thin slice, proves the stack on Windows)
+
+- [x] S0.1 Cargo project, MIT license, lite-xl credit (NOTICE)
+- [x] S0.2 Window (winit) + software canvas (softbuffer) + text (cosmic-text)
+- [x] S0.3 Headless `--screenshot out.png` mode using the same render path
+- [~] S0.4 Windows CI: release build, tests, screenshot, upload exe + PNG;
+       log exe size, startup time, peak memory
+- [x] S0.5 Windows hardening: static CRT, panic hook → log file, no `\\?\` paths,
+       CRLF / BOM / non-UTF-8 tolerant file loading
+- [ ] S0.6 User runs the CI exe on their Windows machine and gives feedback
+       (DPI, fonts, feel) — **gate before Epic 1**
+
+## Epic 1 — Viewer (useful daily for reading)
+
+- [ ] S1.1 Markdown parse (pulldown-cmark, GFM: tables, tasks, strikethrough)
+- [ ] S1.2 Preview layout: headings, paragraphs, bold/italic/code/strike, links
+- [ ] S1.3 Preview: lists (nested, numbered, tasks), block quotes, rules
+- [ ] S1.4 Preview: fenced code blocks with syntax colors
+- [ ] S1.5 Preview: tables
+- [ ] S1.6 Preview: local images (size-limited decode, no remote fetch)
+- [ ] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
+- [ ] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
+       lazy highlighting, scrolling
+- [ ] S1.9 Theme: lite-xl default dark palette for UI + syntax
+- [ ] S1.10 File tree: open folder, lazy expand/collapse, icons, ignore list,
+        hidden toggle, keyboard nav, resize, highlight current file, Ctrl+\
+- [ ] S1.11 Open file / folder: CLI arg, Ctrl+O, Ctrl+Shift+O, drag-drop
+- [ ] S1.12 File watching (notify): tree refresh, reload open file
+- [ ] S1.13 Status bar; zoom (Ctrl +/-); DPI awareness
+
+## Epic 2 — Editor
+
+- [ ] S2.1 Text buffer (ropey), load/save preserving line endings + encoding
+- [ ] S2.2 Cursor, selection (mouse + keyboard), multi-cursor (later)
+- [ ] S2.3 Typing, delete, indent/outdent, auto-indent
+- [ ] S2.4 Undo/redo (lite-xl doc/init.lua model)
+- [ ] S2.5 Clipboard (arboard)
+- [ ] S2.6 Save, Save As, dirty marker, confirm on close
+- [ ] S2.7 Ctrl+E preview/edit toggle
+- [ ] S2.8 IME / non-English input
+
+## Epic 3 — Daily driver
+
+- [ ] S3.1 Tabs
+- [ ] S3.2 Find / replace (in file)
+- [ ] S3.3 Side-by-side live preview
+- [ ] S3.4 Tree actions: new, rename, delete→Recycle Bin, Show in Explorer
+- [ ] S3.5 Find in folder
+- [ ] S3.6 Recent folders / files, restore session
+- [ ] S3.7 Command palette (lite-xl commandview)
+
+## Epic 4 — Polish
+
+- [ ] S4.1 Light theme + theme setting
+- [ ] S4.2 Settings file (fonts, sizes, ignore list)
+- [ ] S4.3 Smooth scrolling; dirty-rect redraw (lite-xl rencache) if needed
+- [ ] S4.4 Large-file performance pass
+- [ ] S4.5 App icon, version info, file associations (optional)
+- [ ] S4.6 Text selection + copy in preview
+
+---
+
+## Progress log
+
+Newest first. One line per meaningful step.
+
+- 2026-11-14 — Thin slice works on Linux: 4.7 MB exe, ~110 ms startup, ~14 MB RSS
+  in window mode. Pushing with Windows CI to get real Windows numbers.
+- 2026-11-14 — Project started. Roadmap written. Working on Epic 0.
