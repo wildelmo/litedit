@@ -252,5 +252,11 @@ jobs:
           cp artifact/target/release/litedit.exe LICENSE NOTICE THIRD-PARTY-NOTICES.txt README.md "$dir/"
           zip -r "$dir.zip" "$dir"
           notes=$(awk -v v="## ${GITHUB_REF_NAME#v}" '$0 ~ "^## " {p = index($0, v) == 1} p' CHANGELOG.md)
-          gh release create "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe \
-            --title "litedit $GITHUB_REF_NAME" --notes "$notes"
+          # Also works when the release was drafted on github.com first: then
+          # the files are attached to it.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe \
+              --title "litedit $GITHUB_REF_NAME" --notes "$notes"
+          fi
