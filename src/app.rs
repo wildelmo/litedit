@@ -565,6 +565,8 @@ impl App {
             if self.view.is_dirty() && self.view.disk_state() == DiskState::Differs {
                 let name = self.view_name();
                 self.nag = Some(Nag::changed_on_disk(&name));
+                // This question belongs to this tab, whatever happens next.
+                self.nag_tab = Some(id);
             }
         }
         self.pending = true;
@@ -1047,6 +1049,11 @@ impl App {
 
     /// A tree drag ended on a folder: ask before moving.
     fn ask_move(&mut self, from: PathBuf, dir: PathBuf) {
+        // Never replace a question that is already showing.
+        if self.nag.is_some() {
+            self.notice = Some("Answer the question above first, then move it again".into());
+            return;
+        }
         if self.tabs_under(&from).iter().any(|(_, _, dirty)| *dirty) {
             self.nag = Some(Nag::error(format!(
                 "Save or close the open file(s) in {} before moving it.",
@@ -2576,6 +2583,12 @@ impl App {
                     if inside(pane, *x, *y) && self.tab_drag.is_none() =>
                 {
                     self.focus_group(o.group);
+                    // Focusing may raise that tab's own question (it changed
+                    // on disk): stop here so this click can't land somewhere
+                    // else in the new layout.
+                    if self.nag.is_some() {
+                        return true;
+                    }
                     layout = self.layout();
                 }
                 Input::Wheel { .. } if inside(o.main, self.mouse.0, self.mouse.1) => {
@@ -2735,7 +2748,11 @@ impl App {
             let mut ctx = ctx!(self);
             let r = match layout.tree {
                 Some(t) => self.tree.handle(input, t, &mut ctx),
-                None => false,
+                // The tree was hidden mid-drag: the drag is over.
+                None => {
+                    self.tree.cancel_drag();
+                    true
+                }
             };
             if let Some((from, dir)) = self.tree.requested_move.take() {
                 self.ask_move(from, dir);

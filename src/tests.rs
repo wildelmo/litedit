@@ -3239,3 +3239,65 @@ fn new_editing_keys_palette_commands_and_trim_on_save() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_disk_question_raised_by_clicking_the_other_side_stays_with_its_tab() {
+    use crate::input::MouseButton;
+    let (d, files) = many_files("splitnag", 3);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    app.handle(Input::Text("R2EDIT ".into())); // f02
+    key(&mut app, "ctrl+alt+right"); // f02 right
+    key(&mut app, "ctrl+1");
+    app.handle(Input::Text("R1EDIT ".into())); // f01 on the left
+    key(&mut app, "ctrl+alt+right"); // f01 right too (shown there)
+    key(&mut app, "ctrl+1");
+    std::fs::write(&files[1], "changed elsewhere\n").unwrap();
+    app.handle(Input::FsChanged(vec![files[1].clone()]));
+    render_hash(&mut app, 800, 600);
+    // Click the right side just below its tab bar, at several heights.
+    for y in [50.0, 60.0, 70.0] {
+        mouse(&mut app, 650.0, y, MouseButton::Left);
+        if app.nag_message().is_some() {
+            break;
+        }
+    }
+    let q = app.nag_message().unwrap_or_default();
+    assert!(q.contains("f01.txt changed on disk"), "{q}");
+    assert!(
+        app.title().contains("f01.txt"),
+        "question and tab agree: {}",
+        app.title()
+    );
+    key(&mut app, "r"); // Reload from disk: only f01 is affected
+    let tabs = app.tab_titles();
+    assert!(
+        tabs.iter().any(|t| t.0 == "f02.txt" && t.1),
+        "f02 keeps its edit: {tabs:?}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn saving_over_a_file_that_became_unreadable_asks_first() {
+    let d = tmp_dir("unreadable");
+    let f = d.join("t.txt");
+    std::fs::write(&f, "hello\n").unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    app.handle(Input::Text("MINE ".into()));
+    std::fs::write(&f, b"other program\0data\n").unwrap();
+    key(&mut app, "ctrl+s");
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("changed by another program"),
+        "{:?}",
+        app.nag_message()
+    );
+    key(&mut app, "escape");
+    assert_eq!(std::fs::read(&f).unwrap(), b"other program\0data\n");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -85,6 +85,52 @@ pub fn is_unsafe_local_path(p: &str) -> bool {
         .any(|(i, c)| c == ':' && !(i == 1 && b[0].is_ascii_alphabetic()))
 }
 
+/// A link target that is a local drive path written in verbatim/NT form
+/// (`\\?\C:\…`, `\??\C:\…`, as Windows junctions report) is fine.
+fn is_local_drive_target(t: &str) -> bool {
+    let rest = t
+        .strip_prefix("\\\\?\\")
+        .or_else(|| t.strip_prefix("\\??\\"));
+    rest.is_some_and(|r| {
+        let b = r.as_bytes();
+        b.len() >= 3
+            && b[0].is_ascii_alphabetic()
+            && b[1] == b':'
+            && (b[2] == b'\\' || b[2] == b'/')
+    })
+}
+
+/// Does any symlink/junction along `p` — or any hop of a chain of links —
+/// point at a network share or device path? (Following it would make
+/// Windows contact that server.)
+pub fn link_reaches_unsafe(p: &Path) -> bool {
+    let mut prefix = PathBuf::new();
+    for comp in p.components() {
+        prefix.push(comp);
+        let mut cur = prefix.clone();
+        for _ in 0..16 {
+            match std::fs::symlink_metadata(&cur) {
+                Ok(m) if m.file_type().is_symlink() => match std::fs::read_link(&cur) {
+                    Ok(t) => {
+                        let ts = t.to_string_lossy();
+                        if is_unsafe_local_path(&ts) && !is_local_drive_target(&ts) {
+                            return true;
+                        }
+                        cur = if t.is_absolute() || is_local_drive_target(&ts) {
+                            t
+                        } else {
+                            cur.parent().map(|d| d.join(&t)).unwrap_or(t)
+                        };
+                    }
+                    Err(_) => return true,
+                },
+                _ => break,
+            }
+        }
+    }
+    false
+}
+
 pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
     let dest = dest.trim();
     if dest.is_empty() {
@@ -146,6 +192,31 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn link_chains_and_linked_folders_to_network_paths_are_caught() {
+        let d = std::env::temp_dir().join(format!("litedit-chain-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("real")).unwrap();
+        std::fs::write(d.join("real/x.png"), b"x").unwrap();
+        std::os::unix::fs::symlink("//evil/share", d.join("mid")).unwrap();
+        std::os::unix::fs::symlink(d.join("mid"), d.join("top")).unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("ok")).unwrap();
+        assert!(link_reaches_unsafe(&d.join("top")));
+        assert!(
+            link_reaches_unsafe(&d.join("top/x.png")),
+            "linked folder mid-path"
+        );
+        assert!(
+            !link_reaches_unsafe(&d.join("ok/x.png")),
+            "local links are fine"
+        );
+        assert!(!link_reaches_unsafe(&d.join("real/x.png")));
+        assert!(is_local_drive_target("\\\\?\\C:\\x") && is_local_drive_target("\\??\\D:\\y"));
+        assert!(!is_local_drive_target("\\\\?\\UNC\\evil\\x"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn device_nt_and_stream_paths_are_blocked() {

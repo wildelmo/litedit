@@ -44,6 +44,7 @@ impl InputBar {
             text: single_line(initial),
             encoding: Encoding::Utf8,
             lossy: false,
+            meta: None,
         });
         doc.select_all();
         Self {

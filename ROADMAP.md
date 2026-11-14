@@ -192,6 +192,18 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Independent review of c8b735f..HEAD; fixed: (1) split view: a
+  click on the other side that raised that tab's disk question could land on
+  another tab and the answer went to it (now bound to its tab, click stops);
+  (2) line commands with two carets on one line hit extra lines (one
+  selection per line block); (3) save-time check treated "can't read the
+  file" (now binary / too many lines) as unchanged and overwrote it (now
+  Differs → asks); (4) link chains and linked folders mid-path to network
+  paths (every hop checked; local junctions allowed). Also: size+mtime
+  shortcut only on sub-second timestamps and taken before reading; replace
+  all says when the time limit stopped it; CR-only files split in compare;
+  a tree drag never replaces an open question; hiding the tree mid-drag ends
+  the drag. Regression tests, the split one mutation-checked.
 - 2026-11-14 — S5.7 editing commands (EditDoc replace_all / map_lines keep
   each line's ending; one undo step each), View::run_command for palette
   commands, F11, trim-on-save setting. Esc now keeps the first caret (VS Code).

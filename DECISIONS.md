@@ -39,8 +39,10 @@ UTF-16 without a BOM) are refused too. Tell me if you hit one; an
 Before saving, litedit checks whether another program changed the file. If
 the size and modification time are exactly as when litedit last read or
 wrote it, the file isn't re-read (saving a large file stays instant);
-otherwise its text is compared. NTFS times are precise to 100 ns, so a
-same-size change slipping through is practically impossible.
+otherwise its text is compared. The shortcut is only used when the time has
+sub-second precision (NTFS); on FAT/exFAT USB drives (2 s / 10 ms times) the
+text is always compared. A file that can no longer be read as text counts as
+changed, so saving asks first.
 
 ### D-027 Split view: two sides, Ctrl+Alt+arrows, not saved in the session
 VS Code uses Ctrl+\ to split, but in litedit Ctrl+\ already shows/hides the

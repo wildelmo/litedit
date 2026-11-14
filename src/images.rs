@@ -133,7 +133,7 @@ pub fn decode_file(path: &Path) -> Result<Decoded, String> {
     // A symlink could point at a network share (reading it authenticates
     // to that server); local images are opened only as plain files.
     let link = std::fs::symlink_metadata(path).map_err(|_| "image not found".to_string())?;
-    if link.file_type().is_symlink() {
+    if link.file_type().is_symlink() || crate::links::link_reaches_unsafe(path) {
         return Err("linked images are not opened".into());
     }
     let meta = std::fs::metadata(path).map_err(|_| "image not found".to_string())?;

@@ -144,11 +144,10 @@ pub fn read_dir_all(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
         let meta = if is_link {
             // Never touch a link that points at a network share or device
             // path: even reading its details authenticates to the server.
-            match std::fs::read_link(&path) {
-                Ok(t) if !crate::links::is_unsafe_local_path(&t.to_string_lossy()) => {
-                    std::fs::metadata(&path).ok()
-                }
-                _ => None,
+            if crate::links::link_reaches_unsafe(&path) {
+                None
+            } else {
+                std::fs::metadata(&path).ok()
             }
         } else {
             e.metadata().ok()
@@ -442,6 +441,12 @@ impl Tree {
     /// even outside the panel until the button is released).
     pub fn dragging(&self) -> bool {
         self.press.is_some()
+    }
+
+    /// Forget a drag in progress (e.g. the tree was hidden).
+    pub fn cancel_drag(&mut self) {
+        self.press = None;
+        self.drop_target = None;
     }
 
     /// The selected entry (keyboard actions like F2 / Delete).

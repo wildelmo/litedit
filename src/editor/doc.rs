@@ -142,19 +142,20 @@ impl EditDoc {
             goal_col: None,
             lossy: doc.lossy,
             disk_hash: text_hash(&doc.text),
-            disk_meta: None,
+            disk_meta: doc.meta,
         }
-        .with_disk_meta()
     }
 
-    fn with_disk_meta(mut self) -> Self {
-        self.disk_meta = file_meta(&self.path);
-        self
-    }
-
-    /// Size and mtime unchanged since we last read or wrote the file?
+    /// Size and mtime unchanged since we last read or wrote the file? Only
+    /// trusted when the time has sub-second precision (NTFS); FAT/exFAT USB
+    /// drives store 2-second or 10 ms times, so a quick same-size change
+    /// could hide there — those are always compared by content.
     pub fn disk_unchanged_fast(&self) -> bool {
-        self.disk_meta.is_some() && file_meta(&self.path) == self.disk_meta
+        let precise = self.disk_meta.is_some_and(|(_, t)| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .is_ok_and(|d| d.subsec_nanos() % 10_000_000 != 0)
+        });
+        precise && file_meta(&self.path) == self.disk_meta
     }
 
     /// Is `disk_text` what we last read or wrote (or what we're showing)?
@@ -226,7 +227,7 @@ impl EditDoc {
         self.encoding = doc.encoding;
         self.lossy = doc.lossy;
         self.disk_hash = text_hash(&doc.text);
-        self.disk_meta = file_meta(&self.path);
+        self.disk_meta = doc.meta;
         self.hist = History::default();
         for s in &mut self.sels {
             s.anchor = self.buf.clamp(s.anchor);
@@ -687,6 +688,7 @@ impl EditDoc {
 
     /// Paste whole lines above each caret (after a line-mode copy).
     pub fn paste_lines(&mut self, text: &str) {
+        self.one_selection_per_line_block();
         let chunk = Chunk::typed(text, self.buf.default_eol());
         self.edit_each(GroupKind::Other, |_, sel| {
             let at = Pos::new(sel.head.line, 0);
@@ -768,6 +770,7 @@ impl EditDoc {
 
     /// Remove the whole line under each caret (cut a line with no selection).
     pub fn delete_lines(&mut self) {
+        self.one_selection_per_line_block();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
             let b = last_line_of(a, b);
@@ -911,6 +914,23 @@ impl EditDoc {
         if !all.is_empty() {
             self.sels = all;
         }
+    }
+
+    /// Whole-line commands act on each line once: when several selections
+    /// touch the same lines (two carets on one line), they become one
+    /// selection per block of lines. A lone selection is left as it is.
+    fn one_selection_per_line_block(&mut self) {
+        let blocks = self.selected_blocks();
+        if blocks.len() == self.sels.len() {
+            return;
+        }
+        self.sels = blocks
+            .into_iter()
+            .map(|(a, b)| Sel {
+                anchor: Pos::new(a, 0),
+                head: Pos::new(b, self.buf.line(b).len()),
+            })
+            .collect();
     }
 
     /// Line blocks covered by the selections (merged, ascending).
@@ -1322,6 +1342,7 @@ impl EditDoc {
 
     /// Duplicate the current line(s) below.
     pub fn duplicate_lines(&mut self) {
+        self.one_selection_per_line_block();
         let eol = self.buf.default_eol();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
@@ -1644,6 +1665,35 @@ mod tests {
     }
 
     #[test]
+    fn line_commands_with_two_carets_on_one_line_touch_that_line_once() {
+        let mut d = doc("one two three\nkeep me\nlast\n");
+        d.set_caret(Pos::new(0, 1), false);
+        d.add_caret(Pos::new(0, 5));
+        let (t, line_mode) = d.copy_text();
+        assert!(line_mode);
+        assert_eq!(t, "one two three\n");
+        d.delete_lines();
+        assert_eq!(d.buf.to_text(), "keep me\nlast\n");
+        let mut d = doc("ab\ncd\n");
+        d.set_caret(Pos::new(0, 0), false);
+        d.add_caret(Pos::new(0, 1));
+        d.duplicate_lines();
+        assert_eq!(d.buf.to_text(), "ab\nab\ncd\n");
+        let mut d = doc("x + x\nkeep\n");
+        d.set_caret(Pos::new(0, 0), false);
+        d.select_next_occurrence();
+        d.select_next_occurrence();
+        assert_eq!(d.sels.len(), 2);
+        d.delete_lines();
+        assert_eq!(d.buf.to_text(), "keep\n");
+        let mut d = doc("a\nb\n");
+        d.set_caret(Pos::new(1, 0), false);
+        d.add_caret(Pos::new(1, 1));
+        d.paste_lines("new\n");
+        assert_eq!(d.buf.to_text(), "a\nnew\nb\n");
+    }
+
+    #[test]
     fn ctrl_click_adds_and_removes_carets() {
         let mut d = doc("abc\ndef");
         d.set_caret(Pos::new(0, 1), false);
@@ -1698,6 +1748,7 @@ mod tests {
             text: text.into(),
             encoding: Encoding::Utf8,
             lossy: false,
+            meta: None,
         })
     }
 

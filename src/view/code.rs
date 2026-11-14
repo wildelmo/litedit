@@ -849,6 +849,7 @@ impl CodeView {
     fn replace_all(&mut self) {
         let Some(f) = self.find.as_mut() else { return };
         let all = f.all(&self.doc.buf);
+        let stopped = f.stopped;
         let mut edits = Vec::with_capacity(all.len());
         for (a, b) in all {
             let line = self.doc.buf.line(a.line).to_string();
@@ -861,7 +862,11 @@ impl CodeView {
             self.doc.replace_ranges(edits);
             self.after_edit(0);
         }
-        self.find_note = Some(format!("replaced {n}"));
+        self.find_note = Some(if stopped {
+            format!("replaced {n} — stopped early (pattern too slow); not every match was replaced")
+        } else {
+            format!("replaced {n}")
+        });
     }
 
     /// Route input to the find bar when it has focus. Returns Some(redraw)
@@ -1473,7 +1478,10 @@ impl View for CodeView {
             Ok(d) if self.doc.disk_matches(&d.text) => DiskState::Same,
             Ok(_) => DiskState::Differs,
             Err(_) if !self.doc.path().exists() => DiskState::Missing,
-            Err(_) => DiskState::Same,
+            // It exists but can't be read as text any more (now binary, too
+            // big, locked): don't assume it's unchanged — saving would
+            // silently overwrite whatever another program wrote.
+            Err(_) => DiskState::Differs,
         }
     }
 

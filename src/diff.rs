@@ -182,9 +182,13 @@ fn merge(mut v: Vec<(usize, usize)>, gap: usize) -> Vec<(usize, usize)> {
 /// Split text into lines without line endings (CRLF, LF or CR).
 pub fn lines(text: &str) -> Vec<String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // CRLF, LF and lone CR all end a line.
     let mut out: Vec<String> = text
         .split('\n')
-        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .flat_map(|l| {
+            let l = l.strip_suffix('\r').unwrap_or(l);
+            l.split('\r').map(str::to_string).collect::<Vec<_>>()
+        })
         .collect();
     if out.len() > 1 && out.last().is_some_and(String::is_empty) {
         out.pop();
@@ -235,6 +239,7 @@ mod tests {
         let m = compute(&a, &[], Duration::from_secs(1));
         assert_eq!(kinds(&m), "--");
         assert_eq!(l("x\r\ny\r\n"), l("x\ny\n"), "line endings are ignored");
+        assert_eq!(l("x\ry\r"), l("x\ny\n"), "old Mac CR-only files too");
         assert_eq!(l(""), vec![String::new()]);
     }
 

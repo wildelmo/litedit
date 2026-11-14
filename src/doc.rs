@@ -35,6 +35,9 @@ pub struct Document {
     /// Saving would not write back the exact bytes that were read (invalid
     /// UTF-8, broken UTF-16, …): the user must confirm before saving.
     pub lossy: bool,
+    /// Size and modified time taken *before* reading (so a write during the
+    /// read is noticed later).
+    pub meta: Option<(u64, std::time::SystemTime)>,
 }
 
 impl Document {
@@ -43,6 +46,7 @@ impl Document {
             return Err(io::Error::other("reserved Windows device name"));
         }
         let meta = std::fs::metadata(path)?;
+        let stamp = meta.modified().ok().map(|t| (meta.len(), t));
         if !meta.is_file() {
             return Err(io::Error::other("not a regular file"));
         }
@@ -75,6 +79,7 @@ impl Document {
             text,
             encoding,
             lossy,
+            meta: stamp,
         })
     }
 
