@@ -53,7 +53,10 @@ impl Runner {
         };
         for req in self.app.take_requests() {
             match req {
-                Request::Quit => event_loop.exit(),
+                Request::Quit => {
+                    self.save_session();
+                    event_loop.exit();
+                }
                 // Handled inside the app; never reaches the window.
                 Request::OpenPath(_) | Request::OpenPathAt(..) => {}
                 Request::OpenUrl(url) => {
@@ -83,6 +86,9 @@ impl Runner {
             }
         }
         self.watcher.set_targets(self.app.watch_targets());
+        if self.app.take_session_dirty() {
+            self.save_session();
+        }
         let title = self.app.title();
         if title != self.title {
             window.set_title(&title);
@@ -100,6 +106,12 @@ impl Runner {
         }
         if redraw {
             window.request_redraw();
+        }
+    }
+
+    fn save_session(&self) {
+        if let Some(f) = crate::session::session_file() {
+            let _ = self.app.session().save(&f);
         }
     }
 

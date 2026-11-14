@@ -125,7 +125,7 @@ asks for each dirty tab.
        delete → Recycle Bin, Show in Explorer
 - [x] S3.6 Find in folder (Ctrl+Shift+F): background search, results list,
        click opens at line
-- [ ] S3.7 Recent folders/files, restore last session when started without
+- [x] S3.7 Recent folders/files, restore last session when started without
        arguments (%APPDATA%\litedit)
 
 ## Epic 4 — Polish
@@ -145,6 +145,10 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Epic 3 complete. S3.7: session restore (folder, tabs, active tab,
+  tree width/visibility, zoom) when started without arguments; recent folders and
+  files (Ctrl+R); stored in %APPDATA%\litedit\session.txt (tolerant text format,
+  atomic save).
 - 2026-11-14 — S3.6 done: find in folder (Ctrl+Shift+F or tree menu): background
   search with tree rules, binary/huge/cache files skipped, 5000-result cap,
   results tab with highlighted matches, Enter/click opens at the line, cancelled

@@ -65,6 +65,7 @@ pub struct Palette {
 pub const COMMANDS: &[(&str, &str)] = &[
     ("File: Open File…", "ctrl+o"),
     ("File: Open Folder…", "ctrl+shift+o"),
+    ("File: Open Recent…", "ctrl+r"),
     ("File: Save", "ctrl+s"),
     ("File: Save As…", "ctrl+shift+s"),
     ("File: Close Tab", "ctrl+w"),
@@ -208,6 +209,23 @@ impl Palette {
         p.bar.set_text(initial);
         p.hint = hint.to_string();
         p
+    }
+
+    /// Recently opened folders and files.
+    pub fn recent(paths: &[PathBuf]) -> Self {
+        let items = paths
+            .iter()
+            .map(|p| Item {
+                label: p.display().to_string(),
+                detail: if p.is_dir() {
+                    "folder".into()
+                } else {
+                    "file".into()
+                },
+                action: Action::Open(p.clone()),
+            })
+            .collect();
+        Self::new(Mode::Files, "Open recent", items, 0)
     }
 
     pub fn goto_line(max_line: usize) -> Self {

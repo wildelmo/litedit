@@ -22,6 +22,12 @@ library reports it. **Question:** if you use such a layout, check that @ and
 
 ## Decided — review when convenient
 
+### D-021 Starting litedit without a file restores the last session
+Like VS Code: the last folder, open tabs (that still exist), active tab, tree
+width and zoom come back. Opening a specific file (double-click, drag onto
+the exe, command line) opens just that file. Stored in
+`%APPDATA%\litedit\session.txt`; delete it to start fresh.
+
 ### D-020 Delete from the tree goes to the Recycle Bin, with Windows' warning
 litedit asks "Move X to the Recycle Bin?" first. Where Windows can't recycle
 (network drives, very large items), Windows itself shows its "delete

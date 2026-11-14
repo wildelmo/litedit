@@ -14,6 +14,7 @@ use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::menu::{Menu, MenuAction, MenuResult};
 use crate::nag::{Nag, NagAction, Pending};
 use crate::palette::{Action, Outcome, Palette, index_files};
+use crate::session::{Session, push_recent};
 use crate::text::Fonts;
 use crate::theme;
 use crate::tree::Tree;
@@ -66,6 +67,10 @@ pub struct App {
     menu: Option<Menu>,
     /// What the open text prompt is for.
     prompt_for: Option<MenuAction>,
+    /// Recently opened folders and files, most recent first.
+    recent: Vec<PathBuf>,
+    /// Something worth remembering changed (the window saves the session).
+    session_dirty: bool,
     /// What to do after "save anyway" for a lossy file.
     after_lossy: Option<Pending>,
     /// One-shot message in the status bar (e.g. "Saved").
@@ -126,6 +131,8 @@ impl App {
             file_index: None,
             menu: None,
             prompt_for: None,
+            recent: Vec::new(),
+            session_dirty: false,
             after_lossy: None,
             notice: None,
             pending: false,
@@ -146,6 +153,10 @@ impl App {
     /// discards anything: an already-open file is brought to the front,
     /// otherwise a new tab is added.
     pub fn open(&mut self, path: &Path) {
+        if path.exists() {
+            push_recent(&mut self.recent, path);
+            self.session_dirty = true;
+        }
         if path.is_dir() {
             // A folder only changes the tree; open files stay open.
             self.tree.set_root(path);
@@ -242,6 +253,7 @@ impl App {
 
     /// Remove a tab without asking (its edits are dropped).
     fn remove_tab(&mut self, id: u64) {
+        self.session_dirty = true;
         let Some(i) = self.tab_index(id) else { return };
         self.disk_prompt.retain(|t| *t != id);
         if self.tabs.len() == 1 {
@@ -610,6 +622,61 @@ impl App {
         if let Err(e) = result {
             self.nag = Some(Nag::error(e));
         }
+    }
+
+    /// What to remember for next time.
+    pub fn session(&self) -> Session {
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        for i in 0..self.tabs.len() {
+            if let Some(p) = self.tab_view(i).path() {
+                if i == self.active {
+                    active = tabs.len();
+                }
+                tabs.push(p.to_path_buf());
+            }
+        }
+        Session {
+            root: self.tree.root().map(Path::to_path_buf),
+            tabs,
+            active,
+            recent: self.recent.clone(),
+            tree_width: self.tree.width,
+            tree_visible: self.tree.visible,
+            zoom: self.zoom,
+        }
+    }
+
+    /// Reopen the last session (only what still exists on disk).
+    pub fn restore(&mut self, s: Session) {
+        self.recent = s.recent;
+        self.tree.width = s.tree_width;
+        self.zoom = s.zoom;
+        if let Some(r) = s.root.filter(|r| r.is_dir()) {
+            self.tree.set_root(&r);
+            self.view = Box::new(MessageView::folder_opened());
+        }
+        for t in s.tabs.iter().filter(|t| t.is_file()) {
+            self.open_now(t);
+        }
+        if let Some(p) = s.tabs.get(s.active).filter(|p| p.is_file())
+            && let Some(i) = self.find_tab(p)
+        {
+            self.activate(i);
+        }
+        self.tree.visible = s.tree_visible;
+        self.focus = Focus::Main;
+        self.session_dirty = false;
+    }
+
+    #[cfg(test)]
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// True once after something worth saving changed.
+    pub fn take_session_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.session_dirty)
     }
 
     #[cfg(test)]
@@ -1018,6 +1085,12 @@ impl App {
                     }
                     Key::Char('p') => {
                         self.open_quick_open();
+                        true
+                    }
+                    Key::Char('r') if !mods.shift => {
+                        let items: Vec<PathBuf> =
+                            self.recent.iter().filter(|p| p.exists()).cloned().collect();
+                        self.palette = Some(Palette::recent(&items));
                         true
                     }
                     Key::Char('g') if !mods.shift => {

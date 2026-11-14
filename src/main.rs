@@ -18,6 +18,7 @@ mod nag;
 mod palette;
 mod platform;
 mod script;
+mod session;
 mod syntax;
 mod text;
 mod theme;
@@ -177,5 +178,11 @@ fn main() {
         return;
     }
 
+    // Started without files: pick up where the last session left off.
+    if args.paths.is_empty()
+        && let Some(f) = session::session_file()
+    {
+        app.restore(session::Session::load(&f));
+    }
     window::run(app);
 }

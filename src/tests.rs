@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::app::App;
 use crate::canvas::Canvas;
 use crate::input::{Input, Key, Mods, Request, parse_key_combo};
+use crate::session::Session;
 use crate::text::Fonts;
 
 pub fn fixture(name: &str) -> PathBuf {
@@ -1247,5 +1248,43 @@ fn find_in_folder_opens_results_at_line() {
     press(&mut app, "enter");
     assert!(app.title().starts_with("guide.md"), "{}", app.title());
     assert!(app.status_text().contains("Ln 3"), "{}", app.status_text());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn session_round_trip_and_recent() {
+    let dir = std::env::temp_dir().join(format!("litedit-session-app-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("one.md"), "# one\n").unwrap();
+    std::fs::write(dir.join("two.txt"), "two\n").unwrap();
+    let mut app = new_app();
+    app.open(&dir);
+    app.open(&dir.join("one.md"));
+    app.open(&dir.join("two.txt"));
+    press(&mut app, "ctrl+plus");
+    press(&mut app, "ctrl+shift+tab"); // back to one.md
+    assert!(app.take_session_dirty());
+    let s = app.session();
+    assert_eq!(s.root.as_deref(), Some(dir.as_path()));
+    assert_eq!(s.tabs.len(), 2);
+    assert_eq!(s.active, 0);
+    assert!(s.recent.iter().any(|p| p.ends_with("two.txt")));
+    // A fresh app restores folder, tabs, active tab and zoom; missing files are skipped.
+    let mut s2 = Session::parse(&s.to_text());
+    s2.tabs.push(dir.join("gone.md"));
+    let mut app2 = new_app();
+    app2.restore(s2);
+    assert_eq!(app2.tab_count(), 2);
+    assert!(app2.title().starts_with("one.md"), "{}", app2.title());
+    assert!(
+        (app2.zoom() - app.zoom()).abs() < 0.01 && app2.zoom() > 1.0,
+        "zoom restored"
+    );
+    // Ctrl+R lists recent items and opens one.
+    press(&mut app2, "ctrl+r");
+    type_text(&mut app2, "two");
+    press(&mut app2, "enter");
+    assert!(app2.title().starts_with("two.txt"));
     std::fs::remove_dir_all(&dir).ok();
 }
