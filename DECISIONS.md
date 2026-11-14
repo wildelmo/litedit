@@ -22,6 +22,11 @@ library reports it. **Question:** if you use such a layout, check that @ and
 
 ## Decided — review when convenient
 
+### D-022 Markdown wraps lines; code does not (Alt+Z toggles)
+Prose is easier to edit when long lines wrap at the window edge; code reads
+better unwrapped with horizontal scrolling. Alt+Z switches either way.
+Wrapping is visual only — the file's lines are unchanged.
+
 ### D-021 Starting litedit without a file restores the last session
 Like VS Code: the last folder, open tabs (that still exist), active tab, tree
 width and zoom come back. Opening a specific file (double-click, drag onto

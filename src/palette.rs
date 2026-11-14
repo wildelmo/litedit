@@ -86,6 +86,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Edit: Outdent", "ctrl+["),
     ("Markdown: Toggle Preview / Edit", "ctrl+e"),
     ("Markdown: Side-by-Side Preview", "ctrl+shift+v"),
+    ("View: Toggle Word Wrap", "alt+z"),
     ("View: Toggle File Tree", "ctrl+\\"),
     ("View: Focus File Tree", "ctrl+shift+e"),
     ("View: Toggle Hidden Files", "ctrl+shift+h"),

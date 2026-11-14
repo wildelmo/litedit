@@ -75,7 +75,8 @@ pub struct MarkdownView {
 
 impl MarkdownView {
     pub fn new(doc: Document) -> Self {
-        let editor = CodeView::new(doc);
+        let mut editor = CodeView::new(doc);
+        editor.wrap = true; // prose reads better wrapped (D-022)
         let md_text = crate::text::sanitize(&editor.doc.buf.to_text_lf()).into_owned();
         let md = parse(&md_text);
         let md_version = editor.doc.version();

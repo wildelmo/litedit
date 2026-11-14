@@ -1496,3 +1496,95 @@ fn fuzz_whole_app_with_epic3_features() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[test]
+fn soft_wrap_moves_by_visual_rows_and_maps_clicks() {
+    let long = "word ".repeat(60); // ~300 chars: several rows at 800 px
+    let p = temp_file("wrap.txt", &format!("{long}\nshort\n"));
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+\\");
+    render_hash(&mut app, 800, 600);
+    press(&mut app, "alt+z");
+    assert!(app.status_text().contains("Wrap"), "{}", app.status_text());
+    render_hash(&mut app, 800, 600);
+    // Down moves to the next visual row of the same line, not the next line.
+    press(&mut app, "down");
+    let st = app.status_text();
+    assert!(st.starts_with("Ln 1, Col "), "still line 1: {st}");
+    let col: usize = st["Ln 1, Col ".len()..]
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .trim_end_matches(',')
+        .parse()
+        .unwrap();
+    assert!(col > 20, "moved one visual row: {st}");
+    // Keep going down: eventually reaches line 2.
+    for _ in 0..10 {
+        press(&mut app, "down");
+    }
+    assert!(
+        app.status_text().starts_with("Ln 2") || app.status_text().starts_with("Ln 3"),
+        "{}",
+        app.status_text()
+    );
+    // Clicking on the second visual row places the caret inside line 1.
+    let lh = (15.0f32 * 1.4).round();
+    let y = 35.0 + 7.0 + lh * 1.5;
+    app.handle(Input::MouseDown {
+        x: 120.0,
+        y,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    let st = app.status_text();
+    assert!(st.starts_with("Ln 1, Col "), "{st}");
+    // Typing at the end of a wrapped line works and renders.
+    press(&mut app, "end");
+    type_text(&mut app, "tail");
+    render_hash(&mut app, 300, 400);
+    press(&mut app, "alt+z");
+    assert!(!app.status_text().contains("Wrap"));
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn markdown_source_wraps_by_default() {
+    let p = temp_file("w.md", &format!("# T\n\n{}\n", "lorem ipsum ".repeat(40)));
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+e");
+    assert!(app.status_text().contains("Wrap"), "{}", app.status_text());
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+/// Visual movement must work before the first frame is drawn (scripts,
+/// fast typing): the row mapping is refreshed on demand.
+#[test]
+fn wrap_movement_works_without_a_render() {
+    let p = temp_file("wrap2.md", &format!("{}\nsecond\n", "word ".repeat(80)));
+    let mut app = new_app();
+    app.handle(Input::Resize(600, 400));
+    app.open(&p);
+    press(&mut app, "ctrl+e");
+    press(&mut app, "down");
+    let st = app.status_text();
+    assert!(
+        st.contains("Ln 1, Col ") && !st.contains("Ln 1, Col 1 "),
+        "moved within line 1: {st}"
+    );
+    // The row width matches the real view width (not a tiny default):
+    // one visual row of a 600 px view holds well over 20 characters.
+    let col: usize = st
+        .split("Col ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(col > 30, "row width too small: {st}");
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}

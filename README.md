@@ -48,6 +48,7 @@ or drag a file or folder onto the window.
 | `Ctrl+A` / `Ctrl+L` | Select all / select line |
 | `Ctrl+Shift+D` / `Ctrl+Shift+K` | Duplicate line / delete line |
 | `Tab` / `Shift+Tab` | Indent / outdent |
+| `Alt+Z` | Toggle word wrap (on by default for markdown) |
 | `Ctrl+\` | Show / hide the file tree |
 | `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
 | `Ctrl+Shift+H` | Show / hide hidden files in the tree |

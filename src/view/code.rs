@@ -24,6 +24,7 @@ use crate::syntax::{LineHighlighter, Span, find_syntax};
 use crate::text::display_char;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
+use crate::view::wrap::{Rows, row_of, wrap_breaks};
 use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
 
 /// Lines longer than this are cut for display (minified files). Editing
@@ -209,6 +210,11 @@ pub struct CodeView {
     goto_center: Option<usize>,
     /// Match count text keyed by (version, pattern, case, regex).
     find_count: Option<((u64, String, bool, bool), String)>,
+    /// Soft wrap (Alt+Z). On by default for markdown (D-022).
+    pub wrap: bool,
+    rows: Rows,
+    /// Remembered x for repeated visual up/down moves in wrap mode.
+    goal_x: Option<f32>,
 }
 
 impl CodeView {
@@ -238,6 +244,9 @@ impl CodeView {
             find_note: None,
             goto_center: None,
             find_count: None,
+            wrap: false,
+            rows: Rows::default(),
+            goal_x: None,
         }
     }
 
@@ -245,12 +254,82 @@ impl CodeView {
     pub fn top_line(&self, ctx: &Ctx) -> usize {
         let lh = ctx.code_metrics().line_height;
         let pad = ctx.px(theme::PADDING_Y);
-        (((self.scroll.y - pad).max(0.0)) / lh).floor() as usize
+        let row = (((self.scroll.y - pad).max(0.0)) / lh).floor() as usize;
+        self.rows.line_of_row(row).0
     }
 
     /// Scroll so `line` is at the top (clamped on next render).
     pub fn scroll_to_line(&mut self, line: usize, ctx: &Ctx) {
-        self.scroll.y = line as f32 * ctx.code_metrics().line_height;
+        self.scroll.y = self.rows.first_row(line) as f32 * ctx.code_metrics().line_height;
+    }
+
+    /// Columns per row when wrapping, from the current view width.
+    fn wrap_cols(&mut self, ctx: &mut Ctx) -> Option<usize> {
+        if !self.wrap {
+            return None;
+        }
+        let gutter = self.gutter_width(ctx);
+        let cw = self.char_width(ctx);
+        let usable = self.view_w - gutter - ctx.px(theme::PADDING_X);
+        Some(((usable / cw).floor() as usize).max(8))
+    }
+
+    fn update_rows(&mut self, ctx: &mut Ctx) {
+        let cols = self.wrap_cols(ctx);
+        self.rows
+            .update(self.doc.buf.lines(), self.doc.version(), cols);
+    }
+
+    /// Row start offsets for line `i` (just `[0]` when not wrapping).
+    fn breaks(&self, i: usize) -> Vec<usize> {
+        match self.rows.wrapping() {
+            Some(c) => wrap_breaks(self.doc.buf.line(i), c),
+            None => vec![0],
+        }
+    }
+
+    /// Visual row of a position and its x offset within that row.
+    fn pos_xy(&mut self, p: Pos, ctx: &mut Ctx) -> (usize, f32) {
+        let br = self.breaks(p.line);
+        let k = row_of(&br, p.col);
+        let x = self.col_to_x(p.line, p.col, ctx) - self.col_to_x(p.line, br[k], ctx);
+        (self.rows.first_row(p.line) + k, x)
+    }
+
+    /// Byte column on visual row (line, k) nearest to x within the row.
+    fn row_x_to_col(&mut self, line: usize, k: usize, x: f32, ctx: &mut Ctx) -> usize {
+        let br = self.breaks(line);
+        let k = k.min(br.len() - 1);
+        let start = br[k];
+        let start_x = self.col_to_x(line, start, ctx);
+        let col = self.x_to_col(line, x + start_x, ctx);
+        let text = self.doc.buf.line(line);
+        match br.get(k + 1) {
+            // Not the last row: stay before the next row's first char.
+            Some(&next) => {
+                let last = text[..next]
+                    .char_indices()
+                    .next_back()
+                    .map_or(start, |(b, _)| b)
+                    .max(start);
+                snap_grapheme(text, col.clamp(start, last))
+            }
+            None => col.max(start),
+        }
+    }
+
+    /// Move the primary caret by visual rows (wrap mode).
+    fn move_visual(&mut self, drows: isize, extend: bool, ctx: &mut Ctx) {
+        self.update_rows(ctx); // never rely on a previous frame
+        let head = self.doc.primary().head;
+        let (row, x) = self.pos_xy(head, ctx);
+        let gx = *self.goal_x.get_or_insert(x);
+        let target =
+            (row as isize + drows).clamp(0, self.rows.total().saturating_sub(1) as isize) as usize;
+        let (line, k) = self.rows.line_of_row(target);
+        let col = self.row_x_to_col(line, k, gx, ctx);
+        self.doc.set_caret(Pos::new(line, col), extend);
+        self.reveal_caret = true;
     }
 
     fn char_width(&mut self, ctx: &mut Ctx) -> f32 {
@@ -289,11 +368,14 @@ impl CodeView {
 
     fn content_size(&mut self, ctx: &mut Ctx) -> (f32, f32) {
         let lh = ctx.code_metrics().line_height;
-        let w = (self.longest_line() + 2) as f32 * self.char_width(ctx)
-            + ctx.px(theme::PADDING_X) * 2.0;
+        let w = if self.wrap {
+            0.0 // no horizontal scrolling while wrapping
+        } else {
+            (self.longest_line() + 2) as f32 * self.char_width(ctx) + ctx.px(theme::PADDING_X) * 2.0
+        };
         (
             w,
-            self.doc.buf.line_count() as f32 * lh + ctx.px(theme::PADDING_Y) * 2.0,
+            self.rows.total().max(1) as f32 * lh + ctx.px(theme::PADDING_Y) * 2.0,
         )
     }
 
@@ -371,32 +453,36 @@ impl CodeView {
     }
 
     fn pos_at(&mut self, x: f32, y: f32, ctx: &mut Ctx) -> Pos {
+        self.update_rows(ctx);
         let lh = ctx.code_metrics().line_height;
         let pad_y = ctx.px(theme::PADDING_Y);
         let rel = y - self.last_rect.y as f32 - pad_y + self.scroll.y;
-        let line = if rel < 0.0 {
-            0
-        } else {
-            ((rel / lh) as usize).min(self.doc.buf.line_count() - 1)
-        };
+        let row = if rel < 0.0 { 0 } else { (rel / lh) as usize };
+        let (line, k) = self.rows.line_of_row(row);
         let gutter = self.gutter_width(ctx);
         let tx = x - self.last_rect.x as f32 - gutter + self.scroll.x;
-        Pos::new(line, self.x_to_col(line, tx, ctx))
+        Pos::new(line, self.row_x_to_col(line, k, tx, ctx))
     }
 
     fn ensure_caret_visible(&mut self, ctx: &mut Ctx) {
+        self.update_rows(ctx);
         let lh = ctx.code_metrics().line_height;
         let pad_y = ctx.px(theme::PADDING_Y);
         let head = self.doc.primary().head;
-        let y = head.line as f32 * lh + pad_y;
+        let (row, row_x) = self.pos_xy(head, ctx);
+        let y = row as f32 * lh + pad_y;
         let margin = lh;
         if y - margin < self.scroll.y {
             self.scroll.y = (y - margin).max(0.0);
         } else if y + lh + margin > self.scroll.y + self.view_h {
             self.scroll.y = y + lh + margin - self.view_h;
         }
+        if self.wrap {
+            self.scroll.x = 0.0;
+            return;
+        }
         let gutter = self.gutter_width(ctx);
-        let x = self.col_to_x(head.line, head.col, ctx);
+        let x = row_x;
         let cw = self.char_width(ctx);
         let text_w = (self.view_w - gutter).max(cw * 4.0);
         if x - cw * 2.0 < self.scroll.x {
@@ -438,6 +524,31 @@ impl CodeView {
             v.doc.move_carets(m, shift);
             v.reveal_caret = true;
         };
+        if !matches!(key, Key::Up | Key::Down | Key::PageUp | Key::PageDown) {
+            self.goal_x = None;
+        }
+        if self.wrap && !mods.ctrl && !mods.alt {
+            let rows = match key {
+                Key::Up => Some(-1),
+                Key::Down => Some(1),
+                Key::PageUp => Some(-(page as isize)),
+                Key::PageDown => Some(page as isize),
+                _ => None,
+            };
+            if let Some(d) = rows {
+                self.move_visual(d, shift, ctx);
+                if matches!(key, Key::PageUp | Key::PageDown) {
+                    self.scroll.y += d as f32 * lh;
+                }
+                return true;
+            }
+        }
+        if let (Key::Char('z'), true, false) = (key, mods.alt, mods.ctrl) {
+            self.wrap = !self.wrap;
+            self.scroll.x = 0.0;
+            self.reveal_caret = true;
+            return true;
+        }
         match (key, mods.ctrl, mods.alt) {
             (Key::Left, ctrl, false) => mv(self, if ctrl { Move::WordLeft } else { Move::Left }),
             (Key::Right, ctrl, false) => mv(self, if ctrl { Move::WordRight } else { Move::Right }),
@@ -571,6 +682,9 @@ impl CodeView {
             }
             .to_string(),
         );
+        if self.wrap {
+            v.push("Wrap".into());
+        }
         if self.read_only {
             v.push("read-only".into());
         }
@@ -893,9 +1007,10 @@ impl CodeView {
         self.last_rect = rect;
         self.view_w = rect.w as f32;
         self.view_h = rect.h as f32;
+        self.update_rows(ctx);
         if let Some(l) = self.goto_center.take() {
             let lh = ctx.code_metrics().line_height;
-            self.scroll.y = (l as f32 * lh - rect.h as f32 / 3.0).max(0.0);
+            self.scroll.y = (self.rows.first_row(l) as f32 * lh - rect.h as f32 / 3.0).max(0.0);
         }
         if self.reveal_caret {
             self.ensure_caret_visible(ctx);
@@ -912,11 +1027,17 @@ impl CodeView {
         let line_count = self.doc.buf.line_count();
 
         let top = rect.y as f32 + pad_y - self.scroll.y;
-        let first = ((self.scroll.y - pad_y) / lh).floor().max(0.0) as usize;
-        let last = (((self.scroll.y - pad_y + rect.h as f32) / lh)
+        let first_row = ((self.scroll.y - pad_y) / lh).floor().max(0.0) as usize;
+        let last_row = (((self.scroll.y - pad_y + rect.h as f32) / lh)
             .ceil()
             .max(0.0) as usize)
-            .min(line_count);
+            .min(self.rows.total());
+        let first = self.rows.line_of_row(first_row).0;
+        let last = if last_row == 0 {
+            0
+        } else {
+            (self.rows.line_of_row(last_row - 1).0 + 1).min(line_count)
+        };
         self.visible = (first, last);
         if self.cache.len() > 4 * (last - first + 1) + 64 {
             let keep = first.saturating_sub(64)..last + 64;
@@ -937,32 +1058,65 @@ impl CodeView {
         let caret_lines: Vec<usize> = sels.iter().map(|s| s.head.line).collect();
         let any_selection = sels.iter().any(|s| !s.is_empty());
         let ox = text_x - self.scroll.x;
+        let mut br: Vec<usize> = Vec::new();
+        let mut br_line = usize::MAX;
 
-        for i in first..last {
-            let y = (top + i as f32 * lh).round() as i32;
+        for r in first_row..last_row {
+            let (i, k) = self.rows.line_of_row(r);
+            if br_line != i {
+                br = self.breaks(i);
+                br_line = i;
+            }
+            let k = k.min(br.len() - 1);
+            let line_len = self.doc.buf.line(i).len();
+            let (row_start, row_end) = (br[k], br.get(k + 1).copied().unwrap_or(line_len));
+            let last_row_of_line = k + 1 == br.len();
+            let row_x0 = self.col_to_x(i, row_start, ctx);
+            let row_x1 = self.col_to_x(i, row_end, ctx);
+            let y = (top + r as f32 * lh).round() as i32;
             let row = Rect::new(rect.x, y, rect.w, lh as i32);
             let is_caret_line = caret_lines.contains(&i);
             if is_caret_line && !any_selection && ctx.focused {
                 canvas.fill_rect(row.intersect(&outer), theme::LINE_HIGHLIGHT);
             }
-            // Line number, right-aligned in the gutter.
-            canvas.set_clip(gutter_rect.intersect(&outer));
-            let label = (i + 1).to_string();
-            let lw = (label.len() as f32 * char_w) as i32;
-            let lx = rect.x + gutter_w as i32 - pad_x as i32 - lw;
-            let num_color = if is_caret_line {
-                theme::LINE_NUMBER2
+            // Line number on the first row of each line, right-aligned.
+            if k == 0 {
+                canvas.set_clip(gutter_rect.intersect(&outer));
+                let label = (i + 1).to_string();
+                let lw = (label.len() as f32 * char_w) as i32;
+                let lx = rect.x + gutter_w as i32 - pad_x as i32 - lw;
+                let num_color = if is_caret_line {
+                    theme::LINE_NUMBER2
+                } else {
+                    theme::LINE_NUMBER
+                };
+                ctx.label(canvas, &label, lx, y, num_color, lw + 2, FontKind::Mono);
+            }
+            // Clip to this row's own text so other rows of the line don't show.
+            let band = if last_row_of_line {
+                text_rect
             } else {
-                theme::LINE_NUMBER
+                Rect::new(
+                    text_x as i32,
+                    y,
+                    (row_x1 - row_x0).ceil() as i32 + 1,
+                    lh as i32,
+                )
             };
-            ctx.label(canvas, &label, lx, y, num_color, lw + 2, FontKind::Mono);
-
-            canvas.set_clip(text_rect.intersect(&outer));
+            canvas.set_clip(band.intersect(&text_rect).intersect(&outer));
+            let seg = |a: usize, b: usize| (a.max(row_start), b.min(row_end));
             // Find matches.
             if let Some(f) = self.find.as_mut() {
                 let ms = f.line_matches(self.doc.buf.line(i));
                 for (a, b) in ms {
-                    let (x0, x1) = (self.col_to_x(i, a, ctx), self.col_to_x(i, b, ctx));
+                    let (a, b) = seg(a, b);
+                    if a >= b && !(a == b && a == row_end) {
+                        continue;
+                    }
+                    let (x0, x1) = (
+                        self.col_to_x(i, a, ctx) - row_x0,
+                        self.col_to_x(i, b, ctx) - row_x0,
+                    );
                     canvas.fill_rect(
                         Rect::new(
                             (ox + x0).round() as i32,
@@ -975,22 +1129,23 @@ impl CodeView {
                 }
             }
             // Selections.
+            canvas.set_clip(text_rect.intersect(&outer));
             for s in &sels {
                 let (a, b) = s.range();
                 if a == b || i < a.line || i > b.line {
                     continue;
                 }
-                let x0 = if i == a.line {
-                    self.col_to_x(i, a.col, ctx)
-                } else {
-                    0.0
-                };
-                let x1 = if i == b.line {
-                    self.col_to_x(i, b.col, ctx)
-                } else {
-                    let end = self.doc.buf.line(i).len();
-                    self.col_to_x(i, end, ctx) + char_w * 0.6
-                };
+                let sa = if i == a.line { a.col } else { 0 };
+                let sb = if i == b.line { b.col } else { line_len };
+                let (ca, cb) = seg(sa, sb);
+                if ca > cb || (ca == cb && !(i < b.line && last_row_of_line)) {
+                    continue;
+                }
+                let x0 = self.col_to_x(i, ca, ctx) - row_x0;
+                let mut x1 = self.col_to_x(i, cb, ctx) - row_x0;
+                if i < b.line && last_row_of_line {
+                    x1 += char_w * 0.6; // the line break is selected too
+                }
                 canvas.fill_rect(
                     Rect::new(
                         (ox + x0).round() as i32,
@@ -1001,23 +1156,25 @@ impl CodeView {
                     theme::SELECTION,
                 );
             }
-            // Text.
-            let x = ox.round() as i32;
+            // Text (the whole line, shifted so this row's start is at the margin).
+            canvas.set_clip(band.intersect(&text_rect).intersect(&outer));
+            let x = (ox - row_x0).round() as i32;
             self.line(i, ctx);
             if let Some(c) = self.cache.get_mut(&i) {
                 ctx.fonts
                     .draw_buffer(canvas, &mut c.buffer, x, y, theme::SYNTAX_NORMAL);
             }
             // Carets.
+            canvas.set_clip(text_rect.intersect(&outer));
             if ctx.focused {
                 let cw = ctx.px(2.0).max(1.0) as i32;
-                for (k, s) in sels.iter().enumerate() {
-                    if s.head.line == i {
-                        let cx = (ox + self.col_to_x(i, s.head.col, ctx)).round() as i32;
-                        let r = Rect::new(cx, y, cw, lh as i32);
-                        canvas.fill_rect(r, theme::CARET);
-                        if k == 0 {
-                            self.caret_screen = Some(r);
+                for (n, s) in sels.iter().enumerate() {
+                    if s.head.line == i && row_of(&br, s.head.col) == k {
+                        let cx = (ox + self.col_to_x(i, s.head.col, ctx) - row_x0).round() as i32;
+                        let rr = Rect::new(cx, y, cw, lh as i32);
+                        canvas.fill_rect(rr, theme::CARET);
+                        if n == 0 {
+                            self.caret_screen = Some(rr);
                         }
                     }
                 }
@@ -1030,7 +1187,10 @@ impl CodeView {
     }
 
     fn handle_editor(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        // Know our size even before the first frame (wrap mapping needs it).
         self.last_rect = rect;
+        self.view_w = rect.w as f32;
+        self.view_h = rect.h as f32;
         let lh = ctx.code_metrics().line_height;
         let before = (
             self.scroll.x,

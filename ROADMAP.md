@@ -136,7 +136,7 @@ asks for each dirty tab.
 - [ ] S4.4 Large-file performance pass
 - [ ] S4.5 App icon, version info, file associations (optional)
 - [ ] S4.6 Text selection + copy in preview
-- [ ] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
+- [x] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
        markdown source and in side-by-side mode
 
 ---
@@ -145,6 +145,13 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S4.7 done: soft wrap. view/wrap.rs: word wrap by display columns
+  (no shaping; 170k lines mapped fast) + Rows line↔row mapping (identity when off).
+  Render, hit-testing, caret, selections, find highlights, scroll, go to line and
+  split sync all use it; visual Up/Down/PgUp/PgDn; Alt+Z; on by default for
+  markdown (D-022); fuzzes run with wrap at narrow widths. Fixed: row mapping now
+  valid before the first frame. Windows CI (hardening): Recycle Bin verified by
+  item count; all real-window tests PASS; exe 6.39 MB.
 - 2026-11-14 — Epic 3 hardening (advisor review): folder search made linear
   (one-pass lowercase map; per-line cancel; huge lines skipped; timed test);
   starting with a file no longer overwrites the saved workspace (only recents and
