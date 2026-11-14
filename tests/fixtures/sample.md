@@ -32,7 +32,13 @@ fn main() {
 | litedit | 2.4 MB | small |
 | browser editor | 300 MB | big |
 
+![litedit banner](img/banner.png)
+
 ![missing image](does-not-exist.png)
+
+![broken image](img/broken.png)
+
+![remote image](https://example.com/x.png)
 
 Line one<br>Line two after br.
 

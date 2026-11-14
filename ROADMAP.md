@@ -43,7 +43,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
        `--script` mode (events + screenshots), Windows CI prints screenshots
        as base64 so they can be inspected, EventLoopProxy wake-ups,
        time-budgeted background work, view abstraction
-- [ ] S1.14 Hostile-file guards: reject UNC/`file://host` paths for images and
+- [x] S1.14 Hostile-file guards: reject UNC/`file://host` paths for images and
         links, safe link launching (no `cmd /c start`), cap long-line shaping
         and highlighting, cap markdown nesting depth, never-panic fuzz test over
         fixtures (every prefix, tiny sizes)
@@ -52,8 +52,8 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 - [x] S1.3 Preview: lists (nested, numbered, tasks), block quotes, rules
 - [x] S1.4 Preview: fenced code blocks with syntax colors
 - [x] S1.5 Preview: tables
-- [ ] S1.6 Preview: local images (size-limited decode, no remote fetch)
-- [~] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
+- [x] S1.6 Preview: local images (size-limited decode, no remote fetch)
+- [x] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
 - [x] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
        lazy highlighting, scrolling
 - [x] S1.9 Theme: lite-xl default dark palette for UI + syntax
@@ -99,6 +99,11 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S1.6/S1.7/S1.14 done: local images (background decode, size and
+  allocation limits, downscaled storage); links open via ShellExecuteW only
+  after re-validation; hostile-file test found a cosmic-text assertion crash
+  (bidi paragraph separators) → display sanitization (D-010), and a 200 ms/frame
+  slowdown on huge code blocks → chunked layout + preview limits (D-011).
 - 2026-11-14 — S1.1–S1.5 done: markdown preview (headings, inline styles, lists,
   tasks, quotes, GFM callouts, code blocks with highlighting, tables with
   alignment, rules, footnotes, front matter hidden, HTML stripped). Links

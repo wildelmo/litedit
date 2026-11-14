@@ -1,15 +1,19 @@
 //! Markdown preview (the default for `.md` files), with `Ctrl+E` switching
 //! to the source view. Scroll position is kept in sync across the switch.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
+use crate::images::{ImageStore, ImgState, scale_to};
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::links::{LinkTarget, classify};
-use crate::markdown::layout::{Element, Layout, LayoutCtx, META_CODE, layout, link_from_meta};
-use crate::markdown::parse::{MdDoc, parse};
+use crate::markdown::layout::{
+    Element, ImgInfo, Layout, LayoutCtx, META_CODE, layout, link_from_meta,
+};
+use crate::markdown::parse::{Block, BlockKind, Inline, MdDoc, parse};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
@@ -35,8 +39,13 @@ enum Mode {
 pub struct MarkdownView {
     doc: Document,
     md: MdDoc,
-    /// Layout and the (width, scale) it was made for.
-    layout: Option<((i32, u32), Layout)>,
+    /// Layout and the (width, scale, image version) it was made for.
+    layout: Option<((i32, u32, u32), Layout)>,
+    images: ImageStore,
+    /// Bumped whenever an image finishes loading (forces relayout).
+    images_version: u32,
+    /// Scaled pixels per (path, w, h), for the current display size.
+    scaled: HashMap<(PathBuf, u32, u32), Vec<u8>>,
     scroll: Scroll,
     mode: Mode,
     source: Option<CodeView>,
@@ -48,18 +57,88 @@ pub struct MarkdownView {
 
 impl MarkdownView {
     pub fn new(doc: Document) -> Self {
-        let md = parse(&doc.text);
-        Self {
+        let md = parse(&crate::text::sanitize(&doc.text));
+        let mut v = Self {
             doc,
             md,
             layout: None,
+            images: ImageStore::new(),
+            images_version: 0,
+            scaled: HashMap::new(),
             scroll: Scroll::default(),
             mode: Mode::Preview,
             source: None,
             hover_link: None,
             last_rect: Rect::new(0, 0, 0, 0),
             notice: None,
+        };
+        v.request_images();
+        v
+    }
+
+    /// Every image source in the document.
+    fn image_sources(&self) -> Vec<String> {
+        fn walk(blocks: &[Block], out: &mut Vec<String>) {
+            for b in blocks {
+                match &b.kind {
+                    BlockKind::Paragraph(i) | BlockKind::Heading { inlines: i, .. } => {
+                        for x in i {
+                            if let Inline::Image { src, .. } = x {
+                                out.push(src.clone());
+                            }
+                        }
+                    }
+                    BlockKind::Quote { blocks, .. } | BlockKind::Footnote { blocks, .. } => {
+                        walk(blocks, out)
+                    }
+                    BlockKind::List { items, .. } => {
+                        for it in items {
+                            walk(&it.blocks, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
+        let mut out = Vec::new();
+        walk(&self.md.blocks, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// What layout should know about each image source; starts loads.
+    fn request_images(&mut self) -> HashMap<String, ImgInfo> {
+        let base = self.base_dir();
+        let mut map = HashMap::new();
+        for src in self.image_sources() {
+            let info = match classify(&src, &base) {
+                LinkTarget::File(p) => {
+                    let ext = p
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if ext == "svg" {
+                        ImgInfo::Note("SVG images are not supported".into())
+                    } else {
+                        match self.images.get(&p) {
+                            ImgState::Ready(d) => ImgInfo::Size {
+                                w: d.natural.0,
+                                h: d.natural.1,
+                                path: p,
+                            },
+                            ImgState::Loading => ImgInfo::Note("loading…".into()),
+                            ImgState::Failed(e) => ImgInfo::Note(e),
+                        }
+                    }
+                }
+                LinkTarget::Web(_) => ImgInfo::Note("remote images are not loaded".into()),
+                LinkTarget::Anchor(_) => ImgInfo::Note("not an image".into()),
+                LinkTarget::Blocked(why) => ImgInfo::Note(why.into()),
+            };
+            map.insert(src, info);
+        }
+        map
     }
 
     fn base_dir(&self) -> PathBuf {
@@ -72,9 +151,11 @@ impl MarkdownView {
 
     fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) -> &Layout {
         let k = ctx.scale * ctx.zoom;
-        let key = (width, k.to_bits());
+        let key = (width, k.to_bits(), self.images_version);
         if self.layout.as_ref().map(|(k, _)| *k) != Some(key) {
+            let images = self.request_images();
             let mut lctx = LayoutCtx {
+                images: &images,
                 sans: ctx.fonts.sans.clone(),
                 mono: ctx.fonts.mono.clone(),
                 fonts: &mut ctx.fonts.system,
@@ -263,6 +344,12 @@ impl MarkdownView {
                     for run in buffer.layout_runs() {
                         let mut span: Option<(f32, f32)> = None;
                         let top = ty + run.line_top;
+                        if top > rect.bottom() as f32 {
+                            break;
+                        }
+                        if top + run.line_height < rect.y as f32 {
+                            continue;
+                        }
                         let flush = |canvas: &mut Canvas, s: Option<(f32, f32)>| {
                             if let Some((a, b)) = s {
                                 let pad = 3.0;
@@ -345,31 +432,52 @@ impl MarkdownView {
                     w,
                     h,
                     alt,
-                    src,
+                    path,
+                    note,
                     ..
                 } => {
                     let r = frect(*x + dx, *y + dy, *w, *h);
-                    canvas.fill_rect(r, theme::MD_BORDER);
-                    canvas.fill_rect(
-                        Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
-                        theme::MD_BLOCK_BG,
-                    );
-                    let label = if alt.is_empty() {
-                        format!("image: {src}")
+                    let ready = path.as_ref().and_then(|p| match self.images.get(p) {
+                        ImgState::Ready(d) => Some((p.clone(), d)),
+                        _ => None,
+                    });
+                    if let Some((p, d)) = ready {
+                        let key = (p, r.w.max(1) as u32, r.h.max(1) as u32);
+                        if !self.scaled.contains_key(&key) {
+                            if self.scaled.len() > 32 {
+                                self.scaled.clear();
+                            }
+                            let px = scale_to(&d, key.1, key.2);
+                            self.scaled.insert(key.clone(), px);
+                        }
+                        canvas.draw_rgba(r.x, r.y, key.1 as i32, key.2 as i32, &self.scaled[&key]);
                     } else {
-                        format!("image: {alt}")
-                    };
-                    let lh = ctx.ui_metrics().line_height as i32;
-                    let pad = ctx.px(10.0) as i32;
-                    ctx.label(
-                        canvas,
-                        &label,
-                        r.x + pad,
-                        r.y + (r.h - lh) / 2,
-                        theme::MD_MUTED,
-                        r.w - pad * 2,
-                        FontKind::Ui,
-                    );
+                        canvas.fill_rect(r, theme::MD_BORDER);
+                        canvas.fill_rect(
+                            Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
+                            theme::MD_BLOCK_BG,
+                        );
+                        let what = if alt.is_empty() {
+                            "image".to_string()
+                        } else {
+                            alt.clone()
+                        };
+                        let label = match note {
+                            Some(n) => format!("{what} — {n}"),
+                            None => what,
+                        };
+                        let lh = ctx.ui_metrics().line_height as i32;
+                        let pad = ctx.px(10.0) as i32;
+                        ctx.label(
+                            canvas,
+                            &label,
+                            r.x + pad,
+                            r.y + (r.h - lh) / 2,
+                            theme::MD_MUTED,
+                            r.w - pad * 2,
+                            FontKind::Ui,
+                        );
+                    }
                 }
             }
         }
@@ -477,10 +585,16 @@ impl View for MarkdownView {
     }
 
     fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
-        match (self.mode, self.source.as_mut()) {
+        let mut t = match (self.mode, self.source.as_mut()) {
             (Mode::Source, Some(src)) => src.tick(ctx, budget),
             _ => Tick::default(),
+        };
+        if self.images.poll() {
+            self.images_version += 1;
+            t.redraw |= self.mode == Mode::Preview;
         }
+        t.more |= self.images.pending();
+        t
     }
 
     fn title(&self) -> String {
@@ -510,9 +624,12 @@ impl View for MarkdownView {
     fn reload(&mut self, ctx: &mut Ctx) -> bool {
         match Document::open(&self.doc.path) {
             Ok(d) if d.text != self.doc.text => {
-                self.md = parse(&d.text);
+                self.md = parse(&crate::text::sanitize(&d.text));
                 self.doc = d;
                 self.layout = None;
+                self.images.clear();
+                self.scaled.clear();
+                self.request_images();
                 if let Some(src) = self.source.as_mut() {
                     src.reload(ctx);
                 }

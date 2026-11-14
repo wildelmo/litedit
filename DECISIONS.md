@@ -10,6 +10,24 @@ _None yet._
 
 ## Decided — review when convenient
 
+### D-011 Preview size limits
+For speed and safety the preview shows at most 3000 lines per code block,
+30k characters per paragraph and 2000 rows × 64 columns per table, with a
+note pointing to Ctrl+E (source view shows everything). Real documents
+are far below these limits; generated or hostile files stay responsive.
+
+### D-010 Control and bidi characters are shown, never obeyed
+Control characters display as symbols (␀, ␛ …). Unicode bidi override /
+embedding characters and paragraph separators display as �. This prevents
+"Trojan Source" tricks (code that reads differently from how it runs) and
+works around a crash in the text library. Display only — files are never
+changed.
+
+### D-009 SVG images are not rendered
+Rendering SVG needs a large vector library (resvg, ~1–2 MB) and SVG is a
+complex attack surface. PNG, JPEG, GIF, WebP and BMP are supported; SVGs
+show a placeholder. Revisit if you use SVG diagrams a lot.
+
 ### D-008 Text is stored as a list of lines (`Vec<String>`), like lite-xl
 lite-xl's `Doc` is a table of lines and its editing model (cursors as
 line/column, per-line highlighting, undo records) is built on that. Copying the

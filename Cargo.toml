@@ -13,6 +13,7 @@ png = "0.18.1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [profile.release]
 opt-level = 3
@@ -24,3 +25,6 @@ panic = "abort"
 # Optimise dependencies even in debug/test builds (syntect is very slow unoptimised).
 [profile.dev.package."*"]
 opt-level = 2
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

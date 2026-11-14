@@ -26,6 +26,8 @@ pub enum UserEvent {
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
 /// Per-iteration budget for deferred work, so input stays responsive.
 const TICK_BUDGET: Duration = Duration::from_millis(8);
+/// Pause between deferred-work slices.
+const PENDING_WAKE: Duration = Duration::from_millis(4);
 
 struct Gfx {
     window: Rc<Window>,
@@ -53,10 +55,14 @@ impl Runner {
                 // Implemented in later stories (dialogs: S1.11, links: S1.7).
                 // Handled inside the app; never reaches the window.
                 Request::OpenPath(_) => {}
-                Request::OpenFileDialog
-                | Request::OpenFolderDialog
-                | Request::OpenUrl(_)
-                | Request::RevealInExplorer(_) => {}
+                Request::OpenUrl(url) => {
+                    let _ = crate::platform::open_url(&url);
+                }
+                Request::RevealInExplorer(p) => {
+                    let _ = crate::platform::reveal_in_explorer(&p);
+                }
+                // Dialogs arrive in S1.11.
+                Request::OpenFileDialog | Request::OpenFolderDialog => {}
             }
         }
         let title = self.app.title();
@@ -258,8 +264,10 @@ impl ApplicationHandler<UserEvent> for Runner {
                 g.window.request_redraw();
             }
         }
+        // While background work is pending, wake up again shortly (but leave
+        // the CPU idle in between); otherwise sleep until the next event.
         event_loop.set_control_flow(if self.app.has_pending_work() {
-            ControlFlow::Poll
+            ControlFlow::WaitUntil(Instant::now() + PENDING_WAKE)
         } else {
             ControlFlow::Wait
         });

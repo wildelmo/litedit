@@ -76,7 +76,7 @@ impl Ctx<'_> {
         b.set_wrap(Wrap::None);
         b.set_size(Some(max_w as f32), Some(m.line_height));
         b.set_text(
-            clip_chars(text, 2000),
+            &crate::text::sanitize(clip_chars(text, 2000)),
             &Attrs::new().family(Family::Name(&fam)),
             Shaping::Advanced,
             None,
@@ -98,7 +98,7 @@ impl Ctx<'_> {
         let mut b = Buffer::new_empty(m);
         b.set_wrap(Wrap::None);
         b.set_text(
-            clip_chars(text, 2000),
+            &crate::text::sanitize(clip_chars(text, 2000)),
             &Attrs::new().family(Family::Name(&fam)),
             Shaping::Advanced,
             None,

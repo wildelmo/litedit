@@ -7,6 +7,7 @@
 
 #[cfg(windows)]
 use std::path::PathBuf;
+
 use std::time::Instant;
 
 use cosmic_text::{Buffer, FontSystem, SwashCache, SwashContent, fontdb};
@@ -41,6 +42,36 @@ const MONO_PREFERENCE: &[&str] = &[
     "DejaVu Sans Mono",
     "Noto Sans Mono",
 ];
+
+/// Map a character to what is safe to shape and draw.
+///
+/// - C0 controls become visible "control pictures" (␀ ␛ …).
+/// - Bidi paragraph separators (U+0085, U+2028, U+2029) would split a line
+///   into several bidi paragraphs, which cosmic-text does not support (it
+///   asserts), so they become U+FFFD.
+/// - Bidi embedding/override controls become U+FFFD so text can never be
+///   visually reordered ("Trojan Source", CVE-2021-42574).
+///
+/// `\t` and `\n` pass through; callers handle them.
+pub fn display_char(c: char) -> char {
+    match c {
+        '\t' | '\n' => c,
+        '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}'),
+        '\u{7f}' => '\u{2421}',
+        '\u{85}' | '\u{2028}' | '\u{2029}' => '\u{fffd}',
+        '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => '\u{fffd}',
+        _ => c,
+    }
+}
+
+/// Apply [`display_char`] to a whole string (borrowed when nothing changes).
+pub fn sanitize(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().all(|c| display_char(c) == c) {
+        std::borrow::Cow::Borrowed(s)
+    } else {
+        std::borrow::Cow::Owned(s.chars().map(display_char).collect())
+    }
+}
 
 pub struct Fonts {
     pub system: FontSystem,
@@ -183,4 +214,37 @@ fn pick_family(db: &fontdb::Database, prefs: &[&str]) -> String {
         .next()
         .and_then(|f| f.families.first().map(|(n, _)| n.clone()))
         .unwrap_or_else(|| "sans-serif".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_char_maps_dangerous_characters() {
+        assert_eq!(display_char('\0'), '\u{2400}');
+        assert_eq!(display_char('\u{1b}'), '\u{241b}');
+        assert_eq!(display_char('\u{2029}'), '\u{fffd}');
+        assert_eq!(display_char('\u{202e}'), '\u{fffd}');
+        assert_eq!(display_char('\t'), '\t');
+        assert_eq!(display_char('é'), 'é');
+        assert!(matches!(sanitize("plain"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// Regression: cosmic-text asserts when one line holds several bidi
+    /// paragraphs of different direction (found by the hostile-file test).
+    #[test]
+    fn mixed_direction_paragraph_separators_do_not_crash() {
+        let mut fonts = Fonts::load();
+        let nasty = "مرحبا\u{2029}hello\u{85}שלום\u{1c}world";
+        let mut b = Buffer::new_empty(cosmic_text::Metrics::new(14.0, 20.0));
+        b.set_text(
+            &sanitize(nasty),
+            &cosmic_text::Attrs::new(),
+            cosmic_text::Shaping::Advanced,
+            None,
+        );
+        b.shape_until_scroll(&mut fonts.system, false);
+        assert!(b.layout_runs().count() >= 1);
+    }
 }

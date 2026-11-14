@@ -4,9 +4,11 @@
 mod app;
 mod canvas;
 mod doc;
+mod images;
 mod input;
 mod links;
 mod markdown;
+mod platform;
 mod script;
 mod syntax;
 mod text;

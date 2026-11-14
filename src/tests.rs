@@ -213,3 +213,90 @@ fn highlighting_big_files_is_budgeted() {
     render_hash(&mut app, 800, 600);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Deterministic pseudo-random bytes (no extra crates).
+fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn hostile_inputs() -> Vec<(&'static str, Vec<u8>)> {
+    let mut v: Vec<(&'static str, Vec<u8>)> = vec![
+        ("deep-quotes.md", (">".repeat(2000) + " x\n").into_bytes()),
+        ("deep-lists.md", (0..400).map(|i| format!("{}- item\n", "  ".repeat(i))).collect::<String>().into_bytes()),
+        ("deep-emphasis.md", ("*_".repeat(3000) + "x" + &"_*".repeat(3000)).into_bytes()),
+        (
+            "wide-table.md",
+            {
+                let head = (0..300).map(|i| format!("h{i}")).collect::<Vec<_>>().join(" | ");
+                let sep = vec!["---"; 300].join(" | ");
+                let row = vec!["cell"; 300].join(" | ");
+                format!("| {head} |\n| {sep} |\n| {row} |\n").into_bytes()
+            },
+        ),
+        ("long-line.md", "word ".repeat(200_000).into_bytes()),
+        ("long-line.rs", format!("let s = \"{}\";\n", "x".repeat(1_000_000)).into_bytes()),
+        ("unterminated-fence.md", ("```rust\n".to_string() + &"fn x() {}\n".repeat(20_000)).into_bytes()),
+        ("nul-bytes.md", b"# a\0b\n\n\0\0\0 text \0\n".to_vec()),
+        ("unicode.md", "# 標題 🚀 مرحبا\n\nZ\u{0351}\u{0352}\u{0353}algo \u{202e}RTL override\u{202c} 👨\u{200d}👩\u{200d}👧\u{200d}👦\n".as_bytes().to_vec()),
+        (
+            "weird-images.md",
+            b"![a](\\\\\\\\server\\\\x.png)\n\n![b](//server/x.png)\n\n![c](con.png)\n\n![d](NUL)\n\n![e](../../../../../../etc/passwd)\n\n![f](data:image/png;base64,AAAA)\n\n![g]()\n".to_vec(),
+        ),
+        ("many-links.md", (0..5000).map(|i| format!("[l{i}](#a{i}) ")).collect::<String>().into_bytes()),
+        ("html-soup.md", "<div><p><b>x<i>y</b>z</p><script>alert(1)<!-- <img src=x onerror=y> -->\n\n<table><tr><td>a".repeat(200).into_bytes()),
+    ];
+    for i in 0..6 {
+        v.push(("noise.md", noise(i, 4000)));
+        v.push(("noise.rs", noise(i + 100, 4000)));
+    }
+    v
+}
+
+#[test]
+fn hostile_files_never_panic() {
+    let dir = std::env::temp_dir().join(format!("litedit-hostile-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut app = new_app();
+    for (i, (name, bytes)) in hostile_inputs().into_iter().enumerate() {
+        let path = dir.join(format!("{i}-{name}"));
+        std::fs::write(&path, &bytes).unwrap();
+        app.open(&path);
+        for (w, h) in [(1, 1), (40, 40), (320, 200), (1280, 800)] {
+            app.handle(Input::Resize(w, h));
+            app.settle(Duration::from_secs(3));
+            render_hash(&mut app, w, h);
+        }
+        key(&mut app, "ctrl+end");
+        key(&mut app, "ctrl+e");
+        render_hash(&mut app, 640, 480);
+        key(&mut app, "ctrl+e");
+        render_hash(&mut app, 640, 480);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn every_prefix_of_sample_markdown_renders() {
+    let src = std::fs::read_to_string(fixture("sample.md")).unwrap();
+    let dir = std::env::temp_dir().join(format!("litedit-prefix-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("p.md");
+    let mut app = new_app();
+    let cuts: Vec<usize> = src.char_indices().map(|(i, _)| i).step_by(9).collect();
+    for cut in cuts {
+        std::fs::write(&path, &src[..cut]).unwrap();
+        app.open(&path);
+        render_hash(&mut app, 300, 200);
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}

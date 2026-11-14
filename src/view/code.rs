@@ -13,6 +13,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::input::{Input, Key};
 use crate::syntax::{LineHighlighter, Span, find_syntax};
+use crate::text::display_char;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::{Scroll, Tick, View, draw_vscrollbar};
@@ -156,7 +157,7 @@ pub fn styled_pieces(line: &str, spans: &[Span], max_cols: usize) -> Vec<(String
             " ".repeat(n)
         } else {
             col += 1;
-            c.to_string()
+            display_char(c).to_string()
         };
         match pieces.last_mut() {
             Some((t, s)) if *s == span => t.push_str(&text),
@@ -226,7 +227,7 @@ pub fn expand_tabs(line: &str, max: usize) -> String {
             out.extend(std::iter::repeat_n(' ', n));
             col += n;
         } else {
-            out.push(c);
+            out.push(display_char(c));
             col += 1;
         }
     }

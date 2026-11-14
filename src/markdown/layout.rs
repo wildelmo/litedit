@@ -3,6 +3,8 @@
 //! The result is a flat display list with document-relative coordinates, so
 //! rendering is a simple cull-and-draw loop and hit testing is a scan.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use cosmic_text::{
@@ -14,6 +16,35 @@ use crate::markdown::parse::{Align, Block, BlockKind, Callout, Inline, ListItem,
 use crate::syntax::{LineHighlighter, find_syntax_by_token};
 use crate::theme;
 use crate::view::code::styled_pieces;
+
+/// Preview limits (hostile or generated files); Ctrl+E shows everything.
+pub const MAX_CODE_BLOCK_LINES: usize = 3000;
+pub const CODE_CHUNK_LINES: usize = 64;
+pub const MAX_PARAGRAPH_CHARS: usize = 30_000;
+pub const MAX_TABLE_ROWS: usize = 2000;
+pub const MAX_TABLE_COLS: usize = 64;
+
+/// Truncate rich-text pieces to about `max` characters in total.
+fn cap_pieces(pieces: &mut Vec<(String, Attrs)>, max: usize) {
+    let mut total = 0;
+    for i in 0..pieces.len() {
+        let n = pieces[i].0.chars().count();
+        if total + n > max {
+            let keep = max - total;
+            let cut = pieces[i]
+                .0
+                .char_indices()
+                .nth(keep)
+                .map(|(b, _)| b)
+                .unwrap_or(pieces[i].0.len());
+            pieces[i].0.truncate(cut);
+            pieces[i].0.push_str(" …");
+            pieces.truncate(i + 1);
+            return;
+        }
+        total += n;
+    }
+}
 
 /// Glyph metadata bit for inline code (background box).
 pub const META_CODE: usize = 1;
@@ -55,9 +86,10 @@ pub enum Element {
         y: f32,
         w: f32,
         h: f32,
-        src: String,
         alt: String,
         link: Option<usize>,
+        path: Option<PathBuf>,
+        note: Option<String>,
     },
 }
 
@@ -81,8 +113,19 @@ pub struct Layout {
     pub offsets: Vec<(usize, f32)>,
 }
 
+/// What layout knows about an image source.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImgInfo {
+    /// Loaded; natural size in pixels.
+    Size { w: u32, h: u32, path: PathBuf },
+    /// Not shown, with the reason.
+    Note(String),
+}
+
 pub struct LayoutCtx<'a> {
     pub fonts: &'a mut FontSystem,
+    /// Image sources (as written in the markdown) → what we know.
+    pub images: &'a HashMap<String, ImgInfo>,
     pub sans: String,
     pub mono: String,
     /// Physical pixels per logical pixel, including zoom.
@@ -354,22 +397,42 @@ fn layout_block(
                         if n > 0 {
                             y += ctx.px(8.0);
                         }
-                        let h = ctx.body().line_height * 2.0;
+                        let (iw, ih, path, note) = match ctx.images.get(src) {
+                            Some(ImgInfo::Size { w: nw, h: nh, path }) if *nw > 0 && *nh > 0 => {
+                                let dw = (*nw as f32 * ctx.k).min(w).max(1.0).round();
+                                let dh = (*nh as f32 * dw / *nw as f32).max(1.0).round();
+                                (dw, dh, Some(path.clone()), None)
+                            }
+                            other => {
+                                let note = match other {
+                                    Some(ImgInfo::Note(n)) => n.clone(),
+                                    _ => "loading…".to_string(),
+                                };
+                                (
+                                    w.min(ctx.px(460.0)),
+                                    ctx.body().line_height * 2.0,
+                                    None,
+                                    Some(note),
+                                )
+                            }
+                        };
                         out.elements.push(Element::Image {
                             x,
                             y,
-                            w: w.min(ctx.px(420.0)),
-                            h,
-                            src: src.clone(),
+                            w: iw,
+                            h: ih,
                             alt: alt.clone(),
                             link: *link,
+                            path,
+                            note,
                         });
-                        y += h;
+                        y += ih;
                     }
                 }
                 return y;
             }
-            let pieces = inline_pieces(inlines, &mono, &base, tone);
+            let mut pieces = inline_pieces(inlines, &mono, &base, tone);
+            cap_pieces(&mut pieces, MAX_PARAGRAPH_CHARS);
             let m = ctx.body();
             let buf = shape_rich(ctx, &pieces, &base, m, w, None);
             let h = buffer_height(&buf);
@@ -393,49 +456,85 @@ fn layout_block(
             let mono_attrs = Attrs::new()
                 .family(Family::Name(&mono))
                 .color(ccol(theme::SYNTAX_NORMAL));
-            let lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-            let mut pieces: Vec<(String, Attrs)> = Vec::new();
-            let syntax = find_syntax_by_token(lang).filter(|_| lines.len() <= 5000);
-            let mut hl = syntax.map(LineHighlighter::new);
+            let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+            let hidden = lines.len().saturating_sub(MAX_CODE_BLOCK_LINES);
+            lines.truncate(MAX_CODE_BLOCK_LINES);
+            let mut hl = find_syntax_by_token(lang).map(LineHighlighter::new);
             if let Some(h) = hl.as_mut() {
-                h.step(&lines, Duration::from_millis(60));
+                h.step(&lines, Duration::from_millis(80));
             }
-            for (i, line) in lines.iter().enumerate() {
-                if i > 0 {
-                    pieces.push(("\n".into(), mono_attrs.clone()));
-                }
-                let spans = hl.as_ref().and_then(|h| h.spans(i)).unwrap_or(&[]);
-                for (t, s) in styled_pieces(line, spans, 2000) {
-                    let mut a = mono_attrs.clone();
-                    if let Some(s) = s {
-                        a = a.color(ccol(s.color));
-                        if s.bold {
-                            a = a.weight(Weight::BOLD);
-                        }
-                        if s.italic {
-                            a = a.style(Style::Italic);
-                        }
+            // Shape in chunks so rendering only touches what is on screen.
+            let start_idx = out.elements.len();
+            let mut cy = y + pad;
+            for (ci, chunk) in lines.chunks(CODE_CHUNK_LINES).enumerate() {
+                let mut pieces: Vec<(String, Attrs)> = Vec::new();
+                for (j, line) in chunk.iter().enumerate() {
+                    if j > 0 {
+                        pieces.push(("\n".into(), mono_attrs.clone()));
                     }
-                    pieces.push((t, a));
+                    let i = ci * CODE_CHUNK_LINES + j;
+                    let spans = hl.as_ref().and_then(|h| h.spans(i)).unwrap_or(&[]);
+                    for (t, s) in styled_pieces(line, spans, 2000) {
+                        let mut a = mono_attrs.clone();
+                        if let Some(s) = s {
+                            a = a.color(ccol(s.color));
+                            if s.bold {
+                                a = a.weight(Weight::BOLD);
+                            }
+                            if s.italic {
+                                a = a.style(Style::Italic);
+                            }
+                        }
+                        pieces.push((t, a));
+                    }
                 }
+                let buf = shape_rich(ctx, &pieces, &mono_attrs, m, w - pad * 2.0, None);
+                let h = buffer_height(&buf).max(m.line_height);
+                out.elements.push(Element::Text {
+                    x: x + pad,
+                    y: cy,
+                    h,
+                    buffer: buf,
+                    color: theme::SYNTAX_NORMAL,
+                });
+                cy += h;
             }
-            let buf = shape_rich(ctx, &pieces, &mono_attrs, m, w - pad * 2.0, None);
-            let h = buffer_height(&buf).max(m.line_height);
-            out.elements.push(Element::Fill {
-                x,
-                y,
-                w,
-                h: h + pad * 2.0,
-                color: theme::MD_BLOCK_BG,
-            });
-            out.elements.push(Element::Text {
-                x: x + pad,
-                y: y + pad,
-                h,
-                buffer: buf,
-                color: theme::SYNTAX_NORMAL,
-            });
-            y + h + pad * 2.0
+            if hidden > 0 {
+                let a = Attrs::new()
+                    .family(Family::Name(&sans))
+                    .color(ccol(theme::MD_MUTED))
+                    .style(Style::Italic);
+                let note = format!("… {hidden} more lines (Ctrl+E shows the full source)");
+                let buf = shape_rich(
+                    ctx,
+                    &[(note, a.clone())],
+                    &a,
+                    ctx.body(),
+                    w - pad * 2.0,
+                    None,
+                );
+                let h = buffer_height(&buf);
+                out.elements.push(Element::Text {
+                    x: x + pad,
+                    y: cy,
+                    h,
+                    buffer: buf,
+                    color: theme::MD_MUTED,
+                });
+                cy += h;
+            }
+            let total = (cy - y - pad).max(m.line_height) + pad * 2.0;
+            out.elements.insert(
+                start_idx,
+                Element::Fill {
+                    x,
+                    y,
+                    w,
+                    h: total,
+                    color: theme::MD_BLOCK_BG,
+                },
+            );
+            y + total
         }
         BlockKind::Quote { callout, blocks } => {
             let bar = ctx.px(4.0).max(2.0);
@@ -618,10 +717,11 @@ fn layout_table(
     y: f32,
     tone: Tone,
 ) -> f32 {
+    let rows = &rows[..rows.len().min(MAX_TABLE_ROWS)];
     let ncols = head
         .len()
         .max(rows.iter().map(Vec::len).max().unwrap_or(0))
-        .max(1);
+        .clamp(1, MAX_TABLE_COLS);
     let pad_x = ctx.px(12.0);
     let pad_y = ctx.px(6.0);
     let m = ctx.body();
