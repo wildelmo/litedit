@@ -6,7 +6,12 @@ owner). Newest first within each section.
 
 ## Open — please review
 
-_None yet._
+### D-018 Typing with an input method (IME) is untested
+If you type Chinese, Japanese, Korean or use another input method: litedit
+accepts the finished text and places the candidate window at the caret, but
+the in-progress (not yet committed) text is not drawn inline. I can't verify
+IME behaviour in the build environment. **Question:** do you use an IME? If
+yes, tell me what you see and I'll finish inline composition.
 
 ## Decided — review when convenient
 

@@ -99,8 +99,8 @@ Acceptance criteria that protect the user's text:
 - [x] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
 - [x] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
        single discard gate, external-change prompt for dirty docs
-- [ ] S2.7 Ctrl+E: markdown preview ↔ editable source (preview from buffer)
-- [ ] S2.8 IME (commit → text, candidate window at caret); unverifiable here,
+- [x] S2.7 Ctrl+E: markdown preview ↔ editable source (preview from buffer)
+- [x] S2.8 IME (commit → text, candidate window at caret); unverifiable here,
        tracked in DECISIONS as open
 
 ## Epic 3 — Daily driver
@@ -128,6 +128,11 @@ Acceptance criteria that protect the user's text:
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Epic 2 complete. S2.7: markdown owns the editor; Ctrl+E edits the
+  source and the preview re-parses from it; save/dirty/prompts work for .md;
+  link clicks on a dirty doc ask first. S2.8: IME commit → text, candidate
+  window at the caret (inline preedit open: D-018). Windows CI: real-window
+  SendKeys typing + Ctrl+S PASS; held-open/locked/attribute save tests PASS.
 - 2026-11-14 — S2.6 done: atomic save (temp + ReplaceFileW keeping ACLs/attributes,
   overwrite-in-place fallback D-017, read-only refused, symlinks followed),
   Ctrl+S / Ctrl+Shift+S, dirty marker, in-window nag bar (D-013), one discard

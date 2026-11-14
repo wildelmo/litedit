@@ -80,6 +80,12 @@ pub trait View {
 
     /// The file vanished from disk: keep the text, mark it modified.
     fn mark_orphaned(&mut self) {}
+
+    /// Screen rectangle of the primary caret at the last render (for
+    /// placing the IME candidate window).
+    fn caret_rect(&self) -> Option<Rect> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

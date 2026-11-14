@@ -113,7 +113,7 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
                 app.handle(Input::Key { key, mods });
             }
             "text" => {
-                app.handle(Input::Text(rest.to_string()));
+                app.handle(Input::Text(unescape(rest)));
             }
             "close" => {
                 app.handle(Input::CloseRequested);

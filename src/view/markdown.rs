@@ -1,5 +1,6 @@
 //! Markdown preview (the default for `.md` files), with `Ctrl+E` switching
-//! to the source view. Scroll position is kept in sync across the switch.
+//! to the editable source. The preview is re-parsed from the editor's text
+//! whenever it changes, and the scroll position follows across the switch.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,6 +8,7 @@ use std::time::Duration;
 
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
+use crate::editor::doc::SaveError;
 use crate::images::{ImageStore, ImgState, scale_to};
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::links::{LinkTarget, classify};
@@ -17,7 +19,7 @@ use crate::markdown::parse::{Block, BlockKind, Inline, MdDoc, parse};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
-use crate::view::{Scroll, Tick, View, draw_vscrollbar};
+use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
 
 pub fn is_markdown(path: &Path) -> bool {
     path.extension()
@@ -37,8 +39,12 @@ enum Mode {
 }
 
 pub struct MarkdownView {
-    doc: Document,
+    /// The source editor; the single owner of the document text.
+    editor: CodeView,
     md: MdDoc,
+    /// Sanitized `\n` text the preview was parsed from, and its version.
+    md_text: String,
+    md_version: u64,
     /// Layout and the (width, scale, image version) it was made for.
     layout: Option<((i32, u32, u32), Layout)>,
     images: ImageStore,
@@ -48,7 +54,6 @@ pub struct MarkdownView {
     scaled: HashMap<(PathBuf, u32, u32), Vec<u8>>,
     scroll: Scroll,
     mode: Mode,
-    source: Option<CodeView>,
     hover_link: Option<usize>,
     last_rect: Rect,
     /// Message shown in the status bar (e.g. blocked link).
@@ -57,17 +62,21 @@ pub struct MarkdownView {
 
 impl MarkdownView {
     pub fn new(doc: Document) -> Self {
-        let md = parse(&crate::text::sanitize(&doc.text));
+        let editor = CodeView::new(doc);
+        let md_text = crate::text::sanitize(&editor.doc.buf.to_text_lf()).into_owned();
+        let md = parse(&md_text);
+        let md_version = editor.doc.version();
         let mut v = Self {
-            doc,
+            editor,
             md,
+            md_text,
+            md_version,
             layout: None,
             images: ImageStore::new(),
             images_version: 0,
             scaled: HashMap::new(),
             scroll: Scroll::default(),
             mode: Mode::Preview,
-            source: None,
             hover_link: None,
             last_rect: Rect::new(0, 0, 0, 0),
             notice: None,
@@ -142,11 +151,25 @@ impl MarkdownView {
     }
 
     fn base_dir(&self) -> PathBuf {
-        self.doc
-            .path
+        self.editor
+            .doc
+            .path()
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default()
+    }
+
+    /// Re-parse the preview if the text changed since the last parse.
+    fn sync_preview(&mut self) {
+        if self.editor.doc.version() == self.md_version {
+            return;
+        }
+        self.md_text = crate::text::sanitize(&self.editor.doc.buf.to_text_lf()).into_owned();
+        self.md = parse(&self.md_text);
+        self.md_version = self.editor.doc.version();
+        self.layout = None;
+        self.scaled.clear();
+        self.request_images();
     }
 
     fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) -> &Layout {
@@ -260,20 +283,16 @@ impl MarkdownView {
             Mode::Preview => {
                 // Preview → source: keep the block at the top of the view.
                 let line = self.top_source_line();
-                let doc = self.doc.clone();
-                let src = self.source.get_or_insert_with(|| {
-                    let mut v = CodeView::new(doc);
-                    v.read_only = true; // editable from S2.7
-                    v
-                });
-                src.scroll_to_line(line, ctx);
+                self.editor.scroll_to_line(line, ctx);
                 self.mode = Mode::Source;
             }
             Mode::Source => {
-                if let Some(src) = &self.source {
-                    let line = src.top_line(ctx);
-                    self.scroll_to_source_line(line);
-                }
+                let line = self.editor.top_line(ctx);
+                self.sync_preview();
+                // Lay out now so the scroll position can be mapped.
+                let w = self.last_rect.w.max(1);
+                self.ensure_layout(w, ctx);
+                self.scroll_to_source_line(line);
                 self.mode = Mode::Preview;
             }
         }
@@ -287,8 +306,8 @@ impl MarkdownView {
             .find(|(_, y)| *y >= self.scroll.y - 1.0)
             .map(|(o, _)| *o)
             .unwrap_or(0);
-        let off = off.min(self.doc.text.len());
-        self.doc.text.as_bytes()[..off]
+        let off = off.min(self.md_text.len());
+        self.md_text.as_bytes()[..off]
             .iter()
             .filter(|b| **b == b'\n')
             .count()
@@ -297,8 +316,7 @@ impl MarkdownView {
     fn scroll_to_source_line(&mut self, line: usize) {
         let Some((_, l)) = &self.layout else { return };
         let byte = self
-            .doc
-            .text
+            .md_text
             .match_indices('\n')
             .nth(line.saturating_sub(1))
             .map(|(i, _)| i + 1)
@@ -315,6 +333,7 @@ impl MarkdownView {
     }
 
     fn render_preview(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        self.sync_preview();
         canvas.fill_rect(rect, theme::BACKGROUND);
         self.ensure_layout(rect.w, ctx);
         self.clamp();
@@ -505,11 +524,7 @@ impl View for MarkdownView {
         self.last_rect = rect;
         match self.mode {
             Mode::Preview => self.render_preview(canvas, rect, ctx),
-            Mode::Source => {
-                if let Some(src) = self.source.as_mut() {
-                    src.render(canvas, rect, ctx);
-                }
-            }
+            Mode::Source => self.editor.render(canvas, rect, ctx),
         }
     }
 
@@ -527,10 +542,7 @@ impl View for MarkdownView {
             return true;
         }
         if self.mode == Mode::Source {
-            return self
-                .source
-                .as_mut()
-                .is_some_and(|s| s.handle(input, rect, ctx));
+            return self.editor.handle(input, rect, ctx);
         }
         let lh = ctx.font_px(theme::MD_FONT_SIZE) * theme::MD_LINE_HEIGHT;
         let before = self.scroll.y;
@@ -589,9 +601,9 @@ impl View for MarkdownView {
     }
 
     fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
-        let mut t = match (self.mode, self.source.as_mut()) {
-            (Mode::Source, Some(src)) => src.tick(ctx, budget),
-            _ => Tick::default(),
+        let mut t = match self.mode {
+            Mode::Source => self.editor.tick(ctx, budget),
+            Mode::Preview => Tick::default(),
         };
         if self.images.poll() {
             self.images_version += 1;
@@ -602,14 +614,14 @@ impl View for MarkdownView {
     }
 
     fn title(&self) -> String {
-        self.doc.file_name()
+        self.editor.title()
     }
 
     fn status(&self) -> Vec<String> {
         let mut v = match self.mode {
-            Mode::Preview => vec!["Markdown preview".to_string(), "Ctrl+E: source".to_string()],
+            Mode::Preview => vec!["Markdown preview".to_string(), "Ctrl+E: edit".to_string()],
             Mode::Source => {
-                let mut s = self.source.as_ref().map(|s| s.status()).unwrap_or_default();
+                let mut s = self.editor.status();
                 s.insert(0, "Markdown source".into());
                 s.insert(1, "Ctrl+E: preview".into());
                 s
@@ -622,32 +634,58 @@ impl View for MarkdownView {
     }
 
     fn path(&self) -> Option<&Path> {
-        Some(&self.doc.path)
+        self.editor.path()
     }
 
     fn reload(&mut self, ctx: &mut Ctx) -> bool {
-        match Document::open(&self.doc.path) {
-            Ok(d) if d.text != self.doc.text => {
-                self.md = parse(&crate::text::sanitize(&d.text));
-                self.doc = d;
-                self.layout = None;
-                self.images.clear();
-                self.scaled.clear();
-                self.request_images();
-                if let Some(src) = self.source.as_mut() {
-                    src.reload(ctx);
-                }
-                true
-            }
-            _ => false,
+        let changed = self.editor.reload(ctx);
+        if changed {
+            self.images.clear();
+            self.sync_preview();
         }
+        changed
     }
 
     fn metrics_changed(&mut self) {
         self.layout = None;
-        if let Some(s) = self.source.as_mut() {
-            s.metrics_changed();
-        }
+        self.editor.metrics_changed();
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.editor.is_dirty()
+    }
+
+    fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
+        self.editor.save(allow_lossy)
+    }
+
+    fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
+        let n = self.editor.save_as(path)?;
+        self.layout = None;
+        self.images.clear();
+        self.request_images();
+        Ok(n)
+    }
+
+    fn disk_state(&self) -> DiskState {
+        self.editor.disk_state()
+    }
+
+    fn reload_discarding(&mut self, ctx: &mut Ctx) -> bool {
+        let r = self.editor.reload_discarding(ctx);
+        self.images.clear();
+        self.sync_preview();
+        r
+    }
+
+    fn mark_orphaned(&mut self) {
+        self.editor.mark_orphaned();
+    }
+
+    fn caret_rect(&self) -> Option<Rect> {
+        (self.mode == Mode::Source)
+            .then(|| self.editor.caret_rect())
+            .flatten()
     }
 }
 
@@ -834,7 +872,7 @@ mod tests {
         assert!(v.handle(&ctrl_e, rect, &mut h.ctx()));
         assert_eq!(v.status()[0], "Markdown source");
         render(&mut v, &mut h, 800, 600);
-        let line = v.source.as_ref().unwrap().top_line(&h.ctx());
+        let line = v.editor.top_line(&h.ctx());
         assert!(
             line > 100,
             "source should open near the same place, got line {line}"

@@ -192,6 +192,7 @@ pub struct CodeView {
     pub read_only: bool,
     /// Text of the last line-mode copy (pasting it inserts whole lines).
     line_clip: Option<String>,
+    caret_screen: Option<Rect>,
 }
 
 impl CodeView {
@@ -213,6 +214,7 @@ impl CodeView {
             reveal_caret: false,
             read_only: false,
             line_clip: None,
+            caret_screen: None,
         }
     }
 
@@ -580,6 +582,7 @@ impl View for CodeView {
             self.cache.retain(|k, _| keep.contains(k));
         }
 
+        self.caret_screen = None;
         let text_x = rect.x as f32 + gutter_w;
         let text_rect = Rect::new(
             text_x as i32,
@@ -651,10 +654,14 @@ impl View for CodeView {
             // Carets.
             if ctx.focused {
                 let cw = ctx.px(2.0).max(1.0) as i32;
-                for s in &sels {
+                for (k, s) in sels.iter().enumerate() {
                     if s.head.line == i {
                         let cx = (ox + self.col_to_x(i, s.head.col, ctx)).round() as i32;
-                        canvas.fill_rect(Rect::new(cx, y, cw, lh as i32), theme::CARET);
+                        let r = Rect::new(cx, y, cw, lh as i32);
+                        canvas.fill_rect(r, theme::CARET);
+                        if k == 0 {
+                            self.caret_screen = Some(r);
+                        }
                     }
                 }
             }
@@ -825,6 +832,10 @@ impl View for CodeView {
 
     fn mark_orphaned(&mut self) {
         self.doc.force_dirty();
+    }
+
+    fn caret_rect(&self) -> Option<Rect> {
+        self.caret_screen
     }
 }
 

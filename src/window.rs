@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, Ime, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -168,6 +168,8 @@ impl ApplicationHandler<UserEvent> for Runner {
         self.app.handle(Input::Scale(window.scale_factor() as f32));
         let size = window.inner_size();
         self.app.handle(Input::Resize(size.width, size.height));
+        // Let input methods (Chinese, Japanese, Korean, …) compose text.
+        window.set_ime_allowed(true);
         window.request_redraw();
         self.gfx = Some(Gfx { window, surface });
         self.watcher.set_targets(self.app.watch_targets());
@@ -197,6 +199,8 @@ impl ApplicationHandler<UserEvent> for Runner {
                 return;
             }
             WindowEvent::DroppedFile(p) => Input::Drop(p),
+            // Text composed by an input method arrives here (not as key text).
+            WindowEvent::Ime(Ime::Commit(text)) => Input::Text(text),
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = (position.x as f32, position.y as f32);
                 Input::MouseMove {
@@ -304,6 +308,12 @@ impl Runner {
             self.app.render(&mut canvas);
         }
         let _ = buffer.present();
+        if let Some(r) = self.app.ime_area() {
+            gfx.window.set_ime_cursor_area(
+                winit::dpi::PhysicalPosition::new(r.x, r.y),
+                winit::dpi::PhysicalSize::new(r.w.max(1) as u32, r.h.max(1) as u32),
+            );
+        }
     }
 }
 

@@ -272,6 +272,15 @@ impl App {
         }
     }
 
+    /// Where the IME candidate window should appear (primary caret).
+    pub fn ime_area(&self) -> Option<Rect> {
+        if self.focus == Focus::Main && self.nag.is_none() {
+            self.view.caret_rect()
+        } else {
+            None
+        }
+    }
+
     pub fn cursor(&self) -> Cursor {
         self.cursor
     }

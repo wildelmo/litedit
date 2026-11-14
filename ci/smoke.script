@@ -15,9 +15,18 @@ key end
 shot out/markdown-end.png
 key ctrl+e
 expect status Markdown source
+key ctrl+home
+text Edited:\s
 shot out/markdown-source.png
 key ctrl+e
 expect status Markdown preview
+expect title ● sample.md
+shot out/markdown-edited.png
+open tests/fixtures/sample.rs
+expect nag Save changes to sample.md
+key d
+expect title sample.rs
+open tests/fixtures/sample.md
 key ctrl+o
 expect request OpenFileDialog
 key ctrl+shift+o

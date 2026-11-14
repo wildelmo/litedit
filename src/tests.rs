@@ -689,3 +689,50 @@ fn save_as_switches_file_and_script_expect_file_works() {
     );
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+#[test]
+fn markdown_edit_updates_preview_saves_and_link_click_is_guarded() {
+    let p = temp_file("notes.md", "[go](other.md)\n\n# Title\n");
+    std::fs::write(p.parent().unwrap().join("other.md"), "# Other\n").unwrap();
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+\\");
+    let before = render_hash(&mut app, 800, 600);
+    // Edit the source: add a word to the heading.
+    press(&mut app, "ctrl+e");
+    assert!(app.status_text().starts_with("Markdown source"));
+    press(&mut app, "ctrl+end");
+    press(&mut app, "up");
+    press(&mut app, "end");
+    type_text(&mut app, " edited");
+    press(&mut app, "ctrl+e");
+    assert!(app.status_text().starts_with("Markdown preview"));
+    assert!(app.title().starts_with("● notes.md"), "{}", app.title());
+    assert_ne!(
+        before,
+        render_hash(&mut app, 800, 600),
+        "preview follows the edit"
+    );
+    // Clicking the link while dirty must ask before leaving.
+    app.handle(Input::MouseMove { x: 50.0, y: 40.0 });
+    app.handle(Input::MouseDown {
+        x: 50.0,
+        y: 40.0,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("Save changes to notes.md"),
+        "{:?}",
+        app.nag_message()
+    );
+    press(&mut app, "enter"); // Save, then follow the link
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "[go](other.md)\n\n# Title edited\n"
+    );
+    assert!(app.title().starts_with("other.md"), "{}", app.title());
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
