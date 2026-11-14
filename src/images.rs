@@ -127,6 +127,12 @@ pub fn decode_file(path: &Path) -> Result<Decoded, String> {
     if crate::doc::is_reserved_name(path) {
         return Err("not a file".into());
     }
+    // A symlink could point at a network share (reading it authenticates
+    // to that server); local images are opened only as plain files.
+    let link = std::fs::symlink_metadata(path).map_err(|_| "image not found".to_string())?;
+    if link.file_type().is_symlink() {
+        return Err("linked images are not opened".into());
+    }
     let meta = std::fs::metadata(path).map_err(|_| "image not found".to_string())?;
     if !meta.is_file() {
         return Err("not a file".into());
@@ -193,6 +199,22 @@ pub fn scale_to(d: &Decoded, w: u32, h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_images_are_refused() {
+        let d = std::env::temp_dir().join(format!("litedit-imglink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let real = crate::tests::fixture("img/banner.png");
+        std::os::unix::fs::symlink(&real, d.join("link.png")).unwrap();
+        assert_eq!(
+            decode_file(&d.join("link.png")).err().as_deref(),
+            Some("linked images are not opened")
+        );
+        assert!(decode_file(&real).is_ok(), "the file itself still opens");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn png(w: u32, h: u32) -> Vec<u8> {
         let img = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 0, 0, 255]));

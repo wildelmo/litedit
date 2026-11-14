@@ -59,7 +59,16 @@ pub fn display_char(c: char) -> char {
         '\0'..='\u{1f}' => char::from_u32(0x2400 + c as u32).unwrap_or('\u{fffd}'),
         '\u{7f}' => '\u{2421}',
         '\u{85}' | '\u{2028}' | '\u{2029}' => '\u{fffd}',
+        // Bidi controls: overrides/embeddings/isolates, and the invisible
+        // marks that also reorder neighbouring text (LRM, RLM, ALM).
         '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' => '\u{fffd}',
+        '\u{200e}' | '\u{200f}' | '\u{061c}' => '\u{fffd}',
+        // Other invisible characters that can hide text differences: C1
+        // controls, zero-width space / word joiner / ZWNBSP, tag characters.
+        // (ZWJ / ZWNJ stay: emoji and many scripts need them.)
+        '\u{80}'..='\u{9f}' => '\u{fffd}',
+        '\u{200b}' | '\u{2060}' | '\u{180e}' | '\u{feff}' => '\u{fffd}',
+        '\u{e0000}'..='\u{e007f}' => '\u{fffd}',
         _ => c,
     }
 }
@@ -263,6 +272,26 @@ mod tests {
         );
         let f = Fonts::load_with(Some("arial"), None);
         assert_eq!(f.sans, "Arial");
+    }
+
+    #[test]
+    fn invisible_reordering_and_hiding_characters_become_visible() {
+        for c in [
+            '\u{200e}',
+            '\u{200f}',
+            '\u{061c}',
+            '\u{200b}',
+            '\u{2060}',
+            '\u{feff}',
+            '\u{9b}',
+            '\u{e0041}',
+        ] {
+            assert_eq!(display_char(c), '\u{fffd}', "U+{:04X}", c as u32);
+        }
+        // Joiners stay (emoji sequences, Indic and Arabic scripts need them).
+        assert_eq!(display_char('\u{200d}'), '\u{200d}');
+        assert_eq!(display_char('\u{200c}'), '\u{200c}');
+        assert_eq!(sanitize("total\u{200f} 100"), "total\u{fffd} 100");
     }
 
     #[test]

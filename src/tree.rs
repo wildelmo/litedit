@@ -131,7 +131,14 @@ pub fn read_dir_sorted(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
         let path = e.path();
         // For links, look at the target only to decide folder vs file.
         let meta = if is_link {
-            std::fs::metadata(&path).ok()
+            // Never touch a link that points at a network share or device
+            // path: even reading its details authenticates to the server.
+            match std::fs::read_link(&path) {
+                Ok(t) if !crate::links::is_unsafe_local_path(&t.to_string_lossy()) => {
+                    std::fs::metadata(&path).ok()
+                }
+                _ => None,
+            }
         } else {
             e.metadata().ok()
         };
@@ -695,6 +702,24 @@ fn file_color(name: &str) -> crate::canvas::Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn links_to_network_paths_are_listed_without_being_followed() {
+        let d = std::env::temp_dir().join(format!("litedit-netlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("real")).unwrap();
+        std::os::unix::fs::symlink("//evil-host/share", d.join("share")).unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("local")).unwrap();
+        let (list, _) = read_dir_sorted(&d, true);
+        let get = |n: &str| list.iter().find(|e| e.name == n).cloned().unwrap();
+        assert!(get("share").is_link && !get("share").is_dir);
+        assert!(
+            get("local").is_link && get("local").is_dir,
+            "local links still show as folders"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("litedit-tree-{name}-{}", std::process::id()));

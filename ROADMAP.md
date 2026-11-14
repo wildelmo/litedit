@@ -172,6 +172,13 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.0 part 3 (security): markdown paths using NT/device forms
+  (`\\??\\`, `\\\\?\\`, `\\\\.\\`, `/??/`) or alternate data streams are blocked
+  (they could reach UNC shares and bypass the network-path rule); symlinked
+  images are refused; the tree never stats a link whose target is a network
+  or device path; COM¹-³/LPT¹-³ and trailing-dot device names are reserved;
+  LRM/RLM/ALM, zero-width space/word joiner/ZWNBSP, C1 controls and tag
+  characters are shown as � (D-010 extended; ZWJ/ZWNJ kept).
 - 2026-11-14 — S5.0 part 2: delete/duplicate line respect a selection ending
   at column 0 (Ctrl+L); Tab on any selection indents lines (never replaces
   text); undo history overflow can't fake the saved state; case-only rename

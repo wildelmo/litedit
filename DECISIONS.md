@@ -106,6 +106,11 @@ embedding characters and paragraph separators display as �. This prevents
 works around a crash in the text library. Display only — files are never
 changed.
 
+Extended in 1.1: the invisible marks that also reorder text (LRM, RLM,
+ALM), zero-width space / word joiner / ZWNBSP, C1 controls and tag
+characters are shown as �. ZWJ and ZWNJ are kept because emoji and many
+scripts need them.
+
 ### D-009 SVG images are not rendered
 Rendering SVG needs a large vector library (resvg, ~1–2 MB) and SVG is a
 complex attack surface. PNG, JPEG, GIF, WebP and BMP are supported; SVGs

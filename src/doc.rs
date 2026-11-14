@@ -79,11 +79,21 @@ pub fn is_reserved_name(path: &Path) -> bool {
     else {
         return false;
     };
-    let stem = name.split('.').next().unwrap_or("").trim_end();
-    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit())
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.']);
+    if matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    // COM0-9 / LPT0-9, and the superscript digits ¹ ² ³ Windows also accepts.
+    let mut chars = stem.chars();
+    let prefix: String = chars.by_ref().take(3).collect();
+    let rest: Vec<char> = chars.collect();
+    (prefix == "COM" || prefix == "LPT")
+        && rest.len() == 1
+        && (rest[0].is_ascii_digit() || matches!(rest[0], '¹' | '²' | '³'))
 }
 
 pub fn decode(bytes: &[u8]) -> (String, Encoding) {
@@ -145,7 +155,16 @@ mod tests {
     #[test]
     fn reserved_device_names() {
         for n in [
-            "CON", "con.txt", "NUL", "nul.md", "COM1", "lpt9.log", "aux.png",
+            "CON",
+            "con.txt",
+            "NUL",
+            "nul.md",
+            "COM1",
+            "lpt9.log",
+            "aux.png",
+            "COM¹",
+            "lpt³.txt",
+            "nul .txt",
         ] {
             assert!(is_reserved_name(Path::new(n)), "{n}");
         }

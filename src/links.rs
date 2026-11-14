@@ -63,6 +63,28 @@ pub fn is_network_path(p: &str) -> bool {
     p.starts_with("\\\\") || p.starts_with("//") || p.starts_with("\\/") || p.starts_with("/\\")
 }
 
+/// Paths Windows treats specially and that a markdown file must never make
+/// us open: network shares, `\\?\` / `\??\` / `\\.\` device and NT paths
+/// (they can reach UNC shares too), and alternate data streams (`a.png:x`).
+pub fn is_unsafe_local_path(p: &str) -> bool {
+    let p = p.trim_start();
+    if is_network_path(p) {
+        return true;
+    }
+    let b = p.as_bytes();
+    let slash = |c: u8| c == b'\\' || c == b'/';
+    // \??\, /??/, \.\ … (a single leading slash followed by ? or .)
+    if b.len() >= 2
+        && slash(b[0])
+        && (b[1] == b'?' || b[1] == b'.' && b.get(2).is_some_and(|&c| slash(c)))
+    {
+        return true;
+    }
+    // A colon anywhere but right after a drive letter.
+    p.char_indices()
+        .any(|(i, c)| c == ':' && !(i == 1 && b[0].is_ascii_alphabetic()))
+}
+
 pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
     let dest = dest.trim();
     if dest.is_empty() {
@@ -91,6 +113,12 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
             _ => LinkTarget::Blocked("link type not allowed"),
         };
     }
+    // Check the whole thing first: `\??\` contains a `?` that the query
+    // split below would cut away.
+    let whole = percent_decode(dest);
+    if is_network_path(&whole) || is_unsafe_local_path(whole.split('#').next().unwrap_or("")) {
+        return LinkTarget::Blocked("this kind of path is not opened");
+    }
     // A local path: drop ?query and #fragment, decode %20 etc.
     let path_part = dest.split(['#', '?']).next().unwrap_or("");
     let decoded = percent_decode(path_part);
@@ -99,6 +127,9 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
     }
     if is_network_path(&decoded) {
         return LinkTarget::Blocked("network paths are not opened");
+    }
+    if is_unsafe_local_path(&decoded) {
+        return LinkTarget::Blocked("this kind of path is not opened");
     }
     let p = PathBuf::from(&decoded);
     if crate::doc::is_reserved_name(&p) {
@@ -115,6 +146,36 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_nt_and_stream_paths_are_blocked() {
+        let base = std::path::Path::new("/docs");
+        for d in [
+            "%5C%3F%3F%5CUNC%5Cevil%5Cshare%5Cx.png",
+            "\\??\\C:\\x.png",
+            "\\??\\GLOBALROOT\\Device\\Mup\\evil\\x.png",
+            "\\\\?\\UNC\\evil\\x.png",
+            "\\\\.\\pipe\\x",
+            "/??/C:/x.png",
+            "\\.\\x",
+            "img.png:secret",
+            "C:\\a\\b.png:stream",
+        ] {
+            assert!(
+                matches!(classify(d, base), LinkTarget::Blocked(_)),
+                "{d} must be blocked"
+            );
+        }
+        for d in [
+            "img/a.png",
+            "C:\\pics\\a.png",
+            "C:/pics/a.png",
+            "../up.png",
+            "a%20b.png",
+        ] {
+            assert!(matches!(classify(d, base), LinkTarget::File(_)), "{d}");
+        }
+    }
 
     fn base() -> PathBuf {
         PathBuf::from("/docs")
