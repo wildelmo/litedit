@@ -89,7 +89,7 @@ Acceptance criteria that protect the user's text:
   text, not shortcuts. One real-window SendKeys CI step (report-only).
 - Reserved Windows device names (CON, NUL, COM1…) rejected everywhere.
 
-- [ ] S2.1 Buffer: lines + per-line EOLs, positions, insert/remove, exact
+- [x] S2.1 Buffer: lines + per-line EOLs, positions, insert/remove, exact
        load/serialize for all encodings, undo/redo with merge; fuzz tests
 - [ ] S2.2 Cursor + selection (keyboard, mouse, word/line), grapheme-aware;
        one col↔x mapping shared by caret drawing and hit-testing
@@ -128,6 +128,9 @@ Acceptance criteria that protect the user's text:
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S2.1 done: buffer with per-line EOLs (byte-exact round trip for all
+  fixtures/encodings), ops + position transforms, undo/redo with typing merge,
+  model-based fuzz (40 seeds × 300 ops) incl. undo-all.
 - 2026-11-14 — Epic 1 complete. S1.10–S1.13: file tree (lazy, sorted, ignore
   list, hidden toggle Ctrl+Shift+H, symlinks never expanded, keyboard nav,
   draggable divider, Ctrl+\ / Ctrl+Shift+E), native open dialogs (rfd, Windows

@@ -15,6 +15,7 @@ two-face = { version = "0.5.2", default-features = false, features = ["syntect-f
 pulldown-cmark = { version = "0.13.6", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 notify = "8"
+unicode-segmentation = "1.13.3"
 
 [profile.release]
 opt-level = 3

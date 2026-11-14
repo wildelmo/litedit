@@ -89,6 +89,29 @@ pub fn decode(bytes: &[u8]) -> (String, Encoding) {
     }
 }
 
+/// Encode text back into bytes in the file's original encoding.
+/// `Utf8Lossy` is written as plain UTF-8 (the invalid bytes are gone).
+pub fn encode(text: &str, enc: Encoding) -> Vec<u8> {
+    match enc {
+        Encoding::Utf8 | Encoding::Utf8Lossy => text.as_bytes().to_vec(),
+        Encoding::Utf8Bom => {
+            let mut v = vec![0xEF, 0xBB, 0xBF];
+            v.extend_from_slice(text.as_bytes());
+            v
+        }
+        Encoding::Utf16Le => {
+            let mut v = vec![0xFF, 0xFE];
+            v.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+            v
+        }
+        Encoding::Utf16Be => {
+            let mut v = vec![0xFE, 0xFF];
+            v.extend(text.encode_utf16().flat_map(u16::to_be_bytes));
+            v
+        }
+    }
+}
+
 fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> String {
     let units = bytes.chunks_exact(2).map(|c| f([c[0], c[1]]));
     char::decode_utf16(units)

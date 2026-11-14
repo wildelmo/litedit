@@ -4,6 +4,7 @@
 mod app;
 mod canvas;
 mod doc;
+mod editor;
 mod images;
 mod input;
 mod links;
