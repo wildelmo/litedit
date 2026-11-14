@@ -261,7 +261,11 @@ impl MarkdownView {
                 // Preview → source: keep the block at the top of the view.
                 let line = self.top_source_line();
                 let doc = self.doc.clone();
-                let src = self.source.get_or_insert_with(|| CodeView::new(doc));
+                let src = self.source.get_or_insert_with(|| {
+                    let mut v = CodeView::new(doc);
+                    v.read_only = true; // editable from S2.7
+                    v
+                });
                 src.scroll_to_line(line, ctx);
                 self.mode = Mode::Source;
             }
@@ -674,6 +678,7 @@ mod tests {
                 zoom: 1.0,
                 requests: &mut self.requests,
                 cursor: &mut self.cursor,
+                focused: true,
             }
         }
     }

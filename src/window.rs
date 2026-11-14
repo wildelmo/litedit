@@ -15,7 +15,7 @@ use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::app::App;
 use crate::canvas::Canvas;
-use crate::input::{Cursor, Input, Key, Mods, MouseButton, Request, WheelUnit};
+use crate::input::{Cursor, Input, Key, Mods, MouseButton, Request, WheelUnit, translate_key};
 use crate::watch::FsWatcher;
 
 /// Events sent to the UI thread from other threads (file watcher, etc.).
@@ -248,19 +248,14 @@ impl ApplicationHandler<UserEvent> for Runner {
                 if event.state != ElementState::Pressed {
                     return;
                 }
-                let mods = self.mods();
+                let inputs = translate_key(
+                    map_key(&event.logical_key),
+                    event.text.as_deref(),
+                    self.mods(),
+                );
                 let mut redraw = false;
-                if let Some(key) = map_key(&event.logical_key) {
-                    redraw |= self.app.handle(Input::Key { key, mods });
-                }
-                if !mods.ctrl
-                    && !mods.alt
-                    && let Some(t) = event
-                        .text
-                        .as_ref()
-                        .filter(|t| t.chars().all(|c| !c.is_control()))
-                {
-                    redraw |= self.app.handle(Input::Text(t.to_string()));
+                for input in inputs {
+                    redraw |= self.app.handle(input);
                 }
                 self.after_input(event_loop, redraw);
                 return;

@@ -106,6 +106,33 @@ pub enum Cursor {
     ResizeHorizontal,
 }
 
+/// Turn one physical key press into app inputs. Pure, so it is unit-tested.
+///
+/// - Printable text is delivered as [`Input::Text`]; the key itself as
+///   [`Input::Key`] (views ignore plain `Key::Char` when editing).
+/// - On Windows, AltGr arrives as Ctrl+Alt. A Ctrl+Alt press that produces
+///   printable text (e.g. `@`, `{`, `€` on German/French layouts) is typing,
+///   not a shortcut, so only the text is delivered.
+pub fn translate_key(key: Option<Key>, text: Option<&str>, mods: Mods) -> Vec<Input> {
+    let printable = text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control()));
+    if mods.ctrl && mods.alt {
+        if let Some(t) = printable {
+            return vec![Input::Text(t.to_string())];
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(k) = key {
+        out.push(Input::Key { key: k, mods });
+    }
+    if !mods.ctrl
+        && !mods.alt
+        && let Some(t) = printable
+    {
+        out.push(Input::Text(t.to_string()));
+    }
+    out
+}
+
 /// Parse "ctrl+shift+o", "pagedown", "a", "F5" (used by scripts and tests).
 pub fn parse_key_combo(s: &str) -> Option<(Key, Mods)> {
     let mut mods = Mods::default();
@@ -180,6 +207,62 @@ mod tests {
             Some(Key::Char('+'))
         );
         assert_eq!(parse_key_combo("hyper+x"), None);
+    }
+
+    #[test]
+    fn key_translation() {
+        let none = Mods::default();
+        let ctrl = Mods { ctrl: true, ..none };
+        let altgr = Mods {
+            ctrl: true,
+            alt: true,
+            ..none
+        };
+        // Plain typing: key + text.
+        assert_eq!(
+            translate_key(Some(Key::Char('a')), Some("a"), none),
+            vec![
+                Input::Key {
+                    key: Key::Char('a'),
+                    mods: none
+                },
+                Input::Text("a".into())
+            ]
+        );
+        // Shortcut: key only, no text.
+        assert_eq!(
+            translate_key(Some(Key::Char('s')), Some("s"), ctrl),
+            vec![Input::Key {
+                key: Key::Char('s'),
+                mods: ctrl
+            }]
+        );
+        // AltGr (Ctrl+Alt) producing '@' or '€' is typing, not Ctrl+Alt+Q.
+        assert_eq!(
+            translate_key(Some(Key::Char('@')), Some("@"), altgr),
+            vec![Input::Text("@".into())]
+        );
+        assert_eq!(
+            translate_key(Some(Key::Char('€')), Some("€"), altgr),
+            vec![Input::Text("€".into())]
+        );
+        // Enter / Tab produce control text, which is not typed.
+        assert_eq!(
+            translate_key(Some(Key::Enter), Some("\r"), none),
+            vec![Input::Key {
+                key: Key::Enter,
+                mods: none
+            }]
+        );
+        assert_eq!(
+            translate_key(Some(Key::Tab), Some("\t"), none),
+            vec![Input::Key {
+                key: Key::Tab,
+                mods: none
+            }]
+        );
+        // Dead key / IME composition produces no text yet.
+        assert!(translate_key(None, None, none).is_empty());
         assert_eq!(parse_key_combo("ab"), None);
     }
 }

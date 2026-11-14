@@ -21,6 +21,8 @@ pub struct Ctx<'a> {
     pub zoom: f32,
     pub requests: &'a mut Vec<Request>,
     pub cursor: &'a mut Cursor,
+    /// Whether the view being drawn has keyboard focus (caret shown).
+    pub focused: bool,
 }
 
 impl Ctx<'_> {

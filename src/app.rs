@@ -60,6 +60,7 @@ macro_rules! ctx {
             zoom: $s.zoom,
             requests: &mut $s.requests,
             cursor: &mut $s.cursor,
+            focused: $s.focus == Focus::Main,
         }
     };
 }

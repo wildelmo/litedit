@@ -101,6 +101,9 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
         return LinkTarget::Blocked("network paths are not opened");
     }
     let p = PathBuf::from(&decoded);
+    if crate::doc::is_reserved_name(&p) {
+        return LinkTarget::Blocked("device name");
+    }
     let full = if p.is_absolute() || decoded.starts_with('/') || decoded.starts_with('\\') {
         p
     } else {

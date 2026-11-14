@@ -5,21 +5,14 @@
 //! - Invalid UTF-8 is decoded lossily — never panics
 //! - CRLF / LF / lone CR line endings are detected and remembered
 //!
-//! Text is normalised to `\n` internally; the original line ending is kept so
-//! saving (Epic 2) can write it back unchanged.
+//! The decoded text keeps its original line endings; the editor buffer
+//! records them per line so saving writes them back unchanged.
 
 use std::io;
 use std::path::{Path, PathBuf};
 
 /// Refuse to open files larger than this in one go (protects memory).
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LineEnding {
-    Lf,
-    CrLf,
-    Cr,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -34,14 +27,20 @@ pub enum Encoding {
 #[derive(Clone, Debug)]
 pub struct Document {
     pub path: PathBuf,
+    /// Decoded text with original line endings.
     pub text: String,
-    pub line_ending: LineEnding,
     pub encoding: Encoding,
 }
 
 impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
+        if is_reserved_name(path) {
+            return Err(io::Error::other("reserved Windows device name"));
+        }
         let meta = std::fs::metadata(path)?;
+        if !meta.is_file() {
+            return Err(io::Error::other("not a regular file"));
+        }
         if meta.len() > MAX_FILE_BYTES {
             return Err(io::Error::other(format!(
                 "file is too large to open ({} MB)",
@@ -50,11 +49,9 @@ impl Document {
         }
         let bytes = std::fs::read(path)?;
         let (text, encoding) = decode(&bytes);
-        let (text, line_ending) = normalize_newlines(text);
         Ok(Self {
             path: path.to_path_buf(),
             text,
-            line_ending,
             encoding,
         })
     }
@@ -65,6 +62,22 @@ impl Document {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.path.display().to_string())
     }
+}
+
+/// Windows device names (CON, NUL, COM1, …, with any extension) refer to
+/// devices, not files; opening or saving them must never be attempted.
+pub fn is_reserved_name(path: &Path) -> bool {
+    let Some(name) = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_uppercase())
+    else {
+        return false;
+    };
+    let stem = name.split('.').next().unwrap_or("").trim_end();
+    matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit())
 }
 
 pub fn decode(bytes: &[u8]) -> (String, Encoding) {
@@ -119,45 +132,21 @@ fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> String {
         .collect()
 }
 
-/// Convert all line endings to `\n`; report the dominant original style.
-pub fn normalize_newlines(text: String) -> (String, LineEnding) {
-    if !text.contains('\r') {
-        return (text, LineEnding::Lf);
-    }
-    let (mut crlf, mut cr, mut lf) = (0usize, 0usize, 0usize);
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' if chars.peek() == Some(&'\n') => {
-                chars.next();
-                crlf += 1;
-                out.push('\n');
-            }
-            '\r' => {
-                cr += 1;
-                out.push('\n');
-            }
-            '\n' => {
-                lf += 1;
-                out.push('\n');
-            }
-            c => out.push(c),
-        }
-    }
-    let ending = if crlf >= lf && crlf >= cr {
-        LineEnding::CrLf
-    } else if cr > lf {
-        LineEnding::Cr
-    } else {
-        LineEnding::Lf
-    };
-    (out, ending)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserved_device_names() {
+        for n in [
+            "CON", "con.txt", "NUL", "nul.md", "COM1", "lpt9.log", "aux.png",
+        ] {
+            assert!(is_reserved_name(Path::new(n)), "{n}");
+        }
+        for n in ["console.txt", "com10", "notes.md", "nul_list.md"] {
+            assert!(!is_reserved_name(Path::new(n)), "{n}");
+        }
+    }
 
     #[test]
     fn utf8_bom_is_stripped() {
@@ -185,19 +174,5 @@ mod tests {
     fn odd_length_utf16_does_not_panic() {
         let (s, _) = decode(&[0xFF, 0xFE, b'h', 0, b'i']);
         assert_eq!(s, "h");
-    }
-
-    #[test]
-    fn crlf_detected_and_normalized() {
-        let (s, e) = normalize_newlines("a\r\nb\r\nc\n".into());
-        assert_eq!(s, "a\nb\nc\n");
-        assert_eq!(e, LineEnding::CrLf);
-    }
-
-    #[test]
-    fn lone_cr() {
-        let (s, e) = normalize_newlines("a\rb\rc".into());
-        assert_eq!(s, "a\nb\nc");
-        assert_eq!(e, LineEnding::Cr);
     }
 }

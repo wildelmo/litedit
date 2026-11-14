@@ -124,6 +124,9 @@ impl ImageStore {
 }
 
 pub fn decode_file(path: &Path) -> Result<Decoded, String> {
+    if crate::doc::is_reserved_name(path) {
+        return Err("not a file".into());
+    }
     let meta = std::fs::metadata(path).map_err(|_| "image not found".to_string())?;
     if !meta.is_file() {
         return Err("not a file".into());

@@ -10,6 +10,16 @@ _None yet._
 
 ## Decided — review when convenient
 
+### D-016 The caret does not blink
+A blinking caret means waking the CPU twice a second forever. litedit
+redraws only when something happens, so the caret is steady. *Easy to add
+as an option if you miss it.*
+
+### D-015 Very long lines: editing works past the display cut
+Lines longer than 4000 characters are drawn up to the cut (…). The text
+beyond is still there and editable; the caret is drawn at the cut when it
+is past it. Real files almost never have such lines (minified code does).
+
 ### D-013 Prompts appear as a bar inside the window, not as pop-up dialogs
 "Save changes?", "File changed on disk — reload?" and similar questions
 appear as a bar at the top of the editor (like lite-xl's NagView), answered

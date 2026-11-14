@@ -153,10 +153,18 @@ fn external_change_reloads_open_file() {
     std::fs::write(&path, "one\n").unwrap();
     let mut app = new_app();
     app.open(&path);
-    assert!(app.status_text().starts_with("1 lines"));
+    assert!(
+        app.status_text().contains(" 2 lines"),
+        "{}",
+        app.status_text()
+    );
     std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
     assert!(app.handle(Input::FsChanged(vec![path.clone()])));
-    assert!(app.status_text().starts_with("3 lines"));
+    assert!(
+        app.status_text().contains(" 4 lines"),
+        "{}",
+        app.status_text()
+    );
     // Unrelated paths are ignored.
     assert!(!app.handle(Input::FsChanged(vec![dir.join("other.txt")])));
     std::fs::remove_dir_all(&dir).ok();
@@ -371,4 +379,117 @@ fn dragging_the_divider_resizes_the_tree() {
         button: crate::input::MouseButton::Left,
     });
     assert_ne!(before, render_hash(&mut app, 800, 600));
+}
+
+fn temp_file(name: &str, text: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("litedit-ed-{}-{}", name, std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join(name);
+    std::fs::write(&p, text).unwrap();
+    p
+}
+
+fn type_text(app: &mut App, s: &str) {
+    for c in s.chars() {
+        app.handle(Input::Text(c.to_string()));
+    }
+}
+
+#[test]
+fn typing_moves_and_undo_through_the_app() {
+    let p = temp_file("edit.txt", "hello\nworld\n");
+    let mut app = new_app();
+    app.open(&p);
+    key(&mut app, "end");
+    type_text(&mut app, ", there");
+    key(&mut app, "enter");
+    type_text(&mut app, "new line");
+    assert!(
+        app.title().starts_with("● edit.txt"),
+        "dirty marker: {}",
+        app.title()
+    );
+    assert!(
+        app.status_text().starts_with("Ln 2, Col 9"),
+        "{}",
+        app.status_text()
+    );
+    render_hash(&mut app, 800, 600);
+    // Select the word "world" by keyboard and replace it.
+    key(&mut app, "down");
+    key(&mut app, "home");
+    key(&mut app, "ctrl+shift+right");
+    type_text(&mut app, "planet");
+    key(&mut app, "ctrl+z");
+    key(&mut app, "ctrl+z");
+    key(&mut app, "ctrl+z");
+    key(&mut app, "ctrl+z");
+    render_hash(&mut app, 800, 600);
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn mouse_places_caret_and_selects_words() {
+    let p = temp_file("mouse.rs", "fn alpha() {}\nlet beta = 1;\n");
+    let mut app = new_app();
+    app.handle(Input::Key {
+        key: Key::Char('\\'),
+        mods: Mods {
+            ctrl: true,
+            ..Mods::default()
+        },
+    }); // hide tree
+    app.open(&p);
+    key(&mut app, "ctrl+\\");
+    render_hash(&mut app, 800, 600);
+    // Click far right of line 2 → caret at its end.
+    let lh = (15.0f32 * 1.4).round();
+    let y2 = 7.0 + lh * 1.5;
+    app.handle(Input::MouseMove { x: 700.0, y: y2 });
+    app.handle(Input::MouseDown {
+        x: 700.0,
+        y: y2,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseUp {
+        x: 700.0,
+        y: y2,
+        button: crate::input::MouseButton::Left,
+    });
+    assert!(
+        app.status_text().starts_with("Ln 2, Col 14"),
+        "{}",
+        app.status_text()
+    );
+    assert_eq!(app.cursor(), crate::input::Cursor::Text);
+    // Double-click a word on line 1 and type over it.
+    let y1 = 7.0 + lh * 0.5;
+    let gutter_and_some = 80.0;
+    app.handle(Input::MouseDown {
+        x: gutter_and_some,
+        y: y1,
+        button: crate::input::MouseButton::Left,
+        clicks: 2,
+    });
+    type_text(&mut app, "X");
+    let text = std::fs::read_to_string(&p).unwrap();
+    assert_eq!(text, "fn alpha() {}\nlet beta = 1;\n", "nothing saved yet");
+    render_hash(&mut app, 800, 600);
+    // Drag-select from start of line 1 to line 2.
+    app.handle(Input::MouseDown {
+        x: 60.0,
+        y: y1,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseMove { x: 300.0, y: y2 });
+    app.handle(Input::MouseUp {
+        x: 300.0,
+        y: y2,
+        button: crate::input::MouseButton::Left,
+    });
+    render_hash(&mut app, 800, 600);
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }

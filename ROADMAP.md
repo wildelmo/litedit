@@ -91,11 +91,11 @@ Acceptance criteria that protect the user's text:
 
 - [x] S2.1 Buffer: lines + per-line EOLs, positions, insert/remove, exact
        load/serialize for all encodings, undo/redo with merge; fuzz tests
-- [ ] S2.2 Cursor + selection (keyboard, mouse, word/line), grapheme-aware;
+- [x] S2.2 Cursor + selection (keyboard, mouse, word/line), grapheme-aware;
        one col↔x mapping shared by caret drawing and hit-testing
-- [ ] S2.3 Typing, Backspace/Delete (word), Enter auto-indent, Tab/Shift+Tab;
+- [x] S2.3 Typing, Backspace/Delete (word), Enter auto-indent, Tab/Shift+Tab;
        pure key-translation function with AltGr tests
-- [ ] S2.4 Undo/redo wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
+- [x] S2.4 Undo/redo wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
 - [ ] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
 - [ ] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
        single discard gate, external-change prompt for dirty docs
@@ -128,6 +128,12 @@ Acceptance criteria that protect the user's text:
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S2.2–S2.4 done: editor/doc.rs (commands on all selections, grapheme
+  caret moves, lite-xl word rules, smart Home, auto-indent, indent detection,
+  Tab/Shift+Tab, word delete, duplicate/delete line, undo/redo); CodeView is
+  now the editor (content-keyed line cache, shared col↔x mapping, selection,
+  caret, mouse click/drag/double/triple, gutter line select); translate_key
+  pure fn with AltGr tests. Markdown source stays read-only until S2.7.
 - 2026-11-14 — S2.1 done: buffer with per-line EOLs (byte-exact round trip for all
   fixtures/encodings), ops + position transforms, undo/redo with typing merge,
   model-based fuzz (40 seeds × 300 ops) incl. undo-all.

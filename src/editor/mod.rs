@@ -1,6 +1,7 @@
 //! Editing core: buffer, history (undo/redo), and their tests.
 
 pub mod buffer;
+pub mod doc;
 pub mod history;
 
 #[cfg(test)]
