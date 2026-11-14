@@ -15,6 +15,8 @@ pub enum MenuAction {
     Delete(PathBuf),
     Reveal(PathBuf),
     CopyPath(PathBuf),
+    /// Search inside this folder (also used for the Ctrl+Shift+F prompt).
+    FindInFolder(PathBuf),
 }
 
 pub struct Menu {

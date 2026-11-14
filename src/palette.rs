@@ -72,6 +72,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Go to Line…", "ctrl+g"),
     ("Find", "ctrl+f"),
     ("Replace", "ctrl+h"),
+    ("Find in Folder…", "ctrl+shift+f"),
     ("Find Next", "f3"),
     ("Find Previous", "shift+f3"),
     ("Edit: Undo", "ctrl+z"),

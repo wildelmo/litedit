@@ -3,6 +3,7 @@
 pub mod code;
 pub mod markdown;
 pub mod message;
+pub mod search;
 
 use std::time::Duration;
 

@@ -123,7 +123,7 @@ asks for each dirty tab.
        go to line (Ctrl+G)
 - [x] S3.5 Tree actions (right-click menu): new file, new folder, rename,
        delete → Recycle Bin, Show in Explorer
-- [ ] S3.6 Find in folder (Ctrl+Shift+F): background search, results list,
+- [x] S3.6 Find in folder (Ctrl+Shift+F): background search, results list,
        click opens at line
 - [ ] S3.7 Recent folders/files, restore last session when started without
        arguments (%APPDATA%\litedit)
@@ -145,6 +145,10 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.6 done: find in folder (Ctrl+Shift+F or tree menu): background
+  search with tree rules, binary/huge/cache files skipped, 5000-result cap,
+  results tab with highlighted matches, Enter/click opens at the line, cancelled
+  when the tab closes.
 - 2026-11-14 — S3.5 done: tree right-click menu (new file / folder, rename, delete
   to Recycle Bin with Windows' own warning when it would be permanent, Show in
   Explorer, copy path); names validated as one Windows-legal component; never

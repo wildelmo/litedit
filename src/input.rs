@@ -96,6 +96,8 @@ pub enum Request {
     SaveAsDialog(PathBuf),
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
+    /// Open a file at a 1-based line (search results).
+    OpenPathAt(PathBuf, usize),
     /// Show a file in Windows Explorer.
     RevealInExplorer(PathBuf),
     Quit,

@@ -1223,3 +1223,29 @@ fn tree_context_menu_new_rename_delete() {
     }
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn find_in_folder_opens_results_at_line() {
+    let dir = std::env::temp_dir().join(format!("litedit-fif-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::write(dir.join("docs/guide.md"), "intro\n\nthe Secret word\n").unwrap();
+    std::fs::write(dir.join("main.rs"), "fn main() {}\n").unwrap();
+    let mut app = new_app();
+    app.open(&dir);
+    press(&mut app, "ctrl+shift+f");
+    type_text(&mut app, "secret");
+    press(&mut app, "enter");
+    assert!(app.title().starts_with("Search: secret"), "{}", app.title());
+    app.settle(Duration::from_secs(5));
+    render_hash(&mut app, 900, 600);
+    assert!(
+        app.status_text().starts_with("1 results"),
+        "{}",
+        app.status_text()
+    );
+    press(&mut app, "enter");
+    assert!(app.title().starts_with("guide.md"), "{}", app.title());
+    assert!(app.status_text().contains("Ln 3"), "{}", app.status_text());
+    std::fs::remove_dir_all(&dir).ok();
+}

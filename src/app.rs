@@ -21,6 +21,7 @@ use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
+use crate::view::search::SearchView;
 use crate::view::{DiskState, Tick, View};
 
 pub const MIN_ZOOM: f32 = 0.5;
@@ -490,6 +491,9 @@ impl App {
             items.push(("Rename…", MenuAction::Rename(path.clone())));
             items.push(("Delete (to Recycle Bin)", MenuAction::Delete(path.clone())));
         }
+        if is_dir {
+            items.push(("Find in folder…", MenuAction::FindInFolder(path.clone())));
+        }
         items.push(("Show in Explorer", MenuAction::Reveal(path.clone())));
         items.push(("Copy path", MenuAction::CopyPath(path)));
         self.menu = Some(Menu::new(x, y, items));
@@ -552,6 +556,13 @@ impl App {
                 self.notice = Some("Path copied".into());
                 return;
             }
+            MenuAction::FindInFolder(_) => {
+                self.palette = Some(Palette::text(
+                    "Find in folder",
+                    "",
+                    "Text to search for, then Enter",
+                ));
+            }
         }
         self.prompt_for = Some(a);
     }
@@ -585,6 +596,14 @@ impl App {
                     self.after_fs_change(new);
                     self.tree.reveal(new);
                 })
+            }
+            MenuAction::FindInFolder(root) => {
+                if !text.trim().is_empty() {
+                    let view = SearchView::start(root, text.trim());
+                    self.add_tab(Box::new(view));
+                    self.focus = Focus::Main;
+                }
+                return;
             }
             _ => return,
         };
@@ -802,13 +821,20 @@ impl App {
         let mut open = None;
         self.requests.retain(|r| match r {
             Request::OpenPath(p) => {
-                open = Some(p.clone());
+                open = Some((p.clone(), None));
+                false
+            }
+            Request::OpenPathAt(p, line) => {
+                open = Some((p.clone(), Some(*line)));
                 false
             }
             _ => true,
         });
-        if let Some(p) = open {
+        if let Some((p, line)) = open {
             self.open(&p);
+            if let Some(l) = line {
+                self.view.goto_line(l);
+            }
             return true;
         }
         if redraw {
@@ -997,6 +1023,20 @@ impl App {
                     Key::Char('g') if !mods.shift => {
                         if let Some(n) = self.view.line_count() {
                             self.palette = Some(Palette::goto_line(n));
+                        }
+                        true
+                    }
+                    Key::Char('f') if mods.shift => {
+                        match self.tree.root().map(Path::to_path_buf) {
+                            Some(root) => {
+                                self.palette = Some(Palette::text(
+                                    "Find in folder",
+                                    "",
+                                    "Text to search for, then Enter",
+                                ));
+                                self.prompt_for = Some(MenuAction::FindInFolder(root));
+                            }
+                            None => self.notice = Some("Open a folder first (Ctrl+Shift+O)".into()),
                         }
                         true
                     }
