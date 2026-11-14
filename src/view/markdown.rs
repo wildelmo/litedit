@@ -781,6 +781,17 @@ impl View for MarkdownView {
         self.editor.mark_orphaned();
     }
 
+    fn line_count(&self) -> Option<usize> {
+        self.editor.line_count()
+    }
+
+    fn goto_line(&mut self, line: usize) -> bool {
+        if self.mode == Mode::Preview {
+            self.mode = Mode::Source;
+        }
+        self.editor.goto_line(line)
+    }
+
     fn caret_rect(&self) -> Option<Rect> {
         matches!(self.mode, Mode::Source | Mode::Split)
             .then(|| self.editor.caret_rect())

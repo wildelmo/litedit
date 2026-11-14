@@ -87,6 +87,16 @@ pub trait View {
         None
     }
 
+    /// Number of lines (for go to line), if this is a text view.
+    fn line_count(&self) -> Option<usize> {
+        None
+    }
+
+    /// Move the caret to a 1-based line. Returns false if not supported.
+    fn goto_line(&mut self, _line: usize) -> bool {
+        false
+    }
+
     /// Test hook: exact text and every selection endpoint.
     #[cfg(test)]
     fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {

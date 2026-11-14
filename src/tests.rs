@@ -1109,3 +1109,50 @@ fn side_by_side_preview_follows_typing() {
     assert!(app.status_text().starts_with("Markdown source"));
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+#[test]
+fn palette_quick_open_and_goto_line() {
+    let p = temp_file(
+        "pal.txt",
+        &(1..=50).map(|i| format!("line {i}\n")).collect::<String>(),
+    );
+    let dir = p.parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(dir.join("notes")).unwrap();
+    std::fs::write(dir.join("notes/meeting-notes.md"), "# Meeting\n").unwrap();
+    let mut app = new_app();
+    app.open(&p);
+    // Go to line.
+    press(&mut app, "ctrl+g");
+    type_text(&mut app, "42");
+    press(&mut app, "enter");
+    assert!(
+        app.status_text().starts_with("Ln 42, Col 1"),
+        "{}",
+        app.status_text()
+    );
+    // Quick open with a fuzzy query.
+    press(&mut app, "ctrl+p");
+    type_text(&mut app, "mtgnotes");
+    render_hash(&mut app, 900, 600);
+    press(&mut app, "enter");
+    assert!(
+        app.title().starts_with("meeting-notes.md"),
+        "{}",
+        app.title()
+    );
+    // Command palette runs a command by replaying its shortcut.
+    press(&mut app, "ctrl+shift+p");
+    type_text(&mut app, "side by side");
+    render_hash(&mut app, 900, 600);
+    press(&mut app, "enter");
+    assert!(
+        app.status_text().starts_with("Markdown side by side"),
+        "{}",
+        app.status_text()
+    );
+    // Escape closes without running anything.
+    press(&mut app, "ctrl+shift+p");
+    press(&mut app, "escape");
+    assert!(app.status_text().starts_with("Markdown side by side"));
+    std::fs::remove_dir_all(&dir).ok();
+}

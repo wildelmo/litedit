@@ -205,6 +205,8 @@ pub struct CodeView {
     find_origin: Pos,
     /// Status of the last replace-all, etc.
     find_note: Option<String>,
+    /// Center this line on the next render (go to line).
+    goto_center: Option<usize>,
 }
 
 impl CodeView {
@@ -232,6 +234,7 @@ impl CodeView {
             last_find: None,
             find_origin: Pos::default(),
             find_note: None,
+            goto_center: None,
         }
     }
 
@@ -877,6 +880,10 @@ impl CodeView {
         self.last_rect = rect;
         self.view_w = rect.w as f32;
         self.view_h = rect.h as f32;
+        if let Some(l) = self.goto_center.take() {
+            let lh = ctx.code_metrics().line_height;
+            self.scroll.y = (l as f32 * lh - rect.h as f32 / 3.0).max(0.0);
+        }
         if self.reveal_caret {
             self.ensure_caret_visible(ctx);
             self.reveal_caret = false;
@@ -1192,6 +1199,20 @@ impl View for CodeView {
 
     fn caret_rect(&self) -> Option<Rect> {
         self.caret_screen
+    }
+
+    fn line_count(&self) -> Option<usize> {
+        Some(self.doc.buf.line_count())
+    }
+
+    fn goto_line(&mut self, line: usize) -> bool {
+        let l = line.saturating_sub(1).min(self.doc.buf.line_count() - 1);
+        let first = self.doc.buf.line(l).len() - self.doc.buf.line(l).trim_start().len();
+        self.doc.set_caret(Pos::new(l, first), false);
+        // Put the line about a third of the way down.
+        self.goto_center = Some(l);
+        self.reveal_caret = true;
+        true
     }
 
     #[cfg(test)]

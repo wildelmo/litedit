@@ -13,6 +13,7 @@ mod inputbar;
 mod links;
 mod markdown;
 mod nag;
+mod palette;
 mod platform;
 mod script;
 mod syntax;

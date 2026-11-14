@@ -119,7 +119,7 @@ asks for each dirty tab.
        step), case toggle, regex toggle (fancy-regex, already a dependency)
 - [x] S3.3 Side-by-side live preview for markdown (Ctrl+Shift+V), debounced
        re-parse, scroll follows the caret
-- [ ] S3.4 Command palette (Ctrl+Shift+P), quick open file (Ctrl+P, fuzzy),
+- [x] S3.4 Command palette (Ctrl+Shift+P), quick open file (Ctrl+P, fuzzy),
        go to line (Ctrl+G)
 - [ ] S3.5 Tree actions (right-click menu): new file, new folder, rename,
        delete → Recycle Bin, Show in Explorer
@@ -145,6 +145,11 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.4 done: command palette (Ctrl+Shift+P; commands replay their
+  shortcuts), quick open (Ctrl+P, lite-xl fuzzy match, tree rules + CACHEDIR.TAG
+  skip, 20k cap, rebuilt after changes), go to line (Ctrl+G). Windows CI (find/
+  replace commit): exe 6.29 MB, 10 tabs 31.5 MB WS / 13.6 MB private, 4/4 real-
+  window tests PASS.
 - 2026-11-14 — S3.3 done: side-by-side markdown (Ctrl+Shift+V): editor left, live
   preview right, re-parse debounced (180 ms) for large docs, preview follows the
   caret, wheel/links work on the preview half. Added S4.7 soft wrap.

@@ -9,8 +9,10 @@ use std::time::{Duration, Instant};
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::editor::doc::SaveError;
+use crate::input::parse_key_combo;
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::nag::{Nag, NagAction, Pending};
+use crate::palette::{Action, Outcome, Palette, index_files};
 use crate::text::Fonts;
 use crate::theme;
 use crate::tree::Tree;
@@ -54,6 +56,10 @@ pub struct App {
     clipboard: Box<dyn crate::clipboard::Clipboard>,
     /// Modal question bar (save changes?, changed on disk?, errors).
     nag: Option<Nag>,
+    /// Command palette / quick open / go to line overlay.
+    palette: Option<Palette>,
+    /// Files under the tree root for quick open (rebuilt after changes).
+    file_index: Option<(PathBuf, Vec<PathBuf>)>,
     /// What to do after "save anyway" for a lossy file.
     after_lossy: Option<Pending>,
     /// One-shot message in the status bar (e.g. "Saved").
@@ -110,6 +116,8 @@ impl App {
             dragging_divider: false,
             clipboard: Box::new(crate::clipboard::MemClipboard::default()),
             nag: None,
+            palette: None,
+            file_index: None,
             after_lossy: None,
             notice: None,
             pending: false,
@@ -367,6 +375,41 @@ impl App {
         }
     }
 
+    fn open_quick_open(&mut self) {
+        let Some(root) = self.tree.root().map(Path::to_path_buf) else {
+            self.notice = Some("Open a folder first (Ctrl+Shift+O)".into());
+            return;
+        };
+        if self.file_index.as_ref().is_none_or(|(r, _)| *r != root) {
+            self.file_index = Some((root.clone(), index_files(&root)));
+        }
+        let files = &self.file_index.as_ref().expect("just built").1;
+        self.palette = Some(Palette::files(&root, files));
+    }
+
+    fn run_palette(&mut self, o: Outcome) {
+        match o {
+            Outcome::Close => {}
+            Outcome::Run(Action::Keys(combo)) => {
+                if let Some((key, mods)) = parse_key_combo(combo) {
+                    self.handle(Input::Key { key, mods });
+                }
+            }
+            Outcome::Run(Action::Open(p)) => self.open(&p),
+            Outcome::Run(Action::RevealInExplorer) => {
+                if let Some(p) = self.view.path() {
+                    self.requests
+                        .push(Request::RevealInExplorer(p.to_path_buf()));
+                }
+            }
+            Outcome::GoToLine(n) => {
+                self.view.goto_line(n);
+                self.focus = Focus::Main;
+            }
+        }
+        self.pending = true;
+    }
+
     #[cfg(test)]
     pub fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
         self.view.snapshot()
@@ -595,6 +638,26 @@ impl App {
         if matches!(input, Input::Key { .. } | Input::MouseDown { .. }) {
             self.notice = None;
         }
+        // The palette is modal (below the question bar).
+        if self.nag.is_none()
+            && self.palette.is_some()
+            && matches!(
+                input,
+                Input::Key { .. } | Input::MouseDown { .. } | Input::Text(_)
+            )
+        {
+            let outcome = {
+                let mut ctx = ctx!(self);
+                self.palette
+                    .as_mut()
+                    .and_then(|p| p.handle(input, &mut ctx))
+            };
+            if let Some(o) = outcome {
+                self.palette = None;
+                self.run_palette(o);
+            }
+            return true;
+        }
         // The question bar is modal.
         if self.nag.is_some()
             && matches!(
@@ -631,6 +694,7 @@ impl App {
                 return true;
             }
             Input::FsChanged(paths) => {
+                self.file_index = None;
                 let mut changed = self.tree.invalidate(paths);
                 if let Some(p) = self.view.path().map(Path::to_path_buf)
                     && paths.iter().any(|c| c == &p)
@@ -720,6 +784,20 @@ impl App {
             }
             Input::Key { key, mods } if mods.ctrl => {
                 let handled = match key {
+                    Key::Char('p') if mods.shift => {
+                        self.palette = Some(Palette::commands(self.view.path().is_some()));
+                        true
+                    }
+                    Key::Char('p') => {
+                        self.open_quick_open();
+                        true
+                    }
+                    Key::Char('g') if !mods.shift => {
+                        if let Some(n) = self.view.line_count() {
+                            self.palette = Some(Palette::goto_line(n));
+                        }
+                        true
+                    }
                     Key::Char('s') if mods.shift => {
                         if let Some(p) = self.view.path() {
                             self.requests.push(Request::SaveAsDialog(p.to_path_buf()));
@@ -1032,6 +1110,10 @@ impl App {
 
         canvas.set_clip(layout.main);
         self.view.render(canvas, layout.main, &mut ctx);
+        if let Some(p) = self.palette.as_mut() {
+            canvas.set_clip(layout.main);
+            p.render(canvas, layout.main, &mut ctx);
+        }
 
         // Status bar (lite-xl StatusView).
         canvas.set_clip(layout.status);
