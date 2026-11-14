@@ -1079,3 +1079,33 @@ fn ci_smoke_script_passes() {
     let mut app = new_app();
     crate::script::run(&mut app, &script).unwrap();
 }
+
+#[test]
+fn side_by_side_preview_follows_typing() {
+    let p = temp_file("live.md", "# Title\n\nbody\n");
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+\\");
+    press(&mut app, "ctrl+shift+v");
+    assert!(
+        app.status_text().starts_with("Markdown side by side"),
+        "{}",
+        app.status_text()
+    );
+    let before = render_hash(&mut app, 1000, 600);
+    press(&mut app, "ctrl+end");
+    type_text(&mut app, "**new bold text**");
+    let after = render_hash(&mut app, 1000, 600);
+    assert_ne!(before, after, "preview and editor both change");
+    // Wheel over the preview half scrolls the preview, not the editor.
+    app.handle(Input::MouseMove { x: 800.0, y: 300.0 });
+    app.handle(Input::Wheel {
+        dx: 0.0,
+        dy: 3.0,
+        unit: crate::input::WheelUnit::Lines,
+    });
+    render_hash(&mut app, 1000, 600);
+    press(&mut app, "ctrl+shift+v");
+    assert!(app.status_text().starts_with("Markdown source"));
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}

@@ -36,7 +36,14 @@ pub fn is_markdown(path: &Path) -> bool {
 enum Mode {
     Preview,
     Source,
+    /// Editor on the left, live preview on the right.
+    Split,
 }
+
+/// Re-parsing a large document on every keystroke would lag; wait this long
+/// after the last edit before refreshing the side-by-side preview.
+const LIVE_DEBOUNCE: Duration = Duration::from_millis(180);
+const LIVE_DEBOUNCE_MIN_BYTES: usize = 30_000;
 
 pub struct MarkdownView {
     /// The source editor; the single owner of the document text.
@@ -55,7 +62,13 @@ pub struct MarkdownView {
     scroll: Scroll,
     mode: Mode,
     hover_link: Option<usize>,
+    /// The preview's rectangle (the right half in split mode).
     last_rect: Rect,
+    last_edit: std::time::Instant,
+    mouse_x: f32,
+    seen_version: u64,
+    /// Caret line the split preview last followed.
+    followed_line: usize,
     /// Message shown in the status bar (e.g. blocked link).
     notice: Option<String>,
 }
@@ -79,6 +92,10 @@ impl MarkdownView {
             mode: Mode::Preview,
             hover_link: None,
             last_rect: Rect::new(0, 0, 0, 0),
+            last_edit: std::time::Instant::now(),
+            mouse_x: 0.0,
+            seen_version: 0,
+            followed_line: usize::MAX,
             notice: None,
         };
         v.request_images();
@@ -157,6 +174,56 @@ impl MarkdownView {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default()
+    }
+
+    fn preview_stale(&self) -> bool {
+        self.editor.doc.version() != self.md_version
+    }
+
+    /// In split mode, large documents refresh only after typing pauses.
+    fn live_ready(&self) -> bool {
+        self.mode != Mode::Split
+            || self.editor.doc.buf.line_count() * 40 < LIVE_DEBOUNCE_MIN_BYTES
+            || self.last_edit.elapsed() >= LIVE_DEBOUNCE
+    }
+
+    fn split_rects(rect: Rect, ctx: &Ctx) -> (Rect, Rect, Rect) {
+        let div = ctx.px(1.0).max(1.0) as i32;
+        let lw = (rect.w - div) / 2;
+        (
+            Rect::new(rect.x, rect.y, lw, rect.h),
+            Rect::new(rect.x + lw, rect.y, div, rect.h),
+            Rect::new(rect.x + lw + div, rect.y, rect.w - lw - div, rect.h),
+        )
+    }
+
+    /// Keep the block containing the editor's caret visible in the preview.
+    fn follow_caret(&mut self) {
+        let line = self.editor.doc.primary().head.line;
+        if line == self.followed_line {
+            return;
+        }
+        self.followed_line = line;
+        let Some((_, l)) = &self.layout else { return };
+        let byte = self
+            .md_text
+            .match_indices('\n')
+            .nth(line.saturating_sub(1))
+            .map(|(i, _)| i + 1)
+            .filter(|_| line > 0)
+            .unwrap_or(0);
+        let y = l
+            .offsets
+            .iter()
+            .take_while(|(o, _)| *o <= byte)
+            .last()
+            .map(|(_, y)| *y)
+            .unwrap_or(0.0);
+        let vh = self.last_rect.h as f32;
+        if y < self.scroll.y + vh * 0.1 || y > self.scroll.y + vh * 0.8 {
+            self.scroll.y = (y - vh / 3.0).max(0.0);
+            self.clamp();
+        }
     }
 
     /// Re-parse the preview if the text changed since the last parse.
@@ -286,7 +353,7 @@ impl MarkdownView {
                 self.editor.scroll_to_line(line, ctx);
                 self.mode = Mode::Source;
             }
-            Mode::Source => {
+            Mode::Source | Mode::Split => {
                 let line = self.editor.top_line(ctx);
                 self.sync_preview();
                 // Lay out now so the scroll position can be mapped.
@@ -330,6 +397,15 @@ impl MarkdownView {
             .map(|(_, y)| *y)
             .unwrap_or(0.0);
         self.scroll.y = y;
+    }
+
+    /// Draw the previous layout (the text changed but the debounce has not
+    /// expired yet).
+    fn render_preview_stale(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        let v = self.md_version;
+        self.md_version = self.editor.doc.version(); // pretend fresh for this frame
+        self.render_preview(canvas, rect, ctx);
+        self.md_version = v;
     }
 
     fn render_preview(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
@@ -525,6 +601,22 @@ impl View for MarkdownView {
         match self.mode {
             Mode::Preview => self.render_preview(canvas, rect, ctx),
             Mode::Source => self.editor.render(canvas, rect, ctx),
+            Mode::Split => {
+                let (left, div, right) = Self::split_rects(rect, ctx);
+                canvas.set_clip(left);
+                self.editor.render(canvas, left, ctx);
+                canvas.set_clip(div);
+                canvas.fill_rect(div, theme::DIVIDER);
+                canvas.set_clip(right);
+                self.last_rect = right;
+                // Large documents refresh once typing pauses (tick redraws).
+                if !self.preview_stale() || self.live_ready() || self.layout.is_none() {
+                    self.render_preview(canvas, right, ctx);
+                    self.follow_caret();
+                } else {
+                    self.render_preview_stale(canvas, right, ctx);
+                }
+            }
         }
     }
 
@@ -541,6 +633,45 @@ impl View for MarkdownView {
             *ctx.cursor = Cursor::Default;
             return true;
         }
+        // Ctrl+Shift+V: side-by-side live preview on/off.
+        if let Input::Key {
+            key: Key::Char('v'),
+            mods,
+        } = input
+            && mods.ctrl
+            && mods.shift
+        {
+            self.mode = if self.mode == Mode::Split {
+                Mode::Source
+            } else {
+                Mode::Split
+            };
+            self.followed_line = usize::MAX;
+            return true;
+        }
+        if let Input::MouseMove { x, .. } = input {
+            self.mouse_x = *x;
+        }
+        if self.mode == Mode::Split {
+            let (left, _, right) = Self::split_rects(rect, ctx);
+            let over_preview = match input {
+                Input::MouseMove { x, .. }
+                | Input::MouseDown { x, .. }
+                | Input::MouseUp { x, .. } => *x >= right.x as f32,
+                Input::Wheel { .. } => self.mouse_x >= right.x as f32,
+                _ => false,
+            };
+            if !over_preview {
+                let v = self.editor.doc.version();
+                let r = self.editor.handle(input, left, ctx);
+                if self.editor.doc.version() != v {
+                    self.last_edit = std::time::Instant::now();
+                }
+                return r;
+            }
+            self.last_rect = right;
+            return self.handle_preview(input, right, ctx);
+        }
         // Find / replace work on the source: switch to editing first.
         if self.mode == Mode::Preview
             && let Input::Key { key, mods } = input
@@ -552,70 +683,24 @@ impl View for MarkdownView {
         if self.mode == Mode::Source {
             return self.editor.handle(input, rect, ctx);
         }
-        let lh = ctx.font_px(theme::MD_FONT_SIZE) * theme::MD_LINE_HEIGHT;
-        let before = self.scroll.y;
-        match input {
-            Input::Wheel { .. } => {
-                self.scroll.wheel(input, lh);
-            }
-            Input::Key { key, mods } => {
-                let page = (rect.h as f32 - lh * 2.0).max(lh);
-                match key {
-                    Key::Down => self.scroll.y += lh,
-                    Key::Up => self.scroll.y -= lh,
-                    Key::PageDown => self.scroll.y += page,
-                    Key::PageUp => self.scroll.y -= page,
-                    Key::Char(' ') if !mods.ctrl => {
-                        self.scroll.y += if mods.shift { -page } else { page }
-                    }
-                    Key::Home => self.scroll.y = 0.0,
-                    Key::End => self.scroll.y = f32::MAX,
-                    _ => return false,
-                }
-            }
-            Input::MouseMove { x, y } => {
-                let link = self.link_at(*x, *y);
-                let changed = link != self.hover_link;
-                self.hover_link = link;
-                *ctx.cursor = if link.is_some() {
-                    Cursor::Pointer
-                } else {
-                    Cursor::Default
-                };
-                return changed;
-            }
-            Input::MouseLeave => {
-                let changed = self.hover_link.is_some();
-                self.hover_link = None;
-                *ctx.cursor = Cursor::Default;
-                return changed;
-            }
-            Input::MouseDown {
-                x,
-                y,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(idx) = self.link_at(*x, *y) {
-                    self.activate_link(idx, ctx);
-                    return true;
-                }
-                return false;
-            }
-            _ => return false,
-        }
-        self.clamp();
-        self.scroll.y != before
+        self.handle_preview(input, rect, ctx)
     }
 
     fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
         let mut t = match self.mode {
-            Mode::Source => self.editor.tick(ctx, budget),
+            Mode::Source | Mode::Split => self.editor.tick(ctx, budget),
             Mode::Preview => Tick::default(),
         };
+        if self.mode == Mode::Split && self.preview_stale() {
+            if self.live_ready() {
+                t.redraw = true;
+            } else {
+                t.more = true; // come back when the debounce expires
+            }
+        }
         if self.images.poll() {
             self.images_version += 1;
-            t.redraw |= self.mode == Mode::Preview;
+            t.redraw |= self.mode != Mode::Source;
         }
         t.more |= self.images.pending();
         t
@@ -628,6 +713,12 @@ impl View for MarkdownView {
     fn status(&self) -> Vec<String> {
         let mut v = match self.mode {
             Mode::Preview => vec!["Markdown preview".to_string(), "Ctrl+E: edit".to_string()],
+            Mode::Split => {
+                let mut s = self.editor.status();
+                s.insert(0, "Markdown side by side".into());
+                s.insert(1, "Ctrl+Shift+V: single view".into());
+                s
+            }
             Mode::Source => {
                 let mut s = self.editor.status();
                 s.insert(0, "Markdown source".into());
@@ -691,7 +782,7 @@ impl View for MarkdownView {
     }
 
     fn caret_rect(&self) -> Option<Rect> {
-        (self.mode == Mode::Source)
+        matches!(self.mode, Mode::Source | Mode::Split)
             .then(|| self.editor.caret_rect())
             .flatten()
     }
@@ -699,6 +790,65 @@ impl View for MarkdownView {
     #[cfg(test)]
     fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
         self.editor.snapshot()
+    }
+}
+
+impl MarkdownView {
+    fn handle_preview(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        let lh = ctx.font_px(theme::MD_FONT_SIZE) * theme::MD_LINE_HEIGHT;
+        let before = self.scroll.y;
+        match input {
+            Input::Wheel { .. } => {
+                self.scroll.wheel(input, lh);
+            }
+            Input::Key { key, mods } => {
+                let page = (rect.h as f32 - lh * 2.0).max(lh);
+                match key {
+                    Key::Down => self.scroll.y += lh,
+                    Key::Up => self.scroll.y -= lh,
+                    Key::PageDown => self.scroll.y += page,
+                    Key::PageUp => self.scroll.y -= page,
+                    Key::Char(' ') if !mods.ctrl => {
+                        self.scroll.y += if mods.shift { -page } else { page }
+                    }
+                    Key::Home => self.scroll.y = 0.0,
+                    Key::End => self.scroll.y = f32::MAX,
+                    _ => return false,
+                }
+            }
+            Input::MouseMove { x, y } => {
+                let link = self.link_at(*x, *y);
+                let changed = link != self.hover_link;
+                self.hover_link = link;
+                *ctx.cursor = if link.is_some() {
+                    Cursor::Pointer
+                } else {
+                    Cursor::Default
+                };
+                return changed;
+            }
+            Input::MouseLeave => {
+                let changed = self.hover_link.is_some();
+                self.hover_link = None;
+                *ctx.cursor = Cursor::Default;
+                return changed;
+            }
+            Input::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(idx) = self.link_at(*x, *y) {
+                    self.activate_link(idx, ctx);
+                    return true;
+                }
+                return false;
+            }
+            _ => return false,
+        }
+        self.clamp();
+        self.scroll.y != before
     }
 }
 

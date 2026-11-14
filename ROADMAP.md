@@ -117,7 +117,7 @@ asks for each dirty tab.
 - [x] S3.2 Find / replace in file: Ctrl+F (prefill from selection), F3 /
        Shift+F3, all matches highlighted, Ctrl+H replace one / all (one undo
        step), case toggle, regex toggle (fancy-regex, already a dependency)
-- [ ] S3.3 Side-by-side live preview for markdown (Ctrl+Shift+V), debounced
+- [x] S3.3 Side-by-side live preview for markdown (Ctrl+Shift+V), debounced
        re-parse, scroll follows the caret
 - [ ] S3.4 Command palette (Ctrl+Shift+P), quick open file (Ctrl+P, fuzzy),
        go to line (Ctrl+G)
@@ -136,6 +136,8 @@ asks for each dirty tab.
 - [ ] S4.4 Large-file performance pass
 - [ ] S4.5 App icon, version info, file associations (optional)
 - [ ] S4.6 Text selection + copy in preview
+- [ ] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
+       markdown source and in side-by-side mode
 
 ---
 
@@ -143,6 +145,9 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.3 done: side-by-side markdown (Ctrl+Shift+V): editor left, live
+  preview right, re-parse debounced (180 ms) for large docs, preview follows the
+  caret, wheel/links work on the preview half. Added S4.7 soft wrap.
 - 2026-11-14 — S3.2 done: find/replace bar (Ctrl+F / Ctrl+H, incremental, F3,
   Enter/Shift+Enter, Tab between fields, Enter replaces one, Ctrl+Enter all as one
   undo step, Alt+C case, Alt+R regex with $1 groups, all matches highlighted,
