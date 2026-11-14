@@ -25,6 +25,8 @@ pub enum Action {
     RevealInExplorer,
     ToggleTheme,
     CompareWithSaved,
+    SaveWorkspace,
+    OpenWorkspace,
 }
 
 #[derive(Clone, Debug)]
@@ -178,6 +180,16 @@ impl Palette {
                 action: Action::Keys(k),
             })
             .collect();
+        items.push(Item {
+            label: "File: Save Workspace As…".into(),
+            detail: String::new(),
+            action: Action::SaveWorkspace,
+        });
+        items.push(Item {
+            label: "File: Open Workspace…".into(),
+            detail: String::new(),
+            action: Action::OpenWorkspace,
+        });
         items.push(Item {
             label: "View: Toggle Light / Dark Theme".into(),
             detail: String::new(),

@@ -47,7 +47,7 @@ VS Code uses Ctrl+\ to split, but in litedit Ctrl+\ already shows/hides the
 file tree (lite-xl's habit), so moving a tab across is Ctrl+Alt+Right/Left
 (VS Code's "move editor to next group") and Ctrl+1/2 focus a side. At most
 two sides; a file is open in only one tab (two live copies of one file would
-fight over who saves last). The split isn't restored next start; tabs are.
+fight over who saves last). Since S5.5 the split is restored with the tabs.
 
 ### D-026 Known cosmetic limitations left after the 1.1 review
 Not worth the risk or size right now; tell me if any bothers you:
@@ -86,6 +86,9 @@ Like VS Code: the last folder, open tabs (that still exist), active tab, tree
 width and zoom come back. Opening a specific file (double-click, drag onto
 the exe, command line) opens just that file. Stored in
 `%APPDATA%\litedit\session.txt`; delete it to start fresh.
+
+Updated in 1.1: each folder also remembers its own tabs and split
+(`%APPDATA%\litedit\workspaces`), and workspaces can be saved to files.
 
 ### D-020 Delete from the tree goes to the Recycle Bin, with Windows' warning
 litedit asks "Move X to the Recycle Bin?" first. Windows CI verifies the item

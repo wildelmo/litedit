@@ -85,6 +85,18 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::SaveWorkspaceDialog(suggested) => {
+                    if let Some(p) = pick_save(&window, &suggested) {
+                        self.app.save_workspace_as(&p);
+                        redraw = true;
+                    }
+                }
+                Request::OpenWorkspaceDialog => {
+                    if let Some(p) = pick_workspace(&window) {
+                        self.app.open(&p);
+                        redraw = true;
+                    }
+                }
                 Request::NewFileDialog => {
                     let start = std::env::var_os("USERPROFILE")
                         .map(PathBuf::from)
@@ -131,6 +143,7 @@ impl Runner {
         if let Some(f) = crate::session::session_file() {
             let _ = self.app.session().save(&f);
         }
+        self.app.persist_workspace();
     }
 
     fn mods(&self) -> Mods {
@@ -409,6 +422,21 @@ fn pick(window: &Window, folder: bool) -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn pick(_window: &Window, _folder: bool) -> Option<PathBuf> {
+    None
+}
+
+/// Open a `.litedit-workspace` file (Windows).
+#[cfg(windows)]
+fn pick_workspace(window: &Window) -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_parent(window)
+        .set_title("Open workspace")
+        .add_filter("litedit workspace", &[crate::workspace::EXT])
+        .pick_file()
+}
+
+#[cfg(not(windows))]
+fn pick_workspace(_window: &Window) -> Option<PathBuf> {
     None
 }
 

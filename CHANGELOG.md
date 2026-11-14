@@ -2,6 +2,11 @@
 
 ## 1.1.0 — unreleased
 
+- Workspaces: every folder remembers its open files and split, like lite-xl
+  — switch folders and come back to where you were (files with unsaved
+  edits always stay open). Save a workspace to a `.litedit-workspace` file
+  (command palette: File: Save Workspace As…) and open it later or on
+  another PC (paths inside the project are stored relative).
 - Split view: Ctrl+Alt+Right moves the current tab to a right-hand side
   (with its own tabs); Ctrl+Alt+Left moves it back; Ctrl+1 / Ctrl+2 or a
   click switches sides. Also in the tab menu and command palette.

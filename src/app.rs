@@ -26,6 +26,7 @@ use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::search::SearchView;
 use crate::view::{DiskState, Tick, View};
+use crate::workspace::{self, Workspace};
 
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 3.0;
@@ -113,6 +114,8 @@ pub struct App {
     mods: crate::input::Mods,
     /// File chosen with "Select for Compare".
     compare_with: Option<PathBuf>,
+    /// Where per-folder workspaces are kept (window mode; None = off).
+    workspace_store: Option<PathBuf>,
 }
 
 struct TabSlot {
@@ -208,6 +211,7 @@ impl App {
             tab_drag: None,
             closed: Vec::new(),
             compare_with: None,
+            workspace_store: None,
             mods: crate::input::Mods::default(),
         }
     }
@@ -483,15 +487,14 @@ impl App {
             self.session_dirty = true;
         }
         if path.is_dir() {
-            // A folder only changes the tree; open files stay open.
-            self.tree.set_root(path);
-            self.tree.visible = true;
-            if self.view.path().is_none() {
-                self.view = Box::new(MessageView::folder_opened());
-            } else if let Some(p) = self.view.path().map(Path::to_path_buf) {
-                self.tree.reveal(&p);
+            self.open_folder(path);
+            return;
+        }
+        if workspace::is_workspace_file(path) {
+            match Workspace::load(path) {
+                Ok(w) => self.apply_workspace(w),
+                Err(e) => self.nag = Some(Nag::error(format!("Cannot open workspace: {e}"))),
             }
-            self.focus = Focus::Tree;
             return;
         }
         self.open_now(path);
@@ -927,6 +930,17 @@ impl App {
             }
             Outcome::Run(Action::Open(p)) => self.open(&p),
             Outcome::Run(Action::ToggleTheme) => self.toggle_theme(),
+            Outcome::Run(Action::SaveWorkspace) => {
+                let p = self.suggested_workspace_path();
+                if self.tree.root().is_none() {
+                    self.notice = Some(
+                        "Open a folder first: a workspace is a folder plus its open files".into(),
+                    );
+                } else {
+                    self.requests.push(Request::SaveWorkspaceDialog(p));
+                }
+            }
+            Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
             Outcome::Run(Action::CompareWithSaved) => {
                 let id = self.tabs[self.active].id;
                 self.compare_with_saved(id);
@@ -1258,20 +1272,12 @@ impl App {
     }
 
     fn current_session(&self) -> Session {
-        let mut tabs = Vec::new();
-        let mut active = 0;
-        for i in 0..self.tabs.len() {
-            if let Some(p) = self.tab_view(i).path() {
-                if i == self.active {
-                    active = tabs.len();
-                }
-                tabs.push(p.to_path_buf());
-            }
-        }
+        let ws = self.current_workspace();
         Session {
             root: self.tree.root().map(Path::to_path_buf),
-            tabs,
-            active,
+            tabs: ws.tabs.iter().map(|(p, _)| p.clone()).collect(),
+            groups: ws.tabs.iter().map(|(_, g)| *g).collect(),
+            active: ws.active,
             recent: self.recent.clone(),
             tree_width: self.tree.width,
             tree_visible: self.tree.visible,
@@ -1288,14 +1294,13 @@ impl App {
             self.tree.set_root(&r);
             self.view = Box::new(MessageView::folder_opened());
         }
-        for t in s.tabs.iter().filter(|t| t.is_file()) {
-            self.open_now(t);
-        }
-        if let Some(p) = s.tabs.get(s.active).filter(|p| p.is_file())
-            && let Some(i) = self.find_tab(p)
-        {
-            self.activate(i);
-        }
+        let tabs: Vec<(PathBuf, u8)> = s
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.clone(), s.groups.get(i).copied().unwrap_or(0)))
+            .collect();
+        self.open_workspace_tabs(&tabs, s.active);
         self.tree.visible = s.tree_visible;
         self.focus = Focus::Main;
         self.session_dirty = false;
@@ -1869,6 +1874,175 @@ impl App {
             items.push(("Compare with Saved", MenuAction::CompareWithSaved(id)));
         }
         self.menu = Some(Menu::new(x, y, items));
+    }
+
+    // ---- workspaces ------------------------------------------------------
+
+    /// Remember each folder's tabs in `dir` (the window uses
+    /// `%APPDATA%\litedit\workspaces`; headless runs and tests don't).
+    pub fn use_workspace_store(&mut self, dir: PathBuf) {
+        self.workspace_store = Some(dir);
+    }
+
+    /// The folders, open files (with their side) and active file.
+    pub fn current_workspace(&self) -> Workspace {
+        let mut w = Workspace {
+            folders: self
+                .tree
+                .root()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .collect(),
+            ..Workspace::default()
+        };
+        for i in 0..self.tabs.len() {
+            if let Some(p) = self.tab_view(i).path() {
+                if i == self.active {
+                    w.active = w.tabs.len();
+                }
+                w.tabs.push((p.to_path_buf(), self.tabs[i].group));
+            }
+        }
+        w
+    }
+
+    /// Save the current folder's workspace in the store (best effort).
+    pub fn persist_workspace(&self) {
+        if let (Some(store), Some(root)) = (&self.workspace_store, self.tree.root()) {
+            let _ = self
+                .current_workspace()
+                .save(&workspace::folder_file(store, root));
+        }
+    }
+
+    /// Open `tabs` (existing files only) on their sides; show `active`.
+    fn open_workspace_tabs(&mut self, tabs: &[(PathBuf, u8)], active: usize) {
+        for (p, _) in tabs.iter().filter(|(p, _)| p.is_file()) {
+            self.open_now(p);
+        }
+        // Sides: only when both sides end up with tabs.
+        let right: Vec<usize> = tabs
+            .iter()
+            .filter(|(p, g)| *g == 1 && p.is_file())
+            .filter_map(|(p, _)| self.find_tab(p))
+            .collect();
+        if !right.is_empty() && right.len() < self.tabs.len() {
+            for &i in &right {
+                self.tabs[i].group = 1;
+            }
+            self.group_shown = [None, None];
+            self.tab_revealed = [None, None];
+            if let Some(&i) = right.last() {
+                self.group_shown[1] = Some(self.tabs[i].id);
+            }
+            if let Some(&i) = self.group_tabs(0).first() {
+                self.group_shown[0] = Some(self.tabs[i].id);
+            }
+        }
+        if let Some((p, _)) = tabs.get(active).filter(|(p, _)| p.is_file())
+            && let Some(i) = self.find_tab(p)
+        {
+            self.activate(i);
+        }
+    }
+
+    /// Switch to workspace `w`: remember the current folder's tabs, close
+    /// tabs that are saved and outside the new folder (unsaved ones stay —
+    /// nothing is ever dropped), show the new folder and open its files.
+    pub fn apply_workspace(&mut self, w: Workspace) {
+        let Some(root) = w.folders.first().filter(|f| f.is_dir()).cloned() else {
+            self.nag = Some(Nag::error(
+                "The workspace's folder doesn't exist any more.".into(),
+            ));
+            return;
+        };
+        self.persist_workspace();
+        let keep_dirty = (0..self.tabs.len())
+            .filter(|&i| self.tab_view(i).is_dirty())
+            .count();
+        let close: Vec<u64> = (0..self.tabs.len())
+            .filter(|&i| {
+                let v = self.tab_view(i);
+                !v.is_dirty() && !v.path().is_some_and(|p| p.starts_with(&root))
+            })
+            .map(|i| self.tabs[i].id)
+            .collect();
+        for id in close {
+            self.remove_tab(id);
+        }
+        for t in &mut self.tabs {
+            t.group = 0;
+        }
+        self.group_shown = [self.tabs.get(self.active).map(|t| t.id), None];
+        self.tree.set_root(&root);
+        self.tree.visible = true;
+        self.open_workspace_tabs(&w.tabs, w.active);
+        if self.view.path().is_none() && self.tabs.len() == 1 {
+            self.view = Box::new(MessageView::folder_opened());
+            self.focus = Focus::Tree;
+        } else {
+            self.focus = Focus::Main;
+        }
+        if keep_dirty > 0 {
+            self.notice = Some(format!(
+                "Kept {keep_dirty} tab(s) with unsaved edits from the previous folder"
+            ));
+        }
+        self.session_dirty = true;
+        self.file_index = None;
+        self.pending = true;
+    }
+
+    /// Open a folder: its remembered workspace if there is one.
+    fn open_folder(&mut self, dir: &Path) {
+        if self.tree.root() == Some(dir) {
+            self.tree.visible = true;
+            self.focus = Focus::Tree;
+            return;
+        }
+        let w = self
+            .workspace_store
+            .as_ref()
+            .and_then(|s| Workspace::load(&workspace::folder_file(s, dir)).ok())
+            .filter(|w| w.folders.first().is_some_and(|f| f == dir))
+            .unwrap_or_else(|| Workspace::for_folder(dir));
+        self.apply_workspace(w);
+    }
+
+    /// "File: Save Workspace As…" (from the dialog or a script).
+    pub fn save_workspace_as(&mut self, path: &Path) {
+        let path = if workspace::is_workspace_file(path) {
+            path.to_path_buf()
+        } else {
+            path.with_extension(workspace::EXT)
+        };
+        if self.tree.root().is_none() {
+            self.notice =
+                Some("Open a folder first: a workspace is a folder plus its open files".into());
+            return;
+        }
+        match self.current_workspace().save(&path) {
+            Ok(()) => {
+                push_recent(&mut self.recent, &path);
+                self.session_dirty = true;
+                self.notice = Some(format!("Saved workspace {}", display_name(&path)));
+                self.after_fs_change(&path);
+            }
+            Err(e) => self.nag = Some(Nag::error(format!("Could not save the workspace: {e}"))),
+        }
+    }
+
+    fn suggested_workspace_path(&self) -> PathBuf {
+        match self.tree.root() {
+            Some(r) => r.join(format!(
+                "{}.{}",
+                r.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "workspace".into()),
+                workspace::EXT
+            )),
+            None => PathBuf::from(format!("workspace.{}", workspace::EXT)),
+        }
     }
 
     /// Ctrl+Shift+T: reopen the most recently closed file that still exists.

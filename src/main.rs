@@ -30,6 +30,7 @@ mod ui;
 mod view;
 mod watch;
 mod window;
+mod workspace;
 
 #[cfg(test)]
 mod tests;
@@ -178,6 +179,9 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if window_mode && let Some(store) = workspace::default_store() {
+        app.use_workspace_store(store);
     }
     if window_mode && let Some(f) = session::session_file() {
         app.start_with_session(session::Session::load(&f), args.paths.is_empty());

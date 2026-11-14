@@ -1331,6 +1331,7 @@ fn starting_with_a_file_does_not_overwrite_the_saved_workspace() {
         std::fs::write(dir.join(f), f).unwrap();
     }
     let saved = Session {
+        groups: Vec::new(),
         root: Some(dir.clone()),
         tabs: vec![dir.join("a.md"), dir.join("b.md")],
         active: 1,
@@ -3024,4 +3025,120 @@ fn an_interrupted_quit_forgets_its_dont_save_answers() {
     assert!(asked.contains(&first), "{asked:?}");
     assert_eq!(asked.len(), 2, "{asked:?}");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+fn two_projects(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let root = tmp_dir(tag);
+    let (a, b, store) = (root.join("alpha"), root.join("beta"), root.join("store"));
+    std::fs::create_dir_all(a.join("src")).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    std::fs::write(a.join("a1.md"), "# a1").unwrap();
+    std::fs::write(a.join("src/a2.rs"), "fn a2() {}").unwrap();
+    std::fs::write(b.join("b1.txt"), "b1").unwrap();
+    (a, b, store)
+}
+
+#[test]
+fn each_folder_remembers_its_tabs_and_split() {
+    let (a, b, store) = two_projects("wsfolder");
+    let mut app = new_app();
+    app.use_workspace_store(store.clone());
+    app.open(&a);
+    app.open(&a.join("a1.md"));
+    app.open(&a.join("src/a2.rs"));
+    key(&mut app, "ctrl+alt+right"); // a2 on the right
+    app.open(&b);
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert!(
+        names.iter().all(|n| !n.starts_with("a")),
+        "alpha's tabs closed: {names:?}"
+    );
+    app.open(&b.join("b1.txt"));
+    // Back to alpha: its two tabs and the split come back; beta's tab goes.
+    app.open(&a);
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.contains(&"a1.md".to_string()) && names.contains(&"a2.rs".to_string()));
+    assert!(app.is_split_for_test(), "the split is restored");
+    // And beta remembers b1.
+    app.open(&b);
+    assert_eq!(
+        app.tab_titles()
+            .into_iter()
+            .map(|t| t.0)
+            .collect::<Vec<_>>(),
+        ["b1.txt"]
+    );
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn switching_folders_never_drops_unsaved_edits() {
+    let (a, b, store) = two_projects("wsdirty");
+    let mut app = new_app();
+    app.use_workspace_store(store);
+    app.open(&a);
+    app.open(&a.join("a1.md"));
+    key(&mut app, "ctrl+e");
+    app.handle(Input::Text("edit ".into()));
+    app.open(&b);
+    assert!(
+        app.status_text().contains("Kept 1 tab"),
+        "{}",
+        app.status_text()
+    );
+    assert!(app.tab_titles().iter().any(|t| t.0 == "a1.md" && t.1));
+    let _ = std::fs::remove_dir_all(a.parent().unwrap());
+}
+
+#[test]
+fn workspace_files_save_and_reopen_folder_and_tabs() {
+    let (a, b, _) = two_projects("wsfile");
+    let mut app = new_app();
+    app.open(&a);
+    app.open(&a.join("a1.md"));
+    app.open(&a.join("src/a2.rs"));
+    let file = a.join("proj"); // extension added automatically
+    app.save_workspace_as(&file);
+    let file = a.join("proj.litedit-workspace");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.contains("folder\t.\n") && text.contains("a1.md"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(&a.display().to_string()),
+        "relative paths: {text}"
+    );
+    // A fresh window on another folder opens the workspace file.
+    let mut app2 = new_app();
+    app2.open(&b);
+    app2.open(&file);
+    let names: Vec<String> = app2.tab_titles().into_iter().map(|t| t.0).collect();
+    assert!(
+        names.contains(&"a1.md".to_string()) && names.contains(&"a2.rs".to_string()),
+        "{names:?}"
+    );
+    assert!(
+        app2.title().starts_with("a2.rs"),
+        "active file restored: {}",
+        app2.title()
+    );
+    // The whole project moved: still works (relative paths).
+    let moved = a.parent().unwrap().join("alpha-moved");
+    std::fs::rename(&a, &moved).unwrap();
+    let mut app3 = new_app();
+    app3.open(&moved.join("proj.litedit-workspace"));
+    assert_eq!(app3.tab_titles().len(), 2);
+    // Network paths in a (hostile) workspace file are never opened.
+    let evil = moved.join("evil.litedit-workspace");
+    std::fs::write(
+        &evil,
+        "litedit-workspace 1\nfolder\t.\ntab\t\\\\\\\\evil\\\\share\\\\x.md\ntab\t//evil/x.md\n",
+    )
+    .unwrap();
+    let mut app4 = new_app();
+    app4.open(&evil);
+    assert!(app4.tab_titles().iter().all(|t| !t.0.contains("x.md")));
+    let _ = std::fs::remove_dir_all(moved.parent().unwrap());
 }

@@ -14,6 +14,8 @@ const HEADER: &str = "litedit-session 1";
 pub struct Session {
     pub root: Option<PathBuf>,
     pub tabs: Vec<PathBuf>,
+    /// Side of each tab (0 left, 1 right; missing = left).
+    pub groups: Vec<u8>,
     pub active: usize,
     /// Most recent first; folders and files.
     pub recent: Vec<PathBuf>,
@@ -27,6 +29,7 @@ impl Default for Session {
         Self {
             root: None,
             tabs: Vec::new(),
+            groups: Vec::new(),
             active: 0,
             recent: Vec::new(),
             tree_width: 260.0,
@@ -76,7 +79,10 @@ impl Session {
             let v = v.trim_end_matches('\r');
             match k {
                 "root" if !v.is_empty() => s.root = Some(PathBuf::from(v)),
-                "tab" if !v.is_empty() => s.tabs.push(PathBuf::from(v)),
+                "tab" | "tab-right" if !v.is_empty() => {
+                    s.tabs.push(PathBuf::from(v));
+                    s.groups.push(u8::from(k == "tab-right"));
+                }
                 "active" => s.active = v.parse().unwrap_or(0),
                 "recent" if !v.is_empty() && s.recent.len() < MAX_RECENT => {
                     s.recent.push(PathBuf::from(v))
@@ -102,6 +108,7 @@ impl Session {
             }
         }
         s.tabs.truncate(100);
+        s.groups.truncate(100);
         s
     }
 
@@ -111,8 +118,13 @@ impl Session {
         if let Some(r) = &self.root {
             out.push_str(&format!("root\t{}\n", clean(r)));
         }
-        for t in &self.tabs {
-            out.push_str(&format!("tab\t{}\n", clean(t)));
+        for (i, t) in self.tabs.iter().enumerate() {
+            let k = if self.groups.get(i) == Some(&1) {
+                "tab-right"
+            } else {
+                "tab"
+            };
+            out.push_str(&format!("{k}\t{}\n", clean(t)));
         }
         out.push_str(&format!("active\t{}\n", self.active));
         for r in &self.recent {
@@ -145,6 +157,7 @@ mod tests {
     #[test]
     fn round_trip_and_tolerance() {
         let s = Session {
+            groups: vec![0, 1],
             root: Some(PathBuf::from("/notes")),
             tabs: vec![PathBuf::from("/notes/a.md"), PathBuf::from("/notes/b c.md")],
             active: 1,
@@ -180,6 +193,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let p = d.join("deeper/session.txt");
         let s = Session {
+            groups: Vec::new(),
             zoom: 1.5,
             ..Session::default()
         };

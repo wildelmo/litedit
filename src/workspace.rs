@@ -1,0 +1,223 @@
+//! Workspaces (lite-xl `workspace` plugin + VS Code's workspace files):
+//! the folders in the tree, the open files (and which side of a split each
+//! is on) and the active one.
+//!
+//! - Every folder remembers its own workspace automatically, in
+//!   `%APPDATA%\litedit\workspaces\` (opening the folder again brings its
+//!   tabs back, like lite-xl).
+//! - "Save Workspace As…" writes a `.litedit-workspace` file anywhere;
+//!   opening it (dialog, double-click, drag) restores it. Paths inside the
+//!   folder of the workspace file are stored relative to it, so a project
+//!   can be moved or shared.
+//!
+//! A workspace file may come from someone else: network shares and device
+//! paths in it are ignored (reading one would contact that server).
+
+use std::path::{Path, PathBuf};
+
+pub const EXT: &str = "litedit-workspace";
+const HEADER: &str = "litedit-workspace 1";
+/// Bounds on what a (possibly hostile) file can ask for.
+const MAX_FOLDERS: usize = 32;
+const MAX_TABS: usize = 200;
+const MAX_BYTES: u64 = 256 * 1024;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Workspace {
+    /// Folders shown in the tree (the first one is the main folder).
+    pub folders: Vec<PathBuf>,
+    /// Open files with the side (0 = left, 1 = right) each is on.
+    pub tabs: Vec<(PathBuf, u8)>,
+    /// Index into `tabs` of the file to show.
+    pub active: usize,
+}
+
+pub fn is_workspace_file(p: &Path) -> bool {
+    p.extension()
+        .is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(EXT))
+}
+
+/// Where the automatic workspace of `folder` is kept, inside `store`.
+pub fn folder_file(store: &Path, folder: &Path) -> PathBuf {
+    use std::hash::{Hash, Hasher};
+    // Windows paths are case-insensitive: one file per folder, any spelling.
+    let key = folder.to_string_lossy().replace('/', "\\").to_lowercase();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    let name = key
+        .trim_end_matches('\\')
+        .rsplit('\\')
+        .next()
+        .filter(|n| !n.is_empty())
+        .unwrap_or("root")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .take(40)
+        .collect::<String>();
+    store.join(format!("{name}-{:016x}.txt", h.finish()))
+}
+
+/// The default store: `%APPDATA%\litedit\workspaces`.
+pub fn default_store() -> Option<PathBuf> {
+    crate::session::config_dir().map(|d| d.join("workspaces"))
+}
+
+impl Workspace {
+    pub fn for_folder(folder: &Path) -> Self {
+        Self {
+            folders: vec![folder.to_path_buf()],
+            ..Self::default()
+        }
+    }
+
+    /// Parse workspace text; relative paths resolve against `base`.
+    /// Unsafe paths (network, device) and unknown lines are skipped.
+    pub fn parse(text: &str, base: Option<&Path>) -> Option<Self> {
+        let mut lines = text.strip_prefix('\u{feff}').unwrap_or(text).lines();
+        if lines.next().map(str::trim) != Some(HEADER) {
+            return None;
+        }
+        let resolve = |v: &str| -> Option<PathBuf> {
+            let v = v.trim_end_matches('\r').trim();
+            if v.is_empty() || crate::links::is_unsafe_local_path(v) {
+                return None;
+            }
+            let p = PathBuf::from(v);
+            if crate::doc::is_reserved_name(&p) {
+                return None;
+            }
+            Some(match base {
+                Some(b) if p.is_relative() => b.join(p),
+                _ => p,
+            })
+        };
+        let mut w = Self::default();
+        for line in lines {
+            let Some((k, v)) = line.split_once('\t') else {
+                continue;
+            };
+            match k {
+                "folder" if w.folders.len() < MAX_FOLDERS => {
+                    if let Some(p) = resolve(v)
+                        && !w.folders.contains(&p)
+                    {
+                        w.folders.push(p);
+                    }
+                }
+                "tab" | "tab-right" if w.tabs.len() < MAX_TABS => {
+                    if let Some(p) = resolve(v) {
+                        w.tabs.push((p, u8::from(k == "tab-right")));
+                    }
+                }
+                "active" => w.active = v.trim().parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        w.active = w.active.min(w.tabs.len().saturating_sub(1));
+        Some(w)
+    }
+
+    /// Text form; paths inside `base` are written relative to it.
+    pub fn to_text(&self, base: Option<&Path>) -> String {
+        let show = |p: &Path| -> String {
+            let rel = base
+                .and_then(|b| p.strip_prefix(b).ok())
+                .filter(|r| !r.as_os_str().is_empty());
+            let s = match rel {
+                Some(r) => r.display().to_string(),
+                None if base.is_some_and(|b| b == p) => ".".to_string(),
+                None => p.display().to_string(),
+            };
+            s.replace(['\t', '\n', '\r'], " ")
+        };
+        let mut out = format!("{HEADER}\n");
+        for f in &self.folders {
+            out.push_str(&format!("folder\t{}\n", show(f)));
+        }
+        for (t, g) in &self.tabs {
+            let k = if *g == 1 { "tab-right" } else { "tab" };
+            out.push_str(&format!("{k}\t{}\n", show(t)));
+        }
+        out.push_str(&format!("active\t{}\n", self.active));
+        out
+    }
+
+    /// Read a workspace file (relative paths are relative to its folder).
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        if meta.len() > MAX_BYTES {
+            return Err("workspace file is too large".into());
+        }
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(&bytes);
+        Self::parse(&text, path.parent()).ok_or_else(|| "not a litedit workspace file".into())
+    }
+
+    /// Write a workspace file (atomic save; paths relative to its folder).
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        crate::editor::save::save_bytes(path, self.to_text(path.parent()).as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trip_with_relative_paths() {
+        let base = Path::new("/proj");
+        let w = Workspace {
+            folders: vec![base.to_path_buf(), PathBuf::from("/other/lib")],
+            tabs: vec![
+                (base.join("src/main.rs"), 0),
+                (base.join("README.md"), 1),
+                (PathBuf::from("/other/lib/x.rs"), 0),
+            ],
+            active: 1,
+        };
+        let text = w.to_text(Some(base));
+        assert!(text.contains("folder\t.\n"), "{text}");
+        assert!(
+            text.contains("tab\tsrc/main.rs") || text.contains("tab\tsrc\\main.rs"),
+            "{text}"
+        );
+        assert!(text.contains("tab-right\tREADME.md"));
+        assert_eq!(Workspace::parse(&text, Some(base)).unwrap(), w);
+        // Moved elsewhere: relative entries follow the file.
+        let moved = Workspace::parse(&text, Some(Path::new("/new"))).unwrap();
+        assert_eq!(moved.tabs[0].0, Path::new("/new").join("src/main.rs"));
+    }
+
+    #[test]
+    fn hostile_files_are_bounded_and_network_paths_skipped() {
+        let mut t = format!("{HEADER}\n");
+        t.push_str("folder\t\\\\evil\\share\n");
+        t.push_str("tab\t//evil/share/x.md\n");
+        t.push_str("tab\t\\??\\UNC\\evil\\x.md\n");
+        t.push_str("tab\tCON\n");
+        t.push_str("tab\tok.md\n");
+        t.push_str("active\t999\n");
+        for i in 0..1000 {
+            t.push_str(&format!("tab\tf{i}.md\n"));
+        }
+        let w = Workspace::parse(&t, Some(Path::new("/p"))).unwrap();
+        assert!(w.folders.is_empty());
+        assert_eq!(w.tabs[0].0, Path::new("/p/ok.md"));
+        assert_eq!(w.tabs.len(), MAX_TABS);
+        assert!(w.active < w.tabs.len());
+        assert!(Workspace::parse("something else", None).is_none());
+    }
+
+    #[test]
+    fn folder_store_names_are_stable_and_case_insensitive() {
+        let s = Path::new("/store");
+        let a = folder_file(s, Path::new("C:/Code/Proj"));
+        let b = folder_file(s, Path::new("c:\\code\\proj"));
+        assert_eq!(a, b);
+        assert_ne!(a, folder_file(s, Path::new("C:/Code/Other")));
+        assert!(a.to_string_lossy().contains("proj-"), "{}", a.display());
+    }
+}

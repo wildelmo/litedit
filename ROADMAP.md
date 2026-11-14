@@ -171,12 +171,26 @@ fixed first (S5.0).
        caret, Alt+Up/Down move lines, Ctrl+/ toggle comment (per-language
        table), right-click menu in text views, Ctrl+wheel zoom
 
+- [x] S5.5a Workspaces (lite-xl workspace plugin + VS Code workspace files):
+       every folder remembers its tabs and split; switching folders saves the
+       old folder's and restores the new one's (unsaved tabs always stay);
+       File: Save Workspace As… / Open Workspace… (`.litedit-workspace`,
+       relative paths, network paths ignored); split restored next start
+- [ ] S5.5b Several folders in the tree (lite-xl "add directory"): File: Add
+       Folder to Workspace…, Remove Folder from Workspace
+- [ ] S5.6 Full lite-xl command audit → one table of remaining differences
+
 ---
 
 ## Progress log
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.5a workspaces: workspace.rs (format, relative paths,
+  bounds, network paths skipped, per-folder store in %APPDATA%), App
+  apply_workspace / open_folder / save_workspace_as / persist_workspace;
+  session keeps tab sides. Tests: per-folder memory with split (mutation-
+  checked), unsaved tabs kept, workspace file save/reopen/moved/hostile.
 - 2026-11-14 — Fixes from the final review of Epic 5: the unfocused split
   side now ticks (highlighting, images, search results; pixel test,
   mutation-checked); Ctrl+/ token table matches exact grammar names (Plain

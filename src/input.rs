@@ -98,6 +98,10 @@ pub enum Request {
     SaveAsDialog(PathBuf),
     /// Ctrl+N with no folder open: ask where to create a new file.
     NewFileDialog,
+    /// Ask where to save the workspace file (suggested path).
+    SaveWorkspaceDialog(PathBuf),
+    /// Ask which workspace file to open.
+    OpenWorkspaceDialog,
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Open a file at a 1-based line (search results).
