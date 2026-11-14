@@ -90,6 +90,8 @@ pub enum Request {
     OpenUrl(String),
     OpenFileDialog,
     OpenFolderDialog,
+    /// Open a local file in litedit (handled by the app itself).
+    OpenPath(PathBuf),
     /// Show a file in Windows Explorer.
     RevealInExplorer(PathBuf),
     Quit,

@@ -185,6 +185,37 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Anti-aliased line segment of thickness `width` (round caps).
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, c: Color) {
+        let r = width / 2.0;
+        let bx = Rect::new(
+            (x0.min(x1) - r - 1.0).floor() as i32,
+            (y0.min(y1) - r - 1.0).floor() as i32,
+            ((x0 - x1).abs() + width + 3.0).ceil() as i32,
+            ((y0 - y1).abs() + width + 3.0).ceil() as i32,
+        )
+        .intersect(&self.clip);
+        if bx.is_empty() {
+            return;
+        }
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len2 = (dx * dx + dy * dy).max(1e-6);
+        for py in bx.y..bx.bottom() {
+            for px in bx.x..bx.right() {
+                let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                let t = (((cx - x0) * dx + (cy - y0) * dy) / len2).clamp(0.0, 1.0);
+                let (qx, qy) = (x0 + t * dx - cx, y0 + t * dy - cy);
+                let d = (qx * qx + qy * qy).sqrt();
+                let cov = (r + 0.5 - d).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    let i = (py * self.width + px) as usize;
+                    let a = (cov * f32::from(c.a)) as u32;
+                    self.buf[i] = blend(self.buf[i], c, a);
+                }
+            }
+        }
+    }
+
     #[cfg(test)]
     pub fn pixel(&self, x: i32, y: i32) -> u32 {
         self.buf[(y * self.width + x) as usize]
@@ -215,6 +246,15 @@ mod tests {
         let p = c.pixel(0, 0);
         assert!((((p >> 16) & 0xff) as i32 - 128).abs() <= 1);
         assert_eq!((p >> 8) & 0xff, 0);
+    }
+
+    #[test]
+    fn line_is_clipped_and_drawn() {
+        let mut buf = vec![0u32; 20 * 20];
+        let mut c = Canvas::new(&mut buf, 20, 20);
+        c.draw_line(-100.0, 10.0, 100.0, 10.0, 2.0, Color::hex(0xffffff));
+        assert_eq!(c.pixel(5, 10), 0xffffff);
+        assert_eq!(c.pixel(5, 2), 0);
     }
 
     #[test]

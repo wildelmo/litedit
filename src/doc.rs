@@ -31,7 +31,7 @@ pub enum Encoding {
     Utf8Lossy,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Document {
     pub path: PathBuf,
     pub text: String,

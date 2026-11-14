@@ -73,16 +73,16 @@ impl CodeView {
         self.cache.clear();
     }
 
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
+    /// First line at the top of the view.
+    pub fn top_line(&self, ctx: &Ctx) -> usize {
+        let lh = ctx.code_metrics().line_height;
+        let pad = ctx.px(theme::PADDING_Y);
+        (((self.scroll.y - pad).max(0.0)) / lh).floor() as usize
     }
 
-    pub fn scroll_y(&self) -> f32 {
-        self.scroll.y
-    }
-
-    pub fn scroll_x(&self) -> f32 {
-        self.scroll.x
+    /// Scroll so `line` is at the top (clamped on next render).
+    pub fn scroll_to_line(&mut self, line: usize, ctx: &Ctx) {
+        self.scroll.y = line as f32 * ctx.code_metrics().line_height;
     }
 
     fn char_width(&mut self, ctx: &mut Ctx) -> f32 {
@@ -305,7 +305,7 @@ impl View for CodeView {
         let lh = ctx.code_metrics().line_height;
         let before = (self.scroll.x, self.scroll.y);
         if !self.scroll.wheel(input, lh) {
-            let Input::Key { key, mods } = input else {
+            let Input::Key { key, .. } = input else {
                 return false;
             };
             let page = (self.view_h - lh * 2.0).max(lh);

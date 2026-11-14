@@ -1,6 +1,7 @@
 //! Views: things that fill a rectangle and react to input (lite-xl `View`).
 
 pub mod code;
+pub mod markdown;
 pub mod message;
 
 use std::time::Duration;

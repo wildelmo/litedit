@@ -9,7 +9,15 @@ key ctrl+plus
 shot out/code-zoomed.png
 key ctrl+0
 open tests/fixtures/sample.md
+expect status Markdown preview
 shot out/markdown.png
+key end
+shot out/markdown-end.png
+key ctrl+e
+expect status Markdown source
+shot out/markdown-source.png
+key ctrl+e
+expect status Markdown preview
 key ctrl+o
 expect request OpenFileDialog
 key ctrl+shift+o

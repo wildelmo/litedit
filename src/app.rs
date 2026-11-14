@@ -11,6 +11,7 @@ use crate::text::Fonts;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
+use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::{Tick, View};
 
@@ -58,6 +59,7 @@ impl App {
             return;
         }
         self.view = match Document::open(path) {
+            Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
             Ok(doc) => Box::new(CodeView::new(doc)),
             Err(e) => Box::new(MessageView::error(
                 "Error",
@@ -175,7 +177,20 @@ impl App {
             requests: &mut self.requests,
             cursor: &mut self.cursor,
         };
-        let redraw = self.view.handle(&input, rect, &mut ctx);
+        let mut redraw = self.view.handle(&input, rect, &mut ctx);
+        // Requests the app handles itself (e.g. following a link to a local file).
+        let mut open = None;
+        self.requests.retain(|r| match r {
+            Request::OpenPath(p) => {
+                open = Some(p.clone());
+                false
+            }
+            _ => true,
+        });
+        if let Some(p) = open {
+            self.open(&p);
+            redraw = true;
+        }
         if redraw {
             self.pending = true;
         }

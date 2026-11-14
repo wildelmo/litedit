@@ -51,6 +51,8 @@ impl Runner {
             match req {
                 Request::Quit => event_loop.exit(),
                 // Implemented in later stories (dialogs: S1.11, links: S1.7).
+                // Handled inside the app; never reaches the window.
+                Request::OpenPath(_) => {}
                 Request::OpenFileDialog
                 | Request::OpenFolderDialog
                 | Request::OpenUrl(_)

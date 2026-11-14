@@ -5,6 +5,8 @@ mod app;
 mod canvas;
 mod doc;
 mod input;
+mod links;
+mod markdown;
 mod script;
 mod syntax;
 mod text;

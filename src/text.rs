@@ -100,7 +100,16 @@ impl Fonts {
     ) {
         buffer.shape_until_scroll(&mut self.system, false);
         let default = cosmic_text::Color::rgba(color.r, color.g, color.b, color.a);
+        let clip = canvas.clip();
         for run in buffer.layout_runs() {
+            // Skip lines outside the clip (big markdown paragraphs).
+            let top = y as f32 + run.line_top;
+            if top > clip.bottom() as f32 {
+                break;
+            }
+            if top + run.line_height < clip.y as f32 {
+                continue;
+            }
             for glyph in run.glyphs {
                 let phys = glyph.physical((x as f32, y as f32 + run.line_y), 1.0);
                 let gc = glyph.color_opt.unwrap_or(default);
@@ -122,8 +131,41 @@ impl Fonts {
                     SwashContent::SubpixelMask => {}
                 }
             }
+            // Underline / strikethrough.
+            if !run.decorations.is_empty() {
+                let mut r = RectRenderer {
+                    canvas: &mut *canvas,
+                    dx: x,
+                    dy: y,
+                };
+                cosmic_text::render_decoration(&mut r, &run, default);
+            }
         }
     }
+}
+
+/// Adapter so cosmic-text can draw decoration rectangles onto our canvas.
+struct RectRenderer<'a, 'b> {
+    canvas: &'a mut Canvas<'b>,
+    dx: i32,
+    dy: i32,
+}
+
+impl cosmic_text::Renderer for RectRenderer<'_, '_> {
+    fn rectangle(&mut self, x: i32, y: i32, w: u32, h: u32, c: cosmic_text::Color) {
+        let rect = crate::canvas::Rect::new(x + self.dx, y + self.dy, w as i32, h as i32);
+        self.canvas.fill_rect(
+            rect,
+            Color {
+                r: c.r(),
+                g: c.g(),
+                b: c.b(),
+                a: c.a(),
+            },
+        );
+    }
+
+    fn glyph(&mut self, _g: cosmic_text::PhysicalGlyph, _c: cosmic_text::Color) {}
 }
 
 fn pick_family(db: &fontdb::Database, prefs: &[&str]) -> String {

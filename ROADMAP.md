@@ -47,13 +47,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
         links, safe link launching (no `cmd /c start`), cap long-line shaping
         and highlighting, cap markdown nesting depth, never-panic fuzz test over
         fixtures (every prefix, tiny sizes)
-- [ ] S1.1 Markdown parse (pulldown-cmark, GFM: tables, tasks, strikethrough)
-- [ ] S1.2 Preview layout: headings, paragraphs, bold/italic/code/strike, links
-- [ ] S1.3 Preview: lists (nested, numbered, tasks), block quotes, rules
-- [ ] S1.4 Preview: fenced code blocks with syntax colors
-- [ ] S1.5 Preview: tables
+- [x] S1.1 Markdown parse (pulldown-cmark, GFM: tables, tasks, strikethrough)
+- [x] S1.2 Preview layout: headings, paragraphs, bold/italic/code/strike, links
+- [x] S1.3 Preview: lists (nested, numbered, tasks), block quotes, rules
+- [x] S1.4 Preview: fenced code blocks with syntax colors
+- [x] S1.5 Preview: tables
 - [ ] S1.6 Preview: local images (size-limited decode, no remote fetch)
-- [ ] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
+- [~] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
 - [x] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
        lazy highlighting, scrolling
 - [x] S1.9 Theme: lite-xl default dark palette for UI + syntax
@@ -71,7 +71,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 - [ ] S2.4 Undo/redo (lite-xl doc/init.lua model)
 - [ ] S2.5 Clipboard (arboard)
 - [ ] S2.6 Save, Save As, dirty marker, confirm on close
-- [ ] S2.7 Ctrl+E preview/edit toggle
+- [~] S2.7 Ctrl+E preview/edit toggle (preview ↔ read-only source done)
 - [ ] S2.8 IME / non-English input
 
 ## Epic 3 — Daily driver
@@ -99,6 +99,13 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S1.1–S1.5 done: markdown preview (headings, inline styles, lists,
+  tasks, quotes, GFM callouts, code blocks with highlighting, tables with
+  alignment, rules, footnotes, front matter hidden, HTML stripped). Links
+  classified safely (links.rs); clicking works (web → request, local .md →
+  opens, #anchor → scrolls, blocked → status notice). Ctrl+E toggles source
+  with scroll sync. Memory note: regex compile per grammar used (~7 MB for
+  Rust); preview mode never runs the markdown grammar.
 - 2026-11-14 — S1.8/S1.9 done: syntect + two-face (fancy-regex), lite-xl colours,
   budgeted incremental highlighting with checkpoints. 173k-line file: ~17k
   lines/s, 66 MB peak. Linux exe grew 4.7 → 7.5 MB (grammar set).
