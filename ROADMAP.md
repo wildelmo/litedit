@@ -105,13 +105,28 @@ Acceptance criteria that protect the user's text:
 
 ## Epic 3 — Daily driver
 
-- [ ] S3.1 Tabs
-- [ ] S3.2 Find / replace (in file)
-- [ ] S3.3 Side-by-side live preview
-- [ ] S3.4 Tree actions: new, rename, delete→Recycle Bin, Show in Explorer
-- [ ] S3.5 Find in folder
-- [ ] S3.6 Recent folders / files, restore session
-- [ ] S3.7 Command palette (lite-xl commandview)
+Design: a reusable single-line input bar (`ui/input_bar`, lite-xl
+CommandView) powers find/replace, go to line, rename/new file, quick open
+and the command palette. Tabs move the discard gate to per-tab close; quit
+asks for each dirty tab.
+
+- [ ] S3.0 Input bar widget (text field: caret, selection, clipboard, history)
+- [ ] S3.1 Tabs: tab bar, click/middle-click, Ctrl+Tab / Ctrl+PgUp/PgDn,
+       Ctrl+W (guarded), dirty dot, reopen activates existing tab, quit asks
+       per dirty tab, watcher covers all open files
+- [ ] S3.2 Find / replace in file: Ctrl+F (prefill from selection), F3 /
+       Shift+F3, all matches highlighted, Ctrl+H replace one / all (one undo
+       step), case toggle, regex toggle (fancy-regex, already a dependency)
+- [ ] S3.3 Side-by-side live preview for markdown (Ctrl+Shift+V), debounced
+       re-parse, scroll follows the caret
+- [ ] S3.4 Command palette (Ctrl+Shift+P), quick open file (Ctrl+P, fuzzy),
+       go to line (Ctrl+G)
+- [ ] S3.5 Tree actions (right-click menu): new file, new folder, rename,
+       delete → Recycle Bin, Show in Explorer
+- [ ] S3.6 Find in folder (Ctrl+Shift+F): background search, results list,
+       click opens at line
+- [ ] S3.7 Recent folders/files, restore last session when started without
+       arguments (%APPDATA%\litedit)
 
 ## Epic 4 — Polish
 
