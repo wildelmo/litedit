@@ -623,6 +623,33 @@ impl App {
                 self.view.reload_discarding(&mut ctx);
                 self.pending = true;
             }
+            NagAction::MoveInto(from, dir) => {
+                // Re-check: things may have changed while the question was up.
+                if self.tabs_under(&from).iter().any(|(_, _, dirty)| *dirty) {
+                    self.nag = Some(Nag::error(format!(
+                        "Save or close the open file(s) in {} before moving it.",
+                        display_name(&from)
+                    )));
+                    return;
+                }
+                let open = self.open_tabs_under(&from);
+                match crate::fsops::move_into(&from, &dir) {
+                    Ok(new) => {
+                        self.relocated(&from, &new, &open);
+                        self.notice = Some(format!(
+                            "Moved {} into {}",
+                            display_name(&from),
+                            display_name(&dir)
+                        ));
+                    }
+                    Err(e) => {
+                        self.nag = Some(Nag::error(format!(
+                            "Could not move {}: {e}",
+                            display_name(&from)
+                        )))
+                    }
+                }
+            }
             NagAction::Recycle(path) => {
                 match crate::fsops::move_to_recycle_bin(&path) {
                     Ok(()) => {
@@ -695,6 +722,49 @@ impl App {
                     .then(|| (self.tabs[i].id, p, v.is_dirty()))
             })
             .collect()
+    }
+
+    fn open_tabs_under(&self, path: &Path) -> Vec<(u64, PathBuf)> {
+        self.tabs_under(path)
+            .into_iter()
+            .map(|(id, p, _)| (id, p))
+            .collect()
+    }
+
+    /// After `old` was renamed or moved to `new`: reopen its (clean) tabs at
+    /// their new paths and refresh the tree.
+    fn relocated(&mut self, old: &Path, new: &Path, open: &[(u64, PathBuf)]) {
+        for (id, p) in open {
+            self.remove_tab(*id);
+            let target = if p == old {
+                new.to_path_buf()
+            } else {
+                new.join(p.strip_prefix(old).unwrap_or(Path::new("")))
+            };
+            self.open(&target);
+        }
+        self.after_fs_change(old);
+        self.after_fs_change(new);
+        self.tree.reveal(new);
+    }
+
+    /// A tree drag ended on a folder: ask before moving.
+    fn ask_move(&mut self, from: PathBuf, dir: PathBuf) {
+        if self.tabs_under(&from).iter().any(|(_, _, dirty)| *dirty) {
+            self.nag = Some(Nag::error(format!(
+                "Save or close the open file(s) in {} before moving it.",
+                display_name(&from)
+            )));
+            return;
+        }
+        self.nag = Some(Nag::new(
+            format!("Move {} into {}?", display_name(&from), display_name(&dir)),
+            vec![
+                ("Move", NagAction::MoveInto(from, dir)),
+                ("Cancel", NagAction::Dismiss),
+            ],
+            false,
+        ));
     }
 
     fn close_clean_tabs_under(&mut self, path: &Path) {
@@ -825,23 +895,8 @@ impl App {
                 self.tree.reveal(&p.join("x"));
             }),
             MenuAction::Rename(old) => {
-                let open: Vec<(u64, PathBuf)> = self
-                    .tabs_under(old)
-                    .into_iter()
-                    .map(|(id, p, _)| (id, p))
-                    .collect();
-                crate::fsops::rename(old, text).inspect(|new| {
-                    // Reopen clean tabs at their new paths.
-                    for (id, p) in &open {
-                        self.remove_tab(*id);
-                        let moved = new.join(p.strip_prefix(old).unwrap_or(Path::new("")));
-                        let target = if p == old { new.clone() } else { moved };
-                        self.open(&target);
-                    }
-                    self.after_fs_change(old);
-                    self.after_fs_change(new);
-                    self.tree.reveal(new);
-                })
+                let open = self.open_tabs_under(old);
+                crate::fsops::rename(old, text).inspect(|new| self.relocated(old, new, &open))
             }
             MenuAction::FindInFolder(root) => {
                 if !text.trim().is_empty() {
@@ -1447,6 +1502,22 @@ impl App {
                 self.focus = Focus::Main;
                 return true;
             }
+            Input::Key {
+                key: k @ (Key::F(2) | Key::Delete),
+                mods,
+            } if self.focus == Focus::Tree && !mods.ctrl && !mods.alt => {
+                if let Some(row) = self.tree.selected_row()
+                    && row.depth > 0
+                {
+                    let action = if *k == Key::Delete {
+                        MenuAction::Delete(row.entry.path)
+                    } else {
+                        MenuAction::Rename(row.entry.path)
+                    };
+                    self.run_menu(action);
+                }
+                return true;
+            }
             _ => {}
         }
 
@@ -1522,6 +1593,20 @@ impl App {
             _ => {}
         }
 
+        // A drag that started in the tree gets the mouse until release.
+        if self.tree.dragging() && matches!(input, Input::MouseMove { .. } | Input::MouseUp { .. })
+        {
+            let mut ctx = ctx!(self);
+            let r = match layout.tree {
+                Some(t) => self.tree.handle(input, t, &mut ctx),
+                None => false,
+            };
+            if let Some((from, dir)) = self.tree.requested_move.take() {
+                self.ask_move(from, dir);
+                return true;
+            }
+            return r;
+        }
         let in_tree = layout.tree.is_some_and(|t| self.mouse.0 < t.right() as f32);
         if let (
             Input::MouseDown {
@@ -1663,7 +1748,10 @@ impl App {
             canvas.fill_rect(bar, theme::p().background2);
             let pad = ctx.px(theme::PADDING_X) as i32;
             let lh = ctx.ui_metrics().line_height as i32;
-            for (i, ((r, close), (title, _dirty))) in rects.iter().zip(titles.iter()).enumerate() {
+            for (i, ((r, close), (title, dirty))) in rects.iter().zip(titles.iter()).enumerate() {
+                // Unsaved changes: a dot in the close button's place (the
+                // close X shows while the mouse is over the tab).
+                let title = title.strip_prefix("● ").unwrap_or(title);
                 let active = i == active_tab;
                 let hovered = (mouse.0 as i32) >= r.x
                     && (mouse.0 as i32) < r.right()
@@ -1698,7 +1786,18 @@ impl App {
                     text_w,
                     FontKind::Ui,
                 );
-                if active || hovered {
+                if *dirty && !hovered {
+                    canvas.fill_circle(
+                        close.x as f32 + close.w as f32 / 2.0,
+                        close.y as f32 + close.h as f32 / 2.0,
+                        ctx.px(4.0),
+                        if active {
+                            theme::p().accent
+                        } else {
+                            theme::p().text
+                        },
+                    );
+                } else if active || hovered {
                     let (cx, cy, s) = (
                         close.x as f32 + close.w as f32 / 2.0,
                         close.y as f32 + close.h as f32 / 2.0,

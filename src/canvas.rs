@@ -186,6 +186,26 @@ impl<'a> Canvas<'a> {
     }
 
     /// Anti-aliased line segment of thickness `width` (round caps).
+    /// Anti-aliased filled circle.
+    pub fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: Color) {
+        if r <= 0.0 {
+            return;
+        }
+        let x0 = (cx - r - 1.0).floor() as i32;
+        let y0 = (cy - r - 1.0).floor() as i32;
+        let size = (2.0 * r + 3.0).ceil() as i32;
+        let mut mask = vec![0u8; (size * size) as usize];
+        for j in 0..size {
+            for i in 0..size {
+                let dx = (x0 + i) as f32 + 0.5 - cx;
+                let dy = (y0 + j) as f32 + 0.5 - cy;
+                let cover = (r + 0.5 - (dx * dx + dy * dy).sqrt()).clamp(0.0, 1.0);
+                mask[(j * size + i) as usize] = (cover * 255.0) as u8;
+            }
+        }
+        self.draw_mask(x0, y0, size, size, &mask, c);
+    }
+
     pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, c: Color) {
         let r = width / 2.0;
         let bx = Rect::new(

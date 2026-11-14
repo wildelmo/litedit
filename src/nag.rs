@@ -26,6 +26,8 @@ pub enum NagAction {
     SaveAnyway,
     /// Move this path to the Recycle Bin.
     Recycle(std::path::PathBuf),
+    /// Move an entry into a folder (tree drag and drop).
+    MoveInto(std::path::PathBuf, std::path::PathBuf),
     Dismiss,
 }
 

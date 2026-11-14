@@ -78,6 +78,33 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     Ok(target)
 }
 
+/// Move a file or folder into another folder (tree drag and drop). Never
+/// overwrites; refuses to move a folder into itself.
+pub fn move_into(path: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let name = path.file_name().ok_or("cannot move this")?;
+    if dir.starts_with(path) {
+        return Err("cannot move a folder into itself".into());
+    }
+    if !dir.is_dir() {
+        return Err("the destination is not a folder".into());
+    }
+    let target = dir.join(name);
+    if target == path {
+        return Ok(target);
+    }
+    if target.exists() {
+        return Err(format!(
+            "{} already has something named {}",
+            dir.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            name.to_string_lossy()
+        ));
+    }
+    std::fs::rename(path, &target).map_err(|e| e.to_string())?;
+    Ok(target)
+}
+
 /// Move a file or folder to the Recycle Bin.
 pub fn move_to_recycle_bin(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
@@ -170,6 +197,32 @@ mod tests {
             "names are a single component"
         );
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn move_into_never_overwrites_or_nests() {
+        let d = std::env::temp_dir().join(format!("litedit-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("a/inner")).unwrap();
+        std::fs::create_dir_all(d.join("b")).unwrap();
+        std::fs::write(d.join("f.txt"), "one").unwrap();
+        std::fs::write(d.join("b/f.txt"), "two").unwrap();
+        assert!(
+            move_into(&d.join("f.txt"), &d.join("b")).is_err(),
+            "would overwrite"
+        );
+        assert_eq!(std::fs::read_to_string(d.join("b/f.txt")).unwrap(), "two");
+        assert!(
+            move_into(&d.join("a"), &d.join("a/inner")).is_err(),
+            "into itself"
+        );
+        assert!(move_into(&d.join("a"), &d.join("a")).is_err());
+        let moved = move_into(&d.join("f.txt"), &d.join("a")).unwrap();
+        assert_eq!(moved, d.join("a/f.txt"));
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "one");
+        let moved = move_into(&d.join("a"), &d.join("b")).unwrap();
+        assert!(moved.join("inner").is_dir() && moved.join("f.txt").is_file());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

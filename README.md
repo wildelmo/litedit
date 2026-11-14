@@ -54,6 +54,8 @@ or drag a file or folder onto the window.
 | `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
 | `Ctrl+Shift+H` | Show / hide hidden files in the tree |
 | Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
+| Drag in the tree | Move a file or folder into another folder (asks first) |
+| `F2` / `Delete` in the tree | Rename / delete (Recycle Bin, asks first) |
 | `Ctrl +` / `Ctrl -` / `Ctrl 0` | Zoom in / out / reset |
 | `Ctrl+,` | Settings (theme, font sizes, fonts, wrap, ignored folders) |
 | Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |

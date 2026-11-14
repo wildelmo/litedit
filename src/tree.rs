@@ -81,6 +81,24 @@ pub struct Tree {
     scroll: Scroll,
     view_h: f32,
     show_hidden: bool,
+    /// Left button pressed on an entry: a drag starts once the mouse moves.
+    press: Option<Press>,
+    /// Folder the dragged entry would move into (valid targets only).
+    drop_target: Option<PathBuf>,
+    /// A finished drag: (entry, destination folder). The app asks first.
+    pub requested_move: Option<(PathBuf, PathBuf)>,
+}
+
+struct Press {
+    path: PathBuf,
+    y: f32,
+    dragging: bool,
+}
+
+/// Can `from` be moved into folder `dir`? Not into its own folder (no-op),
+/// itself, or anything inside it.
+pub fn can_move_into(from: &Path, dir: &Path) -> bool {
+    from.parent() != Some(dir) && !dir.starts_with(from)
 }
 
 fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
@@ -170,6 +188,9 @@ impl Tree {
             scroll: Scroll::default(),
             view_h: 0.0,
             show_hidden: false,
+            press: None,
+            drop_target: None,
+            requested_move: None,
         }
     }
 
@@ -367,9 +388,91 @@ impl Tree {
         self.scroll.x = 0.0;
     }
 
+    /// A drag from the tree is in progress (the app routes the mouse here
+    /// even outside the panel until the button is released).
+    pub fn dragging(&self) -> bool {
+        self.press.is_some()
+    }
+
+    /// The selected entry (keyboard actions like F2 / Delete).
+    pub fn selected_row(&mut self) -> Option<Row> {
+        let i = self.selected?;
+        self.rows().get(i).cloned()
+    }
+
+    /// The folder a drop at (x, y) would move into, if valid.
+    fn drop_folder(
+        &mut self,
+        rect: Rect,
+        x: f32,
+        y: f32,
+        from: &Path,
+        ctx: &Ctx,
+    ) -> Option<PathBuf> {
+        if x < rect.x as f32
+            || x >= rect.right() as f32
+            || y < rect.y as f32
+            || y >= rect.bottom() as f32
+        {
+            return None;
+        }
+        let row = match self.row_at(rect, y, ctx) {
+            Some(i) => self.rows()[i].clone(),
+            // Below the last row: the root folder.
+            None => self.rows().first()?.clone(),
+        };
+        let dir = if row.entry.is_dir && !row.entry.is_link {
+            row.entry.path
+        } else {
+            row.entry.path.parent()?.to_path_buf()
+        };
+        can_move_into(from, &dir).then_some(dir)
+    }
+
     /// Handle input inside the tree panel. Returns true if a redraw is needed.
     pub fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
         self.view_h = rect.h as f32;
+        // Dragging an entry onto a folder.
+        match input {
+            Input::MouseMove { x, y } if self.press.is_some() => {
+                let threshold = ctx.px(6.0);
+                let (from, start, mut dragging) = {
+                    let p = self.press.as_ref().expect("checked");
+                    (p.path.clone(), p.y, p.dragging)
+                };
+                if !dragging && (y - start).abs() > threshold {
+                    dragging = true;
+                    if let Some(p) = self.press.as_mut() {
+                        p.dragging = true;
+                    }
+                }
+                if dragging {
+                    self.drop_target = self.drop_folder(rect, *x, *y, &from, ctx);
+                    self.hover = None;
+                    *ctx.cursor = if self.drop_target.is_some() {
+                        Cursor::Pointer
+                    } else {
+                        Cursor::Default
+                    };
+                    return true;
+                }
+            }
+            Input::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } if self.press.is_some() => {
+                let p = self.press.take().expect("checked");
+                if let (true, Some(dir)) = (p.dragging, self.drop_target.take()) {
+                    self.requested_move = Some((p.path, dir));
+                }
+                self.drop_target = None;
+                return true;
+            }
+            Input::MouseLeave if self.press.as_ref().is_some_and(|p| p.dragging) => {
+                return false;
+            }
+            _ => {}
+        }
         match input {
             Input::MouseMove { y, .. } => {
                 let h = self.row_at(rect, *y, ctx);
@@ -393,6 +496,14 @@ impl Tree {
                 ..
             } => {
                 if let Some(i) = self.row_at(rect, *y, ctx) {
+                    let row = self.rows()[i].clone();
+                    if row.depth > 0 {
+                        self.press = Some(Press {
+                            path: row.entry.path,
+                            y: *y,
+                            dragging: false,
+                        });
+                    }
                     self.activate(i, ctx);
                 }
                 true
@@ -473,7 +584,22 @@ impl Tree {
             if Some(row.entry.path.as_path()) == current {
                 canvas.fill_rect(row_rect, theme::p().line_highlight);
             }
-            if self.selected == Some(i) && focused {
+            if self.drop_target.as_deref() == Some(row.entry.path.as_path()) {
+                // Drop target: filled and outlined in the caret colour.
+                canvas.fill_rect(row_rect, theme::p().selection);
+                let t = ctx.px(1.5).max(1.0) as i32;
+                let c = theme::p().caret;
+                canvas.fill_rect(Rect::new(row_rect.x, row_rect.y, row_rect.w, t), c);
+                canvas.fill_rect(
+                    Rect::new(row_rect.x, row_rect.bottom() - t, row_rect.w, t),
+                    c,
+                );
+                canvas.fill_rect(Rect::new(row_rect.x, row_rect.y, t, row_rect.h), c);
+                canvas.fill_rect(
+                    Rect::new(row_rect.right() - t, row_rect.y, t, row_rect.h),
+                    c,
+                );
+            } else if self.selected == Some(i) && focused {
                 canvas.fill_rect(row_rect, theme::p().selection);
             } else if self.hover == Some(i) {
                 canvas.fill_rect(row_rect, theme::p().line_highlight);

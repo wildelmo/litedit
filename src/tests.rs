@@ -1883,3 +1883,152 @@ fn missing_font_is_reported() {
     assert!(st.contains("'No Such Font Xyz' not found"), "{st}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn drag(app: &mut App, from: (f32, f32), to: (f32, f32)) {
+    app.handle(Input::MouseDown {
+        x: from.0,
+        y: from.1,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    let mid = (from.0, (from.1 + to.1) / 2.0);
+    app.handle(Input::MouseMove { x: mid.0, y: mid.1 });
+    app.handle(Input::MouseMove { x: to.0, y: to.1 });
+    app.handle(Input::MouseUp {
+        x: to.0,
+        y: to.1,
+        button: crate::input::MouseButton::Left,
+    });
+}
+
+/// A folder with docs/, notes/b.md and a.txt; rows at y ≈ 19 (root), 46
+/// (docs), 73 (notes), 100 (b.md once notes is open) / a.txt.
+fn drag_fixture(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("litedit-drag-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("docs")).unwrap();
+    std::fs::create_dir_all(d.join("notes")).unwrap();
+    std::fs::write(d.join("a.txt"), "hello").unwrap();
+    std::fs::write(d.join("notes/b.md"), "md").unwrap();
+    d
+}
+
+#[test]
+fn dragging_a_file_onto_a_folder_asks_then_moves_and_keeps_the_tab() {
+    let d = drag_fixture("move");
+    let mut app = new_app();
+    app.open(&d);
+    app.open(&d.join("a.txt"));
+    render_hash(&mut app, 800, 600);
+    // Rows: root 19, docs 46, notes 73, a.txt 100.
+    drag(&mut app, (60.0, 100.0), (60.0, 46.0));
+    assert_eq!(app.nag_message().as_deref(), Some("Move a.txt into docs?"));
+    assert!(d.join("a.txt").exists(), "nothing moves before the answer");
+    key(&mut app, "enter");
+    assert!(app.nag_message().is_none(), "{:?}", app.nag_message());
+    assert!(d.join("docs/a.txt").exists() && !d.join("a.txt").exists());
+    assert!(
+        app.title().starts_with("a.txt"),
+        "tab follows the file: {}",
+        app.title()
+    );
+    // Saving afterwards writes the new location.
+    key(&mut app, "ctrl+end");
+    app.handle(Input::Text("!".into()));
+    key(&mut app, "ctrl+s");
+    assert_eq!(
+        std::fs::read_to_string(d.join("docs/a.txt")).unwrap(),
+        "hello!"
+    );
+    assert!(!d.join("a.txt").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn drag_cancel_dirty_and_invalid_targets_move_nothing() {
+    let d = drag_fixture("guard");
+    let mut app = new_app();
+    app.open(&d);
+    render_hash(&mut app, 800, 600);
+    // Cancel.
+    drag(&mut app, (60.0, 100.0), (60.0, 46.0));
+    key(&mut app, "escape");
+    assert!(d.join("a.txt").exists());
+    // A short wiggle is a click, not a drag.
+    app.handle(Input::MouseDown {
+        x: 60.0,
+        y: 46.0,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseMove { x: 60.0, y: 48.0 });
+    app.handle(Input::MouseUp {
+        x: 60.0,
+        y: 48.0,
+        button: crate::input::MouseButton::Left,
+    });
+    assert!(app.nag_message().is_none());
+    // A folder dropped onto itself: drag away and back. Pressing on notes
+    // also expands it, so a.txt moves down to y = 127.
+    app.handle(Input::MouseDown {
+        x: 60.0,
+        y: 73.0,
+        button: crate::input::MouseButton::Left,
+        clicks: 1,
+    });
+    app.handle(Input::MouseMove { x: 60.0, y: 110.0 });
+    app.handle(Input::MouseMove { x: 60.0, y: 73.0 });
+    app.handle(Input::MouseUp {
+        x: 60.0,
+        y: 73.0,
+        button: crate::input::MouseButton::Left,
+    });
+    assert!(app.nag_message().is_none(), "into itself");
+    // Onto its own folder (the root): nothing to do.
+    drag(&mut app, (60.0, 127.0), (60.0, 19.0));
+    assert!(app.nag_message().is_none(), "already in the root");
+    // Dropped outside the tree: nothing.
+    drag(&mut app, (60.0, 127.0), (600.0, 127.0));
+    assert!(app.nag_message().is_none());
+    // A file with unsaved edits is not moved.
+    app.open(&d.join("a.txt"));
+    app.handle(Input::Text("x".into()));
+    render_hash(&mut app, 800, 600);
+    drag(&mut app, (60.0, 127.0), (60.0, 46.0));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("Save or close")
+    );
+    assert!(d.join("a.txt").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn tree_keys_f2_renames_and_delete_asks_first() {
+    let d = drag_fixture("keys");
+    let mut app = new_app();
+    app.open(&d);
+    render_hash(&mut app, 800, 600);
+    key(&mut app, "ctrl+shift+e");
+    // Selection starts on the root; F2/Delete on the root do nothing.
+    key(&mut app, "f2");
+    key(&mut app, "delete");
+    assert!(app.nag_message().is_none());
+    key(&mut app, "end"); // a.txt
+    key(&mut app, "f2");
+    key(&mut app, "ctrl+a");
+    app.handle(Input::Text("renamed.txt".into()));
+    key(&mut app, "enter");
+    assert!(d.join("renamed.txt").exists() && !d.join("a.txt").exists());
+    key(&mut app, "ctrl+shift+e");
+    key(&mut app, "end");
+    key(&mut app, "delete");
+    assert_eq!(
+        app.nag_message().as_deref(),
+        Some("Move renamed.txt to the Recycle Bin?")
+    );
+    key(&mut app, "escape");
+    assert!(d.join("renamed.txt").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
