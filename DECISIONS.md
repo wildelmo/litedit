@@ -20,6 +20,13 @@ typed text as typing (unit-tested), but this depends on how the window
 library reports it. **Question:** if you use such a layout, check that @ and
 { type correctly.
 
+### D-025 Two things only a real Windows desktop can confirm
+(1) The title bar follows the theme (dark title bar on the dark theme, light
+on light). (2) `ui_font` / `code_font` in settings pick a font that isn't one
+of the bundled-with-Windows defaults (a unit test checks Arial on CI, but not
+your installed fonts). **Question:** if either looks wrong, tell me what you
+see.
+
 ## Decided — review when convenient
 
 ### D-024 Settings are a small text file, applied when saved

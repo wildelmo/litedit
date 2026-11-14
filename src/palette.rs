@@ -323,7 +323,7 @@ impl Palette {
 
     /// Draw the palette near the top of `area`.
     pub fn render(&mut self, canvas: &mut Canvas, area: Rect, ctx: &mut Ctx) {
-        let w = (ctx.px(640.0) as i32)
+        let w = (ctx.px(640.0 * theme::ui_ratio()) as i32)
             .min(area.w - ctx.px(24.0) as i32)
             .max(ctx.px(160.0) as i32);
         let x = area.x + (area.w - w) / 2;

@@ -166,9 +166,27 @@ impl App {
     /// Read settings from `path` and keep it as the settings file (the
     /// window does this at startup; problems go to the status bar).
     pub fn use_settings(&mut self, path: PathBuf) {
-        let (s, problems) = Settings::load(&path);
+        let (s, mut problems) = Settings::load(&path);
         self.settings_path = Some(path);
+        for (want, got) in self.font_mismatches(&s) {
+            problems.push(format!("font '{want}' not found; using {got}"));
+        }
         self.apply_settings(&s, &problems);
+    }
+
+    /// Requested font families that are not the ones in use.
+    fn font_mismatches(&self, s: &Settings) -> Vec<(String, String)> {
+        [
+            (&s.ui_font, &self.fonts.sans),
+            (&s.code_font, &self.fonts.mono),
+        ]
+        .into_iter()
+        .filter_map(|(want, got)| {
+            want.as_ref()
+                .filter(|w| !w.eq_ignore_ascii_case(got))
+                .map(|w| (w.clone(), got.clone()))
+        })
+        .collect()
     }
 
     /// Make `s` current: palette, font sizes and the wrap default.
@@ -240,7 +258,11 @@ impl App {
             let (s, problems) = Settings::load(p);
             self.apply_settings(&s, &problems);
             if problems.is_empty() {
-                self.notice = Some("Settings applied".into());
+                self.notice = Some(if self.font_mismatches(&s).is_empty() {
+                    "Settings applied".into()
+                } else {
+                    "Settings applied; font changes take effect at next start".into()
+                });
             }
         }
     }
@@ -288,10 +310,17 @@ impl App {
             self.notice = Some(format!("{name} theme"));
             return;
         };
-        let dirty_open = (0..self.tabs.len()).any(|i| {
-            let v = self.tab_view(i);
-            v.is_dirty() && v.path().is_some_and(|p| settings::same_path(p, &path))
-        });
+        // The tab may spell the path differently (case); use its own path
+        // for the change notice so the reload matches.
+        let open_as: Vec<(PathBuf, bool)> = (0..self.tabs.len())
+            .filter_map(|i| {
+                let v = self.tab_view(i);
+                v.path()
+                    .filter(|p| settings::same_path(p, &path))
+                    .map(|p| (p.to_path_buf(), v.is_dirty()))
+            })
+            .collect();
+        let dirty_open = open_as.iter().any(|(_, dirty)| *dirty);
         if dirty_open {
             self.notice = Some(format!(
                 "{name} theme for now; settings.txt has unsaved edits, so it was not changed"
@@ -320,7 +349,9 @@ impl App {
             Ok(()) => {
                 self.notice = Some(format!("{name} theme (saved in settings)"));
                 // A clean tab showing the file picks up the change.
-                self.handle(Input::FsChanged(vec![path]));
+                let mut changed: Vec<PathBuf> = open_as.into_iter().map(|(p, _)| p).collect();
+                changed.push(path);
+                self.handle(Input::FsChanged(changed));
             }
             Err(e) => {
                 self.notice = Some(format!(
@@ -1091,7 +1122,7 @@ impl App {
     /// Rectangles of each tab and its close button in the tab bar.
     fn tab_rects(&self, bar: Rect) -> Vec<(Rect, Rect)> {
         let n = self.tabs.len().max(1) as i32;
-        let max_w = (theme::TAB_WIDTH * self.scale) as i32;
+        let max_w = (theme::TAB_WIDTH * self.scale * self.zoom * theme::ui_ratio()) as i32;
         let min_w = (90.0 * self.scale) as i32;
         let w = (bar.w / n).clamp(min_w.min(bar.w), max_w.max(1));
         let cs = (bar.h as f32 * 0.5) as i32;

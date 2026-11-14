@@ -145,6 +145,10 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Review fixes: tab and palette widths grow with ui_font_size
+  (renders checked at 8 and 40); missing font named in the status bar; live
+  font-size change == fresh render test; real-window CI test for Ctrl+, and
+  the theme toggle; Windows test for a non-default font family.
 - 2026-11-14 — S4.1 + S4.2 done: colours are a runtime Palette (refactor
   committed alone; dark render hashes byte-identical). Light palette
   (GitHub-like); "View: Toggle Light / Dark Theme" switches every tab and

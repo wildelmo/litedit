@@ -18,6 +18,12 @@ clone lives outside the repo; copy architecture/behaviour, credit in `NOTICE`.
 - **Render path is shared** between the window and headless
   `--screenshot <out.png>` mode. Use screenshot mode to verify visuals here.
 - **Redraw on events only** (no busy loop).
+- **Colours** only via `theme::p()` (active Palette). Theme and font sizes are
+  thread-local UI state: switch with `App::set_light` / settings, which call
+  `View::theme_changed` / `metrics_changed` on every tab. Anything that caches
+  colours must drop them in `theme_changed`.
+- **Headless modes never read user settings** (`--screenshot`, `--script`,
+  `--bench`, tests); use `--theme light` or script `theme light`.
 - Markdown: `pulldown-cmark`. Syntax: `syntect` with fancy-regex (pure Rust).
   `cargo tree -i onig_sys` must stay empty.
 

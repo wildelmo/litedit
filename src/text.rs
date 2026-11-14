@@ -251,6 +251,20 @@ fn pick_family(db: &fontdb::Database, prefs: &[&str]) -> String {
 mod tests {
     use super::*;
 
+    /// A family outside the usual file list is found by scanning the
+    /// system fonts (Windows ships Arial; not in WINDOWS_FONT_FILES).
+    #[cfg(windows)]
+    #[test]
+    fn settings_font_outside_the_usual_files_is_loaded() {
+        assert!(
+            !WINDOWS_FONT_FILES
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case("arial.ttf"))
+        );
+        let f = Fonts::load_with(Some("arial"), None);
+        assert_eq!(f.sans, "Arial");
+    }
+
     #[test]
     fn display_char_maps_dangerous_characters() {
         assert_eq!(display_char('\0'), '\u{2400}');

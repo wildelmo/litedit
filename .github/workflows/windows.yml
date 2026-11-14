@@ -180,6 +180,25 @@ jobs:
           if (-not $ok) { $failed = $true }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 
+          # 5. Ctrl+, creates and opens settings.txt in %APPDATA%; the theme
+          #    toggle rewrites its theme line; the clean tab exits on Alt+F4.
+          $set = Join-Path $env:APPDATA "litedit\settings.txt"
+          Remove-Item $set -ErrorAction SilentlyContinue
+          $p = Launch $f
+          $ws.SendKeys("^,"); Start-Sleep -Seconds 1
+          $t = Title $p
+          $created = (Test-Path $set) -and ((Get-Content $set -Raw) -match "(?m)^theme = dark")
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("toggle light"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $toggled = (Test-Path $set) -and ((Get-Content $set -Raw) -match "(?m)^theme = light")
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $ok = $created -and $toggled -and $exited -and ($t -like "settings.txt*")
+          $rows += "| Ctrl+, opens settings; theme toggle saves | $(if ($ok) {'PASS'} else {"FAIL (title=$t created=$created toggled=$toggled exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+          Remove-Item $set -ErrorAction SilentlyContinue
+
           $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
           Write-Output $table
           $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY

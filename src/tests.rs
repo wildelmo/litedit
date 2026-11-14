@@ -1837,3 +1837,49 @@ fn headless_script_theme_command() {
     assert!(theme::is_light());
     assert!(crate::script::run(&mut app, "theme purple\n").is_err());
 }
+
+#[test]
+fn font_size_change_matches_a_fresh_render() {
+    let dir = settings_dir("sizes");
+    let path = dir.join("settings.txt");
+    std::fs::write(
+        &path,
+        "ui_font_size = 22\ncode_font_size = 19\nmarkdown_font_size = 21\n",
+    )
+    .unwrap();
+    let open_two = |app: &mut App| {
+        app.open(&fixture("sample.md"));
+        app.open(&fixture("sample.rs"));
+        key(app, "ctrl+f");
+    };
+    let mut a = new_app();
+    open_two(&mut a);
+    let before = settled_hash(&mut a);
+    a.use_settings(path.clone());
+    let changed = settled_hash(&mut a);
+    key(&mut a, "escape");
+    key(&mut a, "ctrl+tab");
+    let md_changed = settled_hash(&mut a);
+    theme::set_sizes(theme::FONT_SIZE, theme::CODE_FONT_SIZE, theme::MD_FONT_SIZE);
+    let mut b = new_app();
+    b.use_settings(path);
+    open_two(&mut b);
+    assert_ne!(before, changed);
+    assert_eq!(changed, settled_hash(&mut b), "live size change vs fresh");
+    key(&mut b, "escape");
+    key(&mut b, "ctrl+tab");
+    assert_eq!(md_changed, settled_hash(&mut b), "inactive markdown tab");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn missing_font_is_reported() {
+    let dir = settings_dir("font");
+    let path = dir.join("settings.txt");
+    std::fs::write(&path, "code_font = No Such Font Xyz\n").unwrap();
+    let mut app = new_app();
+    app.use_settings(path);
+    let st = app.status_text();
+    assert!(st.contains("'No Such Font Xyz' not found"), "{st}");
+    let _ = std::fs::remove_dir_all(&dir);
+}

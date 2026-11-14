@@ -183,6 +183,12 @@ pub fn font_size() -> f32 {
     LIVE.with(|l| l.sizes.get().0)
 }
 
+/// UI font size relative to the default: widths sized for text (tabs,
+/// palette) grow with it.
+pub fn ui_ratio() -> f32 {
+    font_size() / FONT_SIZE
+}
+
 pub fn code_font_size() -> f32 {
     LIVE.with(|l| l.sizes.get().1)
 }

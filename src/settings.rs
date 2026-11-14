@@ -53,7 +53,7 @@ pub const TEMPLATE: &str = "\
 # dark or light
 theme = dark
 
-# Font sizes in points (8 to 40). Ctrl+plus / Ctrl+minus zoom on top of these.
+# Font sizes in pixels at 100% scaling (8 to 40). Ctrl+plus / Ctrl+minus zoom on top of these.
 ui_font_size = 15
 code_font_size = 15
 markdown_font_size = 16
