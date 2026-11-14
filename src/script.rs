@@ -115,6 +115,13 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
             "text" => {
                 app.handle(Input::Text(rest.to_string()));
             }
+            "close" => {
+                app.handle(Input::CloseRequested);
+            }
+            "save" => {
+                app.save();
+            }
+            "saveas" => app.save_as(&resolve_arg_path(rest)),
             "settle" => app.settle(Duration::from_secs(10)),
             "shot" => {
                 app.settle(Duration::from_secs(10));
@@ -122,13 +129,36 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
             }
             "expect" => {
                 requests.extend(app.take_requests());
+                if rest == "no-nag" {
+                    if !app.nag_text().is_empty() {
+                        return Err(err(&format!("unexpected question bar: {}", app.nag_text())));
+                    }
+                    continue;
+                }
                 let (what, needle) = rest
                     .split_once(char::is_whitespace)
                     .ok_or_else(|| err("bad expect"))?;
+                if what == "file" {
+                    // expect file <path> <text with \n \r \t escapes>
+                    let (path, want) = needle
+                        .split_once(char::is_whitespace)
+                        .unwrap_or((needle, ""));
+                    let want = unescape(want);
+                    let got =
+                        std::fs::read(resolve_arg_path(path)).map_err(|e| err(&e.to_string()))?;
+                    if got != want.as_bytes() {
+                        return Err(err(&format!(
+                            "file {path}: expected {want:?}, got {:?}",
+                            String::from_utf8_lossy(&got)
+                        )));
+                    }
+                    continue;
+                }
                 let hay = match what {
                     "request" => format!("{requests:?}"),
                     "title" => app.title(),
                     "status" => app.status_text(),
+                    "nag" => app.nag_text(),
                     _ => return Err(err("unknown expect target")),
                 };
                 if !hay.contains(needle.trim()) {
@@ -139,6 +169,27 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Unescape `\n`, `\r`, `\t`, `\\` and `\s` (space) in script text.
+fn unescape(s: &str) -> String {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('s') => out.push(' '),
+                Some(o) => out.push(o),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Render the app at `size` and write a PNG.

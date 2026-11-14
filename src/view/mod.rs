@@ -7,6 +7,7 @@ pub mod message;
 use std::time::Duration;
 
 use crate::canvas::{Canvas, Rect};
+use crate::editor::doc::SaveError;
 use crate::input::Input;
 use crate::theme;
 use crate::ui::Ctx;
@@ -53,6 +54,39 @@ pub trait View {
 
     /// Called when metrics change (DPI scale or zoom).
     fn metrics_changed(&mut self) {}
+
+    /// Unsaved edits?
+    fn is_dirty(&self) -> bool {
+        false
+    }
+
+    fn save(&mut self, _allow_lossy: bool) -> Result<usize, SaveError> {
+        Err(SaveError::Failed("nothing to save here".into()))
+    }
+
+    fn save_as(&mut self, _path: &std::path::Path) -> Result<usize, SaveError> {
+        Err(SaveError::Failed("nothing to save here".into()))
+    }
+
+    /// Compare the file on disk with what is shown.
+    fn disk_state(&self) -> DiskState {
+        DiskState::Same
+    }
+
+    /// Throw away edits and load the file from disk.
+    fn reload_discarding(&mut self, _ctx: &mut Ctx) -> bool {
+        false
+    }
+
+    /// The file vanished from disk: keep the text, mark it modified.
+    fn mark_orphaned(&mut self) {}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskState {
+    Same,
+    Differs,
+    Missing,
 }
 
 /// Vertical + horizontal scroll state, in physical pixels.

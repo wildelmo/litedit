@@ -65,6 +65,13 @@ pub fn detect_indent(lines: &[String]) -> Indent {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveError {
+    /// The file had invalid UTF-8; saving would write the replacements.
+    NeedsLossyConfirm,
+    Failed(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move {
     Left,
@@ -129,6 +136,38 @@ impl EditDoc {
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
         self.hist.seal();
+    }
+
+    /// Save to the current path. Files that were not valid UTF-8 need
+    /// `allow_lossy` (the invalid bytes were replaced when opened).
+    pub fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
+        let path = self.path.clone();
+        self.save_to(&path, allow_lossy)
+    }
+
+    /// Save to a new path and switch to it.
+    pub fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
+        let n = self.save_to(path, true)?;
+        self.path = path.to_path_buf();
+        Ok(n)
+    }
+
+    fn save_to(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+        if self.encoding == Encoding::Utf8Lossy && !allow_lossy {
+            return Err(SaveError::NeedsLossyConfirm);
+        }
+        let bytes = crate::doc::encode(&self.buf.to_text(), self.encoding);
+        crate::editor::save::save_bytes(path, &bytes).map_err(SaveError::Failed)?;
+        if self.encoding == Encoding::Utf8Lossy {
+            self.encoding = Encoding::Utf8; // now it is valid UTF-8
+        }
+        self.mark_saved();
+        Ok(bytes.len())
+    }
+
+    /// Mark as modified (e.g. the file was deleted on disk).
+    pub fn force_dirty(&mut self) {
+        self.saved_version = u64::MAX;
     }
 
     pub fn primary(&self) -> Sel {

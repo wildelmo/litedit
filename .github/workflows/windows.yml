@@ -89,6 +89,31 @@ jobs:
           if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
           if (-not $alive) { Write-Error "window process exited early"; exit 1 }
 
+      - name: Real-window typing test (report-only)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP "typing.txt"
+          [IO.File]::WriteAllText($f, "start")
+          $p = Start-Process -FilePath "target\release\litedit.exe" -ArgumentList "`"$f`"" -PassThru
+          Start-Sleep -Seconds 3
+          $ws = New-Object -ComObject WScript.Shell
+          $ok = $ws.AppActivate($p.Id)
+          Start-Sleep -Milliseconds 700
+          $ws.SendKeys("{END} typed")
+          Start-Sleep -Milliseconds 400
+          $ws.SendKeys("^s")
+          Start-Sleep -Seconds 1
+          $content = [IO.File]::ReadAllText($f)
+          Write-Output "activated=$ok content=[$content]"
+          $ws.SendKeys("%{F4}")
+          Start-Sleep -Seconds 1
+          $exited = $p.HasExited
+          if (-not $exited) { Stop-Process -Id $p.Id -Force }
+          $result = if ($content -eq "start typed") { "PASS" } else { "FAIL ($content)" }
+          "| real-window typing + Ctrl+S | $result (closed by Alt+F4: $exited) |" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          if ($content -ne "start typed") { exit 1 }
+
       - name: Print screenshots (base64, decoded by scripts/ci-shots.sh)
         if: always()
         shell: pwsh

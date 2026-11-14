@@ -10,6 +10,7 @@ mod images;
 mod input;
 mod links;
 mod markdown;
+mod nag;
 mod platform;
 mod script;
 mod syntax;

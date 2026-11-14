@@ -97,7 +97,7 @@ Acceptance criteria that protect the user's text:
        pure key-translation function with AltGr tests
 - [x] S2.4 Undo/redo wiring (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z)
 - [x] S2.5 Clipboard (arboard): copy, cut, paste (line-wise when no selection)
-- [ ] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
+- [x] S2.6 Save / Save As (atomic, Windows edge cases), dirty marker, nag bar,
        single discard gate, external-change prompt for dirty docs
 - [ ] S2.7 Ctrl+E: markdown preview ↔ editable source (preview from buffer)
 - [ ] S2.8 IME (commit → text, candidate window at caret); unverifiable here,
@@ -128,6 +128,12 @@ Acceptance criteria that protect the user's text:
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S2.6 done: atomic save (temp + ReplaceFileW keeping ACLs/attributes,
+  overwrite-in-place fallback D-017, read-only refused, symlinks followed),
+  Ctrl+S / Ctrl+Shift+S, dirty marker, in-window nag bar (D-013), one discard
+  gate (open/drop/tree/link/dialogs/close), external change → prompt when dirty,
+  deleted-on-disk keeps text; lossy files need "Save anyway". Script `expect
+  file/nag`, real-window SendKeys CI step (report-only).
 - 2026-11-14 — S2.5 done: clipboard trait (arboard on Windows, memory in scripts/tests),
   Ctrl+C/X/V + Ctrl/Shift+Insert, Shift+Delete, lite-xl line-mode copy/paste.
 - 2026-11-14 — S2.2–S2.4 done: editor/doc.rs (commands on all selections, grapheme

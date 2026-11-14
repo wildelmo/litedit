@@ -37,5 +37,21 @@ open tests/fixtures/crlf.txt
 expect status CRLF
 open tests/fixtures/invalid-utf8.txt
 expect status invalid bytes replaced
+# Editing + saving: byte-exact line endings, dirty marker, prompts.
+open tests/fixtures/crlf.txt
+saveas out/edited.txt
+key end
+text !
+expect title ● edited.txt
+save
+expect file out/edited.txt line one!\r\nline two\r\nline three\r\n
+expect no-nag
+key enter
+text added
+shot out/editing.png
+close
+expect nag Save changes to edited.txt
+key d
+expect request Quit
 open tests/fixtures/does-not-exist.txt
 shot out/error.png

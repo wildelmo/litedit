@@ -15,13 +15,14 @@ use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping, Style, Weight, Wrap};
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::editor::buffer::{Eol, Pos};
+use crate::editor::doc::SaveError;
 use crate::editor::doc::{EditDoc, Move};
 use crate::input::{Cursor, Input, Key, MouseButton};
 use crate::syntax::{LineHighlighter, Span, find_syntax};
 use crate::text::display_char;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
-use crate::view::{Scroll, Tick, View, draw_vscrollbar};
+use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
 
 /// Lines longer than this are cut for display (minified files). Editing
 /// beyond the cut still works; the caret is drawn at the cut (D-015).
@@ -784,6 +785,46 @@ impl View for CodeView {
     fn metrics_changed(&mut self) {
         self.cache.clear();
         self.char_w = None;
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.doc.is_dirty()
+    }
+
+    fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
+        self.doc.save(allow_lossy)
+    }
+
+    fn save_as(&mut self, path: &Path) -> Result<usize, SaveError> {
+        let n = self.doc.save_as(path)?;
+        let first = self.doc.buf.line(0).to_string();
+        self.highlighter = LineHighlighter::new(find_syntax(path, &first));
+        self.cache.clear();
+        Ok(n)
+    }
+
+    fn disk_state(&self) -> DiskState {
+        match Document::open(self.doc.path()) {
+            Ok(d) if d.text == self.doc.buf.to_text() => DiskState::Same,
+            Ok(_) => DiskState::Differs,
+            Err(_) if !self.doc.path().exists() => DiskState::Missing,
+            Err(_) => DiskState::Same,
+        }
+    }
+
+    fn reload_discarding(&mut self, _ctx: &mut Ctx) -> bool {
+        match Document::open(self.doc.path()) {
+            Ok(d) => {
+                self.doc.replace_all_from_disk(d);
+                self.after_edit(0);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn mark_orphaned(&mut self) {
+        self.doc.force_dirty();
     }
 }
 

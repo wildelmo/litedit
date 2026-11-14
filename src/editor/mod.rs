@@ -3,6 +3,7 @@
 pub mod buffer;
 pub mod doc;
 pub mod history;
+pub mod save;
 
 #[cfg(test)]
 mod tests {

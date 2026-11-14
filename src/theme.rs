@@ -19,6 +19,12 @@ pub const ERROR: Color = Color::hex(0xff3333);
 
 pub const GOOD: Color = Color::hex(0x72b886);
 
+// Nag bar (lite-xl uses a red bar; this is a softer version of it).
+pub const NAG_BG: Color = Color::hex(0x1c7c9c);
+pub const NAG_ERROR: Color = Color::hex(0x9c3434);
+pub const NAG_BUTTON: Color = Color::hex(0x2f2f35);
+pub const NAG_TEXT: Color = Color::hex(0xf2f2f5);
+
 // Syntax colours (lite-xl `style.syntax`).
 pub const SYNTAX_NORMAL: Color = Color::hex(0xe1e1e6);
 pub const SYNTAX_COMMENT: Color = Color::hex(0x676b6f);

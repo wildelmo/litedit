@@ -74,6 +74,12 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::SaveAsDialog(suggested) => {
+                    if let Some(p) = pick_save(&window, &suggested) {
+                        self.app.save_as(&p);
+                        redraw = true;
+                    }
+                }
             }
         }
         self.watcher.set_targets(self.app.watch_targets());
@@ -176,10 +182,8 @@ impl ApplicationHandler<UserEvent> for Runner {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let input = match event {
-            WindowEvent::CloseRequested => {
-                event_loop.exit();
-                return;
-            }
+            // Goes through the app so unsaved edits can be saved first.
+            WindowEvent::CloseRequested => Input::CloseRequested,
             WindowEvent::RedrawRequested => {
                 self.redraw();
                 return;
@@ -353,5 +357,25 @@ fn pick(window: &Window, folder: bool) -> Option<PathBuf> {
 
 #[cfg(not(windows))]
 fn pick(_window: &Window, _folder: bool) -> Option<PathBuf> {
+    None
+}
+
+/// Native "Save as" dialog (Windows).
+#[cfg(windows)]
+fn pick_save(window: &Window, suggested: &std::path::Path) -> Option<PathBuf> {
+    let mut d = rfd::FileDialog::new()
+        .set_parent(window)
+        .set_title("Save as");
+    if let Some(dir) = suggested.parent() {
+        d = d.set_directory(dir);
+    }
+    if let Some(name) = suggested.file_name() {
+        d = d.set_file_name(name.to_string_lossy());
+    }
+    d.save_file()
+}
+
+#[cfg(not(windows))]
+fn pick_save(_window: &Window, _suggested: &std::path::Path) -> Option<PathBuf> {
     None
 }

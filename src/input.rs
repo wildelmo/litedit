@@ -81,6 +81,8 @@ pub enum Input {
     Drop(PathBuf),
     /// Files changed on disk (from the watcher thread).
     FsChanged(Vec<PathBuf>),
+    /// The user asked to close the window.
+    CloseRequested,
 }
 
 /// Things the app asks the platform layer to do.
@@ -90,6 +92,8 @@ pub enum Request {
     OpenUrl(String),
     OpenFileDialog,
     OpenFolderDialog,
+    /// Ask where to save the current file (suggested path).
+    SaveAsDialog(PathBuf),
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Show a file in Windows Explorer.

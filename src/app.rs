@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
+use crate::editor::doc::SaveError;
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
+use crate::nag::{Nag, NagAction, Pending};
 use crate::text::Fonts;
 use crate::theme;
 use crate::tree::Tree;
@@ -16,7 +18,7 @@ use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
-use crate::view::{Tick, View};
+use crate::view::{DiskState, Tick, View};
 
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 3.0;
@@ -42,11 +44,18 @@ pub struct App {
     mouse: (f32, f32),
     dragging_divider: bool,
     clipboard: Box<dyn crate::clipboard::Clipboard>,
+    /// Modal question bar (save changes?, changed on disk?, errors).
+    nag: Option<Nag>,
+    /// What to do after "save anyway" for a lossy file.
+    after_lossy: Option<Pending>,
+    /// One-shot message in the status bar (e.g. "Saved").
+    notice: Option<String>,
     /// Set when a view may have deferred work; cleared when `tick` finishes it.
     pending: bool,
 }
 
 struct Layout {
+    nag: Option<Rect>,
     tree: Option<Rect>,
     divider: Option<Rect>,
     main: Rect,
@@ -82,6 +91,9 @@ impl App {
             mouse: (0.0, 0.0),
             dragging_divider: false,
             clipboard: Box::new(crate::clipboard::MemClipboard::default()),
+            nag: None,
+            after_lossy: None,
+            notice: None,
             pending: false,
         }
     }
@@ -97,14 +109,141 @@ impl App {
     }
 
     /// Open a file (into the main view) or a folder (into the tree).
+    /// Every way of opening goes through here, so unsaved edits are never
+    /// discarded without asking.
     pub fn open(&mut self, path: &Path) {
         if path.is_dir() {
+            // A folder only changes the tree; an open file stays open.
             self.tree.set_root(path);
             self.tree.visible = true;
-            self.view = Box::new(MessageView::folder_opened());
+            if self.view.path().is_none() {
+                self.view = Box::new(MessageView::folder_opened());
+            } else if let Some(p) = self.view.path().map(Path::to_path_buf) {
+                self.tree.reveal(&p);
+            }
             self.focus = Focus::Tree;
             return;
         }
+        if self.view.path() == Some(path) {
+            self.focus = Focus::Main;
+            return; // already open
+        }
+        self.guard(Pending::Open(path.to_path_buf()));
+    }
+
+    /// The single discard gate: run `then` now, or ask first if the open
+    /// document has unsaved edits.
+    fn guard(&mut self, then: Pending) {
+        if self.view.is_dirty() {
+            let name = self.view_name();
+            self.nag = Some(Nag::unsaved(&name, then));
+        } else {
+            self.perform(then);
+        }
+    }
+
+    fn perform(&mut self, p: Pending) {
+        match p {
+            Pending::Open(path) => self.open_now(&path),
+            Pending::Quit => self.requests.push(Request::Quit),
+        }
+    }
+
+    fn view_name(&self) -> String {
+        self.view
+            .path()
+            .and_then(Path::file_name)
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "this file".into())
+    }
+
+    /// Ctrl+S.
+    pub fn save(&mut self) -> bool {
+        self.save_with(false, None)
+    }
+
+    fn save_with(&mut self, allow_lossy: bool, then: Option<Pending>) -> bool {
+        if self.view.path().is_none() {
+            return false;
+        }
+        let name = self.view_name();
+        match self.view.save(allow_lossy) {
+            Ok(n) => {
+                self.notice = Some(format!("Saved {name} ({})", human_size(n)));
+                if let Some(p) = then {
+                    self.perform(p);
+                }
+            }
+            Err(SaveError::NeedsLossyConfirm) => {
+                self.after_lossy = then;
+                self.nag = Some(Nag::new(
+                    format!("{name} had invalid characters (shown as �). Saving writes them as �."),
+                    vec![
+                        ("Save anyway", NagAction::SaveAnyway),
+                        ("Cancel", NagAction::Dismiss),
+                    ],
+                    false,
+                ));
+            }
+            Err(SaveError::Failed(e)) => {
+                self.nag = Some(Nag::error(format!("Could not save {name}: {e}")));
+            }
+        }
+        true
+    }
+
+    /// Save the current file under a new name (from the Save As dialog).
+    pub fn save_as(&mut self, path: &Path) {
+        match self.view.save_as(path) {
+            Ok(n) => {
+                self.notice = Some(format!("Saved as {} ({})", path.display(), human_size(n)));
+                self.tree.invalidate(&[path.to_path_buf()]);
+                self.tree.reveal(path);
+            }
+            Err(SaveError::Failed(e)) => {
+                self.nag = Some(Nag::error(format!(
+                    "Could not save {}: {e}",
+                    path.display()
+                )));
+            }
+            Err(SaveError::NeedsLossyConfirm) => {}
+        }
+        self.pending = true;
+    }
+
+    fn apply_nag(&mut self, action: NagAction) {
+        self.nag = None;
+        match action {
+            NagAction::SaveThen(p) => {
+                self.save_with(false, Some(p));
+            }
+            NagAction::DiscardThen(p) => self.perform(p),
+            NagAction::SaveAnyway => {
+                let then = self.after_lossy.take();
+                self.save_with(true, then);
+            }
+            NagAction::ReloadFromDisk => {
+                let mut ctx = ctx!(self);
+                self.view.reload_discarding(&mut ctx);
+                self.pending = true;
+            }
+            NagAction::KeepMine | NagAction::Dismiss => {}
+        }
+    }
+
+    #[cfg(test)]
+    pub fn nag_message(&self) -> Option<String> {
+        self.nag.as_ref().map(|n| n.message.clone())
+    }
+
+    pub fn nag_text(&self) -> String {
+        self.nag
+            .as_ref()
+            .map(|n| n.message.clone())
+            .unwrap_or_default()
+    }
+
+    fn open_now(&mut self, path: &Path) {
         // D-012: opening a file with no folder open shows its folder.
         if self.tree.root().is_none()
             && let Some(parent) = path.parent().filter(|p| p.is_dir())
@@ -151,6 +290,9 @@ impl App {
 
     pub fn status_items(&self) -> Vec<String> {
         let mut v = self.view.status();
+        if let Some(n) = &self.notice {
+            v.push(n.clone());
+        }
         if let Some(n) = self.tree.truncated_note() {
             v.push(n);
         }
@@ -185,7 +327,16 @@ impl App {
         let pad_y = (theme::PADDING_Y * self.scale).round() as i32;
         let status_h = self.ui_line_height() as i32 + pad_y * 2;
         let status = Rect::new(0, (h - status_h).max(0), w, status_h.min(h));
-        let body_h = (h - status_h).max(0);
+        let nag_h = if self.nag.is_some() {
+            (self.ui_line_height() as i32 + pad_y * 3)
+                .min(h - status_h)
+                .max(0)
+        } else {
+            0
+        };
+        let nag = (nag_h > 0).then(|| Rect::new(0, 0, w, nag_h));
+        let top = nag_h;
+        let body_h = (h - status_h - top).max(0);
         if self.tree.is_shown() && w > 200 {
             let tw = (self.tree.width * self.scale)
                 .clamp(
@@ -196,16 +347,18 @@ impl App {
                 .round() as i32;
             let div = (self.scale.round() as i32).max(1);
             Layout {
-                tree: Some(Rect::new(0, 0, tw, body_h)),
-                divider: Some(Rect::new(tw, 0, div, body_h)),
-                main: Rect::new(tw + div, 0, (w - tw - div).max(0), body_h),
+                nag,
+                tree: Some(Rect::new(0, top, tw, body_h)),
+                divider: Some(Rect::new(tw, top, div, body_h)),
+                main: Rect::new(tw + div, top, (w - tw - div).max(0), body_h),
                 status,
             }
         } else {
             Layout {
+                nag,
                 tree: None,
                 divider: None,
-                main: Rect::new(0, 0, w, body_h),
+                main: Rect::new(0, top, w, body_h),
                 status,
             }
         }
@@ -241,7 +394,26 @@ impl App {
     }
 
     fn handle_inner(&mut self, input: &Input) -> bool {
+        if matches!(input, Input::Key { .. } | Input::MouseDown { .. }) {
+            self.notice = None;
+        }
+        // The question bar is modal.
+        if self.nag.is_some()
+            && matches!(
+                input,
+                Input::Key { .. } | Input::MouseDown { .. } | Input::Text(_)
+            )
+        {
+            if let Some(action) = self.nag.as_mut().and_then(|n| n.handle(input)) {
+                self.apply_nag(action);
+            }
+            return true;
+        }
         match input {
+            Input::CloseRequested => {
+                self.guard(Pending::Quit);
+                return true;
+            }
             Input::Resize(w, h) => {
                 self.size = ((*w).max(1), (*h).max(1));
                 self.pending = true;
@@ -265,13 +437,39 @@ impl App {
                 if let Some(p) = self.view.path().map(Path::to_path_buf)
                     && paths.iter().any(|c| c == &p)
                 {
-                    let mut ctx = ctx!(self);
-                    changed |= self.view.reload(&mut ctx);
+                    let name = self.view_name();
+                    match self.view.disk_state() {
+                        // Our own save, or a no-op touch.
+                        DiskState::Same => {}
+                        DiskState::Missing => {
+                            self.view.mark_orphaned();
+                            self.notice =
+                                Some(format!("{name} was deleted on disk; Ctrl+S saves it again"));
+                            changed = true;
+                        }
+                        DiskState::Differs if self.view.is_dirty() => {
+                            if self.nag.is_none() {
+                                self.nag = Some(Nag::changed_on_disk(&name));
+                            }
+                            changed = true;
+                        }
+                        DiskState::Differs => {
+                            let mut ctx = ctx!(self);
+                            changed |= self.view.reload(&mut ctx);
+                        }
+                    }
                 }
                 return changed;
             }
             Input::Key { key, mods } if mods.ctrl => {
                 let handled = match key {
+                    Key::Char('s') if mods.shift => {
+                        if let Some(p) = self.view.path() {
+                            self.requests.push(Request::SaveAsDialog(p.to_path_buf()));
+                        }
+                        true
+                    }
+                    Key::Char('s') => self.save(),
                     Key::Char('o') if mods.shift => {
                         self.requests.push(Request::OpenFolderDialog);
                         true
@@ -436,6 +634,10 @@ impl App {
         let focus = self.focus;
         let mut ctx = ctx!(self);
 
+        if let (Some(r), Some(nag)) = (layout.nag, self.nag.as_mut()) {
+            canvas.set_clip(r);
+            nag.render(canvas, r, &mut ctx);
+        }
         if let (Some(t), Some(d)) = (layout.tree, layout.divider) {
             canvas.set_clip(t);
             self.tree.render(
@@ -464,6 +666,9 @@ impl App {
         let mut x = layout.status.x + pad_x;
         let y = layout.status.y + pad_y;
         let mut items = self.view.status();
+        if let Some(n) = &self.notice {
+            items.push(n.clone());
+        }
         if let Some(n) = self.tree.truncated_note() {
             items.push(n);
         }
@@ -495,6 +700,16 @@ impl App {
             );
         }
         canvas.set_clip(canvas.bounds());
+    }
+}
+
+fn human_size(n: usize) -> String {
+    if n < 1024 {
+        format!("{n} bytes")
+    } else if n < 1024 * 1024 {
+        format!("{:.1} KB", n as f32 / 1024.0)
+    } else {
+        format!("{:.1} MB", n as f32 / (1024.0 * 1024.0))
     }
 }
 

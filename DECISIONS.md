@@ -10,6 +10,13 @@ _None yet._
 
 ## Decided — review when convenient
 
+### D-017 Saving a file another program holds open
+Saves normally write a temporary copy and swap it in (so a crash mid-save
+can't leave a half-written file). If another program holds the file open in
+a way that blocks the swap (common with sync tools), litedit overwrites the
+file in place instead of refusing. If the file is fully locked, the save
+fails with a message and your edits stay unsaved in the editor.
+
 ### D-016 The caret does not blink
 A blinking caret means waking the CPU twice a second forever. litedit
 redraws only when something happens, so the caret is steady. *Easy to add

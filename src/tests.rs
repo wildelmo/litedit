@@ -522,3 +522,170 @@ fn copy_cut_paste_through_the_app() {
     );
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+fn press(app: &mut App, combo: &str) {
+    key(app, combo);
+}
+
+#[test]
+fn save_preserves_endings_and_ignores_own_change_event() {
+    let p = temp_file("crlf.txt", "one\r\ntwo\r\n");
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "end");
+    type_text(&mut app, "!");
+    press(&mut app, "enter");
+    type_text(&mut app, "new");
+    assert!(app.title().starts_with('●'));
+    press(&mut app, "ctrl+s");
+    assert_eq!(std::fs::read(&p).unwrap(), b"one!\r\nnew\r\ntwo\r\n");
+    assert!(app.title().starts_with("crlf.txt"), "{}", app.title());
+    assert!(app.status_text().contains("Saved crlf.txt"));
+    // The watcher reports our own save: no prompt, no reload.
+    app.handle(Input::FsChanged(vec![p.clone()]));
+    assert_eq!(app.nag_message(), None);
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn every_discard_path_asks_first() {
+    let p = temp_file("dirty.txt", "text\n");
+    let other = p.parent().unwrap().join("other.txt");
+    std::fs::write(&other, "other\n").unwrap();
+    let mut app = new_app();
+    app.open(&p);
+    type_text(&mut app, "edit ");
+
+    // Opening another file (dialog, tree, link, CLI all use App::open).
+    app.open(&other);
+    assert!(
+        app.nag_message()
+            .unwrap()
+            .contains("Save changes to dirty.txt")
+    );
+    assert!(app.title().contains("dirty.txt"), "still on the dirty file");
+    press(&mut app, "escape"); // Cancel
+    assert_eq!(app.nag_message(), None);
+
+    // Drag and drop.
+    app.handle(Input::Drop(other.clone()));
+    assert!(app.nag_message().is_some());
+    press(&mut app, "c"); // Cancel by first letter
+    assert!(app.title().contains("dirty.txt"));
+
+    // Tree: keyboard-open another file.
+    press(&mut app, "ctrl+shift+e");
+    press(&mut app, "end");
+    press(&mut app, "enter");
+    assert!(app.nag_message().is_some(), "tree open must ask");
+    press(&mut app, "escape");
+
+    // Closing the window.
+    app.handle(Input::CloseRequested);
+    assert!(app.nag_message().is_some());
+    assert!(!app.take_requests().contains(&Request::Quit));
+    press(&mut app, "escape");
+
+    // "Don't save" discards and proceeds; the file on disk is untouched.
+    app.open(&other);
+    press(&mut app, "d");
+    assert!(app.title().starts_with("other.txt"));
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "text\n");
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn save_then_quit_from_the_close_prompt() {
+    let p = temp_file("quit.txt", "a");
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "end");
+    type_text(&mut app, "b");
+    app.handle(Input::CloseRequested);
+    press(&mut app, "enter"); // Save (default)
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "ab");
+    assert!(app.take_requests().contains(&Request::Quit));
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn external_change_to_dirty_file_prompts_and_can_reload() {
+    let p = temp_file("ext.txt", "mine\n");
+    let mut app = new_app();
+    app.open(&p);
+    type_text(&mut app, "x");
+    std::fs::write(&p, "theirs\n").unwrap();
+    app.handle(Input::FsChanged(vec![p.clone()]));
+    assert!(app.nag_message().unwrap().contains("changed on disk"));
+    press(&mut app, "r"); // Reload from disk
+    assert!(!app.title().starts_with('●'));
+    press(&mut app, "ctrl+s");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "theirs\n");
+    // Deleted on disk: content kept, marked modified, saving restores it.
+    std::fs::remove_file(&p).unwrap();
+    app.handle(Input::FsChanged(vec![p.clone()]));
+    assert!(app.title().starts_with('●'));
+    assert!(app.status_text().contains("deleted on disk"));
+    press(&mut app, "ctrl+s");
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "theirs\n");
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn lossy_files_need_confirmation_and_failures_keep_edits() {
+    let dir = std::env::temp_dir().join(format!("litedit-lossy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let p = dir.join("bad.txt");
+    std::fs::write(&p, b"ok \xFF\xFE end").unwrap();
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "end");
+    type_text(&mut app, "!");
+    press(&mut app, "ctrl+s");
+    assert!(app.nag_message().unwrap().contains("invalid characters"));
+    assert_eq!(
+        std::fs::read(&p).unwrap(),
+        b"ok \xFF\xFE end",
+        "not written yet"
+    );
+    press(&mut app, "s"); // Save anyway
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "ok \u{fffd}\u{fffd} end!"
+    );
+
+    // A failing save (read-only) shows an error and keeps the edit.
+    type_text(&mut app, "?");
+    let mut perm = std::fs::metadata(&p).unwrap().permissions();
+    perm.set_readonly(true);
+    std::fs::set_permissions(&p, perm.clone()).unwrap();
+    press(&mut app, "ctrl+s");
+    assert!(app.nag_message().unwrap().contains("read-only"));
+    assert!(app.title().starts_with('●'));
+    press(&mut app, "enter");
+    #[allow(clippy::permissions_set_readonly_false)]
+    perm.set_readonly(false);
+    std::fs::set_permissions(&p, perm).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn save_as_switches_file_and_script_expect_file_works() {
+    let p = temp_file("orig.txt", "hi\n");
+    let copy = p.parent().unwrap().join("copy.txt");
+    let mut app = new_app();
+    let script = format!(
+        "open {}\nkey end\ntext !\nsaveas {}\nexpect title copy.txt\nexpect file {} hi!\\n\nexpect file {} hi\\n\nexpect no-nag\n",
+        p.display(),
+        copy.display(),
+        copy.display(),
+        p.display()
+    );
+    crate::script::run(&mut app, &script).unwrap();
+    assert!(!app.title().starts_with('●'));
+    assert!(
+        crate::script::run(&mut app, &format!("expect file {} wrong", copy.display())).is_err()
+    );
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
