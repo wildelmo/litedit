@@ -24,6 +24,11 @@ pub enum MenuAction {
     CloseSaved,
     CloseAll,
     RevealInTree(PathBuf),
+    // Compare.
+    SelectForCompare(PathBuf),
+    /// (old, new)
+    Compare(PathBuf, PathBuf),
+    CompareWithSaved(u64),
 }
 
 pub struct Menu {

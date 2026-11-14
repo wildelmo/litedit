@@ -64,6 +64,12 @@ key d
 expect request Quit
 open tests/fixtures/does-not-exist.txt
 shot out/error.png
+# Compare two files side by side.
+compare tests/fixtures/compare/old.rs tests/fixtures/compare/new.rs
+expect status 5 changes
+key f7
+expect status Change 1 of 5
+shot out/compare.png
 # Light theme: switched at run time (all tabs re-colour).
 theme light
 open tests/fixtures/sample.md

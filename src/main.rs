@@ -5,6 +5,7 @@ mod app;
 mod bench;
 mod canvas;
 mod clipboard;
+mod diff;
 mod doc;
 mod editor;
 mod find;

@@ -50,6 +50,11 @@ pub struct Palette {
     pub md_important: Color,
     pub md_warning: Color,
     pub md_caution: Color,
+    pub diff_removed: Color,
+    pub diff_removed_hl: Color,
+    pub diff_added: Color,
+    pub diff_added_hl: Color,
+    pub diff_filler: Color,
 }
 
 pub const DARK: Palette = Palette {
@@ -94,6 +99,11 @@ pub const DARK: Palette = Palette {
     md_important: Color::hex(0xe58ac9),
     md_warning: Color::hex(0xffa94d),
     md_caution: Color::hex(0xf77483),
+    diff_removed: Color::hex(0x4a2c31),
+    diff_removed_hl: Color::hex(0x7d3a43),
+    diff_added: Color::hex(0x2b4434),
+    diff_added_hl: Color::hex(0x3f6e4d),
+    diff_filler: Color::hex(0x29292d),
 };
 
 pub const LIGHT: Palette = Palette {
@@ -138,6 +148,11 @@ pub const LIGHT: Palette = Palette {
     md_important: Color::hex(0x8250df),
     md_warning: Color::hex(0x9a6700),
     md_caution: Color::hex(0xcf222e),
+    diff_removed: Color::hex(0xffebe9),
+    diff_removed_hl: Color::hex(0xffc1c0),
+    diff_added: Color::hex(0xe6ffec),
+    diff_added_hl: Color::hex(0xacf2bd),
+    diff_filler: Color::hex(0xf1f1f3),
 };
 
 /// Live appearance state. Thread-local: everything that draws runs on the

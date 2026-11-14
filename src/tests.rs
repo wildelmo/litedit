@@ -2306,3 +2306,123 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+fn compare_dir(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("litedit-cmp-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::copy(fixture("compare/old.rs"), d.join("old.rs")).unwrap();
+    std::fs::copy(fixture("compare/new.rs"), d.join("new.rs")).unwrap();
+    d
+}
+
+#[test]
+fn compare_from_the_tree_menu_shows_changes_and_f7_walks_them() {
+    use crate::input::MouseButton;
+    let d = compare_dir("tree");
+    let mut app = new_app();
+    app.open(&d);
+    render_hash(&mut app, 800, 600);
+    // Rows: root 19, new.rs 46, old.rs 73.
+    mouse(&mut app, 60.0, 73.0, MouseButton::Right);
+    run_menu_item(&mut app, "Select for Compare");
+    mouse(&mut app, 60.0, 46.0, MouseButton::Right);
+    run_menu_item(&mut app, "Compare with Selected");
+    assert_eq!(app.title(), "old.rs ↔ new.rs - litedit");
+    assert!(
+        app.status_text().contains("5 changes"),
+        "{}",
+        app.status_text()
+    );
+    key(&mut app, "f7");
+    assert!(app.status_text().contains("Change 1 of 5"));
+    key(&mut app, "shift+f7");
+    assert!(app.status_text().contains("Change 5 of 5"), "wraps around");
+    // The new file changes on disk: the comparison follows.
+    std::fs::copy(d.join("old.rs"), d.join("new.rs")).unwrap();
+    app.handle(Input::FsChanged(vec![d.join("new.rs")]));
+    assert!(
+        app.status_text().contains("No changes"),
+        "{}",
+        app.status_text()
+    );
+    // Folders don't offer compare.
+    mouse(&mut app, 60.0, 19.0, MouseButton::Right);
+    render_hash(&mut app, 800, 600);
+    assert!(app.menu_item_pos("Select for Compare").is_none());
+    key(&mut app, "escape");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn compare_with_saved_uses_the_unsaved_text() {
+    let d = compare_dir("saved");
+    let mut app = new_app();
+    app.open(&d.join("old.rs"));
+    key(&mut app, "ctrl+end");
+    app.handle(Input::Text("// added while editing\n".into()));
+    run_command(&mut app, "compare with saved");
+    assert_eq!(app.title(), "old.rs (saved) ↔ old.rs (unsaved) - litedit");
+    assert!(
+        app.status_text().contains("1 change"),
+        "{}",
+        app.status_text()
+    );
+    // The edited tab is still open and still has its edit.
+    key(&mut app, "ctrl+shift+tab");
+    assert!(app.title().starts_with("● old.rs"), "{}", app.title());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn compare_refuses_huge_files_and_survives_odd_input() {
+    let d = compare_dir("odd");
+    let big = d.join("big.txt");
+    std::fs::write(&big, "x\n".repeat(crate::diff::MAX_LINES + 10)).unwrap();
+    let mut app = new_app();
+    app.compare_files(&d.join("old.rs"), &big);
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("Cannot compare")
+    );
+    key(&mut app, "escape");
+    app.compare_files(&d.join("old.rs"), &d.join("missing.rs"));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("Cannot compare")
+    );
+    key(&mut app, "escape");
+    // Binary-ish and invalid UTF-8 content, empty files: no panic.
+    std::fs::write(d.join("bin"), [0u8, 159, 146, 150, 10, 255, 0, 1]).unwrap();
+    std::fs::write(d.join("empty"), b"").unwrap();
+    app.compare_files(&d.join("bin"), &d.join("empty"));
+    for k in [
+        "f7",
+        "ctrl+end",
+        "pagedown",
+        "right",
+        "shift+f7",
+        "ctrl+home",
+    ] {
+        key(&mut app, k);
+        render_hash(&mut app, 800, 600);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn compare_view_theme_switch_matches_fresh() {
+    theme::set_light(false);
+    let mut a = new_app();
+    a.compare_files(&fixture("compare/old.rs"), &fixture("compare/new.rs"));
+    let dark = settled_hash(&mut a);
+    a.set_light(true);
+    let switched = settled_hash(&mut a);
+    let mut b = new_app();
+    b.compare_files(&fixture("compare/old.rs"), &fixture("compare/new.rs"));
+    assert_eq!(switched, settled_hash(&mut b));
+    a.set_light(false);
+    assert_eq!(settled_hash(&mut a), dark);
+}

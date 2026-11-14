@@ -10,6 +10,7 @@
 //! open README.md         # open a file or folder
 //! theme light            # switch palette (headless runs start dark)
 //! settings path.txt      # use this settings file (as the window does)
+//! compare old.rs new.rs  # open a side-by-side comparison
 //! move 100 200           # mouse move
 //! click 100 200 [right|middle] [double]
 //! down 100 200 / up 100 200
@@ -69,6 +70,12 @@ pub fn run(app: &mut App, script: &str) -> Result<(), String> {
                 _ => return Err(err("theme needs light or dark")),
             },
             "settings" => app.use_settings(resolve_arg_path(rest)),
+            "compare" => {
+                let (a, b) = rest
+                    .split_once(' ')
+                    .ok_or_else(|| err("compare needs two paths"))?;
+                app.compare_files(&resolve_arg_path(a), &resolve_arg_path(b.trim()));
+            }
             "drop" => {
                 app.handle(Input::Drop(resolve_arg_path(rest)));
             }

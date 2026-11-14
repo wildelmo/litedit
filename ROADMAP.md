@@ -153,10 +153,12 @@ fixed first (S5.0).
        the Right, Close Saved, Close All, Copy Path, Reveal in File Tree, Show
        in Explorer) asking about each unsaved tab; Ctrl+Shift+T reopens the
        last closed tab. (Double-click empty bar = new file moved to S5.4.)
-- [ ] S5.2 Compare: tree "Select for Compare" → "Compare with Selected", and
-       "Compare with Saved" for an edited file. Side-by-side diff tab: removed /
-       added lines tinted, changed characters highlighted, aligned rows, one
-       scroll, F7 / Shift+F7 next/previous change, change count in status
+- [x] S5.2 Compare: tree/tab "Select for Compare" → "Compare with Selected",
+       and "Compare with Saved" (tab menu, palette) for an edited file.
+       Side-by-side read-only diff tab with syntax colours: removed / added
+       lines tinted, changed characters highlighted, aligned rows, one scroll,
+       change markers on the right edge, F7 / Shift+F7 (Alt+F5) next/previous
+       change, change count in status; recomputes when either file changes
 - [ ] S5.3 Split right: two editor groups side by side, each with its own tabs
        (Ctrl+\ like VS Code; move tab to other group; close group)
 - [ ] S5.4 Everyday editing gaps vs lite-xl: Ctrl+N new file, Shift+click
@@ -170,6 +172,12 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.2 compare view (diff.rs model on the `similar` crate with a
+  1.5 s deadline and 20 MB / 500k-line caps; view/diff.rs). Tests: diff rows
+  cover every line once, inline highlights on char boundaries, 60k-line
+  unrelated files finish in budget, tree-menu flow, F7 wrap-around, refresh on
+  disk change, compare-with-saved, huge/missing/binary files, theme switch ==
+  fresh (mutation-checked). CI smoke script takes a compare screenshot.
 - 2026-11-14 — S5.1 tabs: scrolling tab bar (min width, ellipsis labels,
   wheel, active kept in view, overflow bar), drag to reorder, tab menu with
   Close Others/Right/Saved/All going through per-tab save prompts (Don't save

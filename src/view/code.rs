@@ -1364,6 +1364,10 @@ impl View for CodeView {
         self.doc.is_dirty()
     }
 
+    fn text(&self) -> Option<String> {
+        Some(self.doc.buf.to_text())
+    }
+
     fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
         self.doc.save(allow_lossy)
     }

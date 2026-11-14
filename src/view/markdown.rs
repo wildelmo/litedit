@@ -911,6 +911,10 @@ impl View for MarkdownView {
         self.editor.is_dirty()
     }
 
+    fn text(&self) -> Option<String> {
+        self.editor.text()
+    }
+
     fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
         self.editor.save(allow_lossy)
     }

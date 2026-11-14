@@ -21,6 +21,7 @@ use crate::theme;
 use crate::tree::Tree;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
+use crate::view::diff::{DiffView, Side};
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::search::SearchView;
@@ -101,6 +102,8 @@ pub struct App {
     tab_drag: Option<(usize, f32, bool)>,
     /// Recently closed files, most recent last (Ctrl+Shift+T).
     closed: Vec<PathBuf>,
+    /// File chosen with "Select for Compare".
+    compare_with: Option<PathBuf>,
 }
 
 struct TabSlot {
@@ -172,6 +175,7 @@ impl App {
             tab_revealed: None,
             tab_drag: None,
             closed: Vec::new(),
+            compare_with: None,
         }
     }
 
@@ -779,6 +783,10 @@ impl App {
             }
             Outcome::Run(Action::Open(p)) => self.open(&p),
             Outcome::Run(Action::ToggleTheme) => self.toggle_theme(),
+            Outcome::Run(Action::CompareWithSaved) => {
+                let id = self.tabs[self.active].id;
+                self.compare_with_saved(id);
+            }
             Outcome::Run(Action::RevealInExplorer) => {
                 if let Some(p) = self.view.path() {
                     self.requests
@@ -895,6 +903,8 @@ impl App {
         }
         if is_dir {
             items.push(("Find in folder…", MenuAction::FindInFolder(path.clone())));
+        } else {
+            items.extend(self.compare_items(&path));
         }
         items.push(("Show in Explorer", MenuAction::Reveal(path.clone())));
         items.push(("Copy path", MenuAction::CopyPath(path)));
@@ -939,6 +949,23 @@ impl App {
             MenuAction::CloseAll => {
                 let list = ids(self, &|_, _| true);
                 self.perform(Pending::CloseTabs(list));
+                return;
+            }
+            MenuAction::SelectForCompare(p) => {
+                self.compare_with = Some(p.clone());
+                self.notice = Some(format!(
+                    "Selected {} — right-click another file and choose Compare with Selected",
+                    display_name(p)
+                ));
+                return;
+            }
+            MenuAction::Compare(old, new) => {
+                let (old, new) = (old.clone(), new.clone());
+                self.compare_files(&old, &new);
+                return;
+            }
+            MenuAction::CompareWithSaved(id) => {
+                self.compare_with_saved(*id);
                 return;
             }
             MenuAction::RevealInTree(p) => {
@@ -1232,11 +1259,19 @@ impl App {
             v.push((r.to_path_buf(), true));
         }
         for i in 0..self.tabs.len() {
-            if let Some(dir) = self.tab_view(i).path().and_then(Path::parent)
-                && !self.tree.root().is_some_and(|r| dir.starts_with(r))
-                && !v.iter().any(|(d, _)| d == dir)
-            {
-                v.push((dir.to_path_buf(), false));
+            let view = self.tab_view(i);
+            let files = view
+                .path()
+                .map(Path::to_path_buf)
+                .into_iter()
+                .chain(view.watched_paths());
+            for f in files {
+                if let Some(dir) = f.parent()
+                    && !self.tree.root().is_some_and(|r| dir.starts_with(r))
+                    && !v.iter().any(|(d, _)| d == dir)
+                {
+                    v.push((dir.to_path_buf(), false));
+                }
             }
         }
         v
@@ -1392,11 +1427,68 @@ impl App {
             ("Close All", MenuAction::CloseAll),
         ];
         if let Some(p) = path {
+            if self.tab_view(i).is_dirty() {
+                items.push(("Compare with Saved", MenuAction::CompareWithSaved(id)));
+            }
+            items.extend(self.compare_items(&p));
             items.push(("Copy Path", MenuAction::CopyPath(p.clone())));
             items.push(("Reveal in File Tree", MenuAction::RevealInTree(p.clone())));
             items.push(("Show in Explorer", MenuAction::Reveal(p)));
         }
         self.menu = Some(Menu::new(x, y, items));
+    }
+
+    /// Menu entries for comparing `path` (tree and tab menus).
+    fn compare_items(&self, path: &Path) -> Vec<(&'static str, MenuAction)> {
+        let mut v = Vec::new();
+        if let Some(sel) = &self.compare_with
+            && sel != path
+            && sel.is_file()
+        {
+            v.push((
+                "Compare with Selected",
+                MenuAction::Compare(sel.clone(), path.to_path_buf()),
+            ));
+        }
+        v.push((
+            "Select for Compare",
+            MenuAction::SelectForCompare(path.to_path_buf()),
+        ));
+        v
+    }
+
+    /// Open a comparison tab (old on the left, new on the right).
+    fn open_compare(&mut self, old: Result<Side, String>, new: Result<Side, String>) {
+        let view = old.and_then(|o| new.and_then(|n| DiffView::new(o, n)));
+        match view {
+            Ok(v) => {
+                self.add_tab(Box::new(v));
+                self.focus = Focus::Main;
+                self.pending = true;
+            }
+            Err(e) => self.nag = Some(Nag::error(format!("Cannot compare: {e}"))),
+        }
+    }
+
+    pub fn compare_files(&mut self, old: &Path, new: &Path) {
+        let label = |p: &Path| display_name(p);
+        self.open_compare(
+            Side::from_file(old, label(old)),
+            Side::from_file(new, label(new)),
+        );
+    }
+
+    /// The saved file (left) against the tab's unsaved text (right).
+    fn compare_with_saved(&mut self, id: u64) {
+        let Some(i) = self.tab_index(id) else { return };
+        let v = self.tab_view(i);
+        let (Some(path), Some(text)) = (v.path().map(Path::to_path_buf), v.text()) else {
+            self.notice = Some("Only files can be compared with the saved copy".into());
+            return;
+        };
+        let name = display_name(&path);
+        let new = Side::from_text(&text, format!("{name} (unsaved)"), &path);
+        self.open_compare(Side::from_file(&path, format!("{name} (saved)")), Ok(new));
     }
 
     /// Ctrl+Shift+T: reopen the most recently closed file that still exists.
@@ -1528,6 +1620,29 @@ impl App {
             Input::FsChanged(paths) => {
                 self.file_index = None;
                 let mut changed = self.tree.invalidate(paths);
+                // Comparisons showing a changed file recompute.
+                let hits = |v: &dyn View| v.watched_paths().iter().any(|w| paths.contains(w));
+                if hits(&*self.view) {
+                    let mut ctx = ctx!(self);
+                    changed |= self.view.reload(&mut ctx);
+                }
+                for i in 0..self.tabs.len() {
+                    if i != self.active
+                        && let Some(v) = self.tabs[i].view.as_mut()
+                        && hits(&**v)
+                    {
+                        let mut ctx = Ctx {
+                            fonts: &mut self.fonts,
+                            scale: self.scale,
+                            zoom: self.zoom,
+                            requests: &mut self.requests,
+                            cursor: &mut self.cursor,
+                            focused: false,
+                            clipboard: &mut *self.clipboard,
+                        };
+                        v.reload(&mut ctx);
+                    }
+                }
                 if let Some(p) = self.view.path().map(Path::to_path_buf)
                     && paths.iter().any(|c| c == &p)
                 {

@@ -24,6 +24,7 @@ pub enum Action {
     Open(PathBuf),
     RevealInExplorer,
     ToggleTheme,
+    CompareWithSaved,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +180,11 @@ impl Palette {
             action: Action::ToggleTheme,
         });
         if has_file {
+            items.push(Item {
+                label: "File: Compare with Saved".into(),
+                detail: String::new(),
+                action: Action::CompareWithSaved,
+            });
             items.push(Item {
                 label: "File: Show in Explorer".into(),
                 detail: String::new(),

@@ -10,6 +10,11 @@
   reorder. Right-click a tab for Close, Close Others, Close to the Right,
   Close Saved, Close All, Copy Path, Reveal in File Tree, Show in Explorer.
   Ctrl+Shift+T reopens the last closed tab.
+- Compare two files side by side: right-click a file → Select for Compare,
+  then right-click another → Compare with Selected. "Compare with Saved"
+  (tab menu or command palette) shows your unsaved edits against the file on
+  disk. Removed lines red, added green, changed characters highlighted;
+  F7 / Shift+F7 jump between changes.
 
 ## 1.0.0 — 2026-11-14
 

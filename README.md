@@ -45,6 +45,7 @@ or drag a file or folder onto the window.
 | `Ctrl+E` | Markdown: switch preview ↔ editing |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
+| Right-click a file → Select for Compare, then Compare with Selected | Side-by-side comparison (`F7` / `Shift+F7` next / previous change); tab menu or palette: Compare with Saved |
 | Tabs | Drag to reorder, wheel to scroll, middle-click to close, right-click for Close Others / Close All / Copy Path… |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (whole line when nothing is selected) |

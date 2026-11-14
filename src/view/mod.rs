@@ -1,6 +1,7 @@
 //! Views: things that fill a rectangle and react to input (lite-xl `View`).
 
 pub mod code;
+pub mod diff;
 pub mod markdown;
 pub mod message;
 pub mod search;
@@ -52,6 +53,17 @@ pub trait View {
     /// Reload from disk after an external change. Returns true if reloaded.
     fn reload(&mut self, _ctx: &mut Ctx) -> bool {
         false
+    }
+
+    /// Other files this view shows (a comparison): when one changes on
+    /// disk the app calls `reload`.
+    fn watched_paths(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
+    /// The full text, for "Compare with Saved".
+    fn text(&self) -> Option<String> {
+        None
     }
 
     /// Called when metrics change (DPI scale or zoom).
