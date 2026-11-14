@@ -91,6 +91,14 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::ToggleFullscreen => {
+                    let full = window.fullscreen().is_some();
+                    window.set_fullscreen(if full {
+                        None
+                    } else {
+                        Some(winit::window::Fullscreen::Borderless(None))
+                    });
+                }
                 Request::AddFolderDialog => {
                     if let Some(p) = pick(&window, true) {
                         self.app.add_folder(&p);

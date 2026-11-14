@@ -104,6 +104,8 @@ pub enum Request {
     OpenWorkspaceDialog,
     /// Ask for a folder to add to the workspace.
     AddFolderDialog,
+    /// F11.
+    ToggleFullscreen,
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Open a file at a 1-based line (search results).

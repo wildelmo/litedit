@@ -821,8 +821,8 @@ impl EditDoc {
         if self.sels.len() < 2 {
             return false;
         }
-        let keep = *self.sels.last().unwrap_or(&self.sels[0]);
-        self.sels = vec![keep];
+        // Like VS Code: back to the primary (first) caret.
+        self.sels.truncate(1);
         true
     }
 
@@ -1091,6 +1091,233 @@ impl EditDoc {
             }
             ops
         });
+    }
+
+    /// Replace the whole text in one undo step (whole-document commands).
+    /// Selections are kept where they were, clamped to the new text.
+    fn replace_all(&mut self, new_text: &str) {
+        if self.buf.to_text() == new_text {
+            return;
+        }
+        let before = self.sels.clone();
+        let ops = vec![
+            Op::Remove {
+                at: Pos::default(),
+                chunk: self.buf.slice(Pos::default(), self.buf.end()),
+            },
+            Op::Insert {
+                at: Pos::default(),
+                chunk: Chunk::parse(new_text),
+            },
+        ];
+        let mut inverse = Vec::with_capacity(2);
+        for op in ops {
+            inverse.push(op.apply(&mut self.buf));
+        }
+        for s in &mut self.sels {
+            s.anchor = self.buf.clamp(s.anchor);
+            s.head = self.buf.clamp(s.head);
+        }
+        let after = self.sels.clone();
+        self.hist.record(inverse, before, after, GroupKind::Other);
+        self.version += 1;
+        self.goal_col = None;
+    }
+
+    /// Rebuild the text line by line, keeping each line's own ending.
+    fn map_lines(&mut self, f: impl Fn(&str) -> String) {
+        let n = self.buf.line_count();
+        let mut out = String::with_capacity(self.buf.lines().iter().map(|l| l.len() + 2).sum());
+        for i in 0..n {
+            out.push_str(&f(self.buf.line(i)));
+            if i + 1 < n {
+                let eol = self
+                    .buf
+                    .slice(Pos::new(i, self.buf.line(i).len()), Pos::new(i + 1, 0));
+                out.push_str(eol.eols.first().map_or("\n", |e| e.as_str()));
+            }
+        }
+        self.replace_all(&out);
+    }
+
+    /// "Line Endings: LF / CRLF": every line ending becomes `eol`.
+    pub fn set_line_endings(&mut self, eol: Eol) {
+        let text = self.buf.lines().join(eol.as_str());
+        self.replace_all(&text);
+        self.buf.set_default_eol(eol);
+    }
+
+    /// Remove spaces and tabs at the ends of lines.
+    pub fn trim_trailing_whitespace(&mut self) {
+        self.map_lines(|l| l.trim_end_matches([' ', '\t']).to_string());
+    }
+
+    /// "Indentation: Convert to Spaces / Tabs" (leading whitespace only).
+    pub fn convert_indentation(&mut self, to: Indent) {
+        let width = match self.indent {
+            Indent::Spaces(n) => n,
+            Indent::Tab => 4,
+        };
+        let unit = match to {
+            Indent::Spaces(n) => n,
+            Indent::Tab => width,
+        };
+        self.map_lines(|l| {
+            let lead: String = l.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+            let mut cols = 0;
+            for c in lead.chars() {
+                cols = if c == '\t' {
+                    cols - cols % width + width
+                } else {
+                    cols + 1
+                };
+            }
+            let new_lead = match to {
+                Indent::Spaces(_) => " ".repeat(cols),
+                Indent::Tab => format!("{}{}", "\t".repeat(cols / unit), " ".repeat(cols % unit)),
+            };
+            format!("{new_lead}{}", &l[lead.len()..])
+        });
+        self.indent = to;
+    }
+
+    /// Upper / lower case the selections (the word at a caret if nothing is
+    /// selected).
+    pub fn change_case(&mut self, upper: bool) {
+        if self.sels.iter().all(Sel::is_empty) && self.sels.len() == 1 {
+            let p = self.sels[0].head;
+            self.select_word_at(p);
+        }
+        self.edit_each(GroupKind::Other, |buf, sel| {
+            let (a, b) = sel.range();
+            if a == b {
+                return (Vec::new(), None);
+            }
+            let old = buf.slice(a, b);
+            let new = Chunk {
+                lines: old
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        if upper {
+                            l.to_uppercase()
+                        } else {
+                            l.to_lowercase()
+                        }
+                    })
+                    .collect(),
+                eols: old.eols.clone(),
+            };
+            (
+                vec![
+                    Op::Remove { at: a, chunk: old },
+                    Op::Insert { at: a, chunk: new },
+                ],
+                None,
+            )
+        });
+    }
+
+    /// Ctrl+J: join the selected lines (or the line with the next one),
+    /// with one space instead of the line break and leading indent.
+    pub fn join_lines(&mut self) {
+        self.edit_each(GroupKind::Other, |buf, sel| {
+            let (a, b) = sel.range();
+            let last = b.line.max(a.line + 1).min(buf.line_count() - 1);
+            let mut ops = Vec::new();
+            for l in (a.line..last).rev() {
+                let end = Pos::new(l, buf.line(l).len());
+                let next = buf.line(l + 1);
+                let lead = next.len() - next.trim_start().len();
+                let to = Pos::new(l + 1, lead);
+                ops.push(Op::Remove {
+                    at: end,
+                    chunk: buf.slice(end, to),
+                });
+                let sep = if buf.line(l).ends_with(' ')
+                    || next.trim().is_empty()
+                    || buf.line(l).is_empty()
+                {
+                    ""
+                } else {
+                    " "
+                };
+                if !sep.is_empty() {
+                    ops.push(Op::Insert {
+                        at: end,
+                        chunk: Chunk::typed(sep, Eol::Lf),
+                    });
+                }
+            }
+            (ops, None)
+        });
+    }
+
+    /// Ctrl+Enter / Ctrl+Shift+Enter: start a new line below / above the
+    /// current one, keeping its indentation.
+    pub fn new_line_beside(&mut self, above: bool) {
+        let eol = self.buf.default_eol();
+        self.edit_each(GroupKind::Other, |buf, sel| {
+            let line = sel.head.line;
+            let text = buf.line(line);
+            let indent: String = text
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            if above {
+                let chunk = Chunk {
+                    lines: vec![indent.clone(), String::new()],
+                    eols: vec![eol],
+                };
+                (
+                    vec![Op::Insert {
+                        at: Pos::new(line, 0),
+                        chunk,
+                    }],
+                    Some(Pos::new(line, indent.len())),
+                )
+            } else {
+                let at = Pos::new(line, text.len());
+                let chunk = Chunk {
+                    lines: vec![String::new(), indent.clone()],
+                    eols: vec![eol],
+                };
+                (
+                    vec![Op::Insert { at, chunk }],
+                    Some(Pos::new(line + 1, indent.len())),
+                )
+            }
+        });
+    }
+
+    /// Ctrl+Shift+Up / Down: add a caret on the line above / below the
+    /// newest one (same column where possible).
+    pub fn add_caret_vertical(&mut self, up: bool) {
+        self.hist.seal();
+        let last = *self.sels.last().unwrap_or(&self.sels[0]);
+        let h = last.head;
+        let line = if up {
+            match h.line.checked_sub(1) {
+                Some(l) => l,
+                None => return,
+            }
+        } else if h.line + 1 < self.buf.line_count() {
+            h.line + 1
+        } else {
+            return;
+        };
+        // Keep the first caret's column across shorter lines (VS Code).
+        let first = self.sels[0].head;
+        let chars = self.buf.line(first.line)[..first.col].chars().count();
+        let target = self.buf.line(line);
+        let col = target
+            .char_indices()
+            .nth(chars)
+            .map_or(target.len(), |(i, _)| i);
+        let p = Pos::new(line, col);
+        if !self.sels.iter().any(|s| s.head == p) {
+            self.sels.push(Sel::caret(p));
+        }
     }
 
     /// Duplicate the current line(s) below.
@@ -1366,6 +1593,54 @@ mod tests {
         assert_eq!(d.buf.to_text(), "<!-- <p>hi</p> -->");
         d.toggle_comment("<!--", Some("-->"));
         assert_eq!(d.buf.to_text(), "<p>hi</p>");
+    }
+
+    #[test]
+    fn whole_document_commands_keep_line_endings_and_undo_in_one_step() {
+        let mut d = doc("a  \r\n\tb\t\nc ");
+        d.trim_trailing_whitespace();
+        assert_eq!(d.buf.to_text(), "a\r\n\tb\nc");
+        assert!(d.undo());
+        assert_eq!(d.buf.to_text(), "a  \r\n\tb\t\nc ");
+        let mut d = doc("x\r\ny\nz");
+        d.set_line_endings(Eol::Lf);
+        assert_eq!(d.buf.to_text(), "x\ny\nz");
+        d.set_line_endings(Eol::CrLf);
+        assert_eq!(d.buf.to_text(), "x\r\ny\r\nz");
+        let mut d = doc("\tif x {\n\t\ty();\n\t}\n");
+        d.convert_indentation(Indent::Spaces(4));
+        assert_eq!(d.buf.to_text(), "    if x {\n        y();\n    }\n");
+        d.convert_indentation(Indent::Tab);
+        assert_eq!(d.buf.to_text(), "\tif x {\n\t\ty();\n\t}\n");
+    }
+
+    #[test]
+    fn case_join_and_new_lines() {
+        let mut d = doc("hello world");
+        d.set_caret(Pos::new(0, 1), false);
+        d.change_case(true);
+        assert_eq!(d.buf.to_text(), "HELLO world");
+        let mut d = doc("a(\n    b,\n    c)\n");
+        d.join_lines();
+        assert_eq!(d.buf.to_text(), "a( b,\n    c)\n");
+        d.select_all();
+        d.join_lines();
+        assert_eq!(d.buf.to_text(), "a( b, c)");
+        let mut d = doc("    x = 1\ny");
+        d.set_caret(Pos::new(0, 3), false);
+        d.new_line_beside(false);
+        d.insert_text("z");
+        assert_eq!(d.buf.to_text(), "    x = 1\n    z\ny");
+        d.new_line_beside(true);
+        d.insert_text("w");
+        assert_eq!(d.buf.to_text(), "    x = 1\n    w\n    z\ny");
+        let mut d = doc("abc\nd\nefg");
+        d.set_caret(Pos::new(0, 2), false);
+        d.add_caret_vertical(false);
+        d.add_caret_vertical(false);
+        assert_eq!(d.sels.len(), 3);
+        d.insert_text("|");
+        assert_eq!(d.buf.to_text(), "ab|c\nd|\nef|g");
     }
 
     #[test]

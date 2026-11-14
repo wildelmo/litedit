@@ -97,6 +97,8 @@ pub struct App {
     settings_path: Option<PathBuf>,
     /// Soft wrap for newly opened code files (setting `wrap_code`).
     wrap_code: bool,
+    /// Setting `trim_trailing_whitespace`.
+    trim_on_save: bool,
     /// Extra ignored names currently in effect (setting `ignore`).
     ignore: Vec<String>,
     /// Tab bar scroll offset in pixels per group (when tabs don't fit).
@@ -204,6 +206,7 @@ impl App {
             pending: false,
             settings_path: None,
             wrap_code: false,
+            trim_on_save: false,
             ignore: Vec::new(),
             tab_scroll: [0, 0],
             tab_revealed: [None, None],
@@ -259,6 +262,7 @@ impl App {
             self.file_index = None;
         }
         self.wrap_code = s.wrap_code;
+        self.trim_on_save = s.trim_trailing_whitespace;
         if theme::is_light() != light_before {
             self.each_view(|v| v.theme_changed());
         }
@@ -727,6 +731,11 @@ impl App {
             return false;
         }
         let name = self.view_name();
+        // Setting `trim_trailing_whitespace` (off by default, like lite-xl);
+        // never for markdown, where two trailing spaces mean a line break.
+        if self.trim_on_save && self.view.is_dirty() && !self.view.path().is_some_and(is_markdown) {
+            self.view.run_command("trim-whitespace");
+        }
         if !overwrite && self.view.disk_state() == DiskState::Differs {
             self.nag = Some(Nag::new(
                 format!("{name} was changed by another program since you opened it."),
@@ -970,6 +979,13 @@ impl App {
             }
             Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
             Outcome::Run(Action::AddFolder) => self.requests.push(Request::AddFolderDialog),
+            Outcome::Run(Action::Command(c)) => {
+                if self.view.run_command(c) {
+                    self.pending = true;
+                } else {
+                    self.notice = Some("That command works in a text file".into());
+                }
+            }
             Outcome::Run(Action::CompareWithSaved) => {
                 let id = self.tabs[self.active].id;
                 self.compare_with_saved(id);
@@ -2263,6 +2279,13 @@ impl App {
             return true;
         }
         match input {
+            Input::Key {
+                key: Key::F(11),
+                mods,
+            } if !mods.ctrl && !mods.alt && !mods.shift => {
+                self.requests.push(Request::ToggleFullscreen);
+                return true;
+            }
             Input::CloseRequested => {
                 // A fresh quit: earlier "Don't save" answers don't carry over
                 // from a quit that was interrupted (e.g. by a save question).

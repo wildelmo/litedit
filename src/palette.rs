@@ -28,6 +28,8 @@ pub enum Action {
     SaveWorkspace,
     OpenWorkspace,
     AddFolder,
+    /// A named editing command run by the active view.
+    Command(&'static str),
 }
 
 #[derive(Clone, Debug)]
@@ -87,6 +89,19 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("Edit: Select Line", "ctrl+l"),
     ("Edit: Duplicate Line", "ctrl+shift+d"),
     ("Edit: Delete Line", "ctrl+shift+k"),
+    ("Edit: Join Lines", "ctrl+j"),
+    ("Edit: New Line Below", "ctrl+enter"),
+    ("Edit: New Line Above", "ctrl+shift+enter"),
+    ("Edit: Move Line Up", "alt+up"),
+    ("Edit: Move Line Down", "alt+down"),
+    ("Edit: Toggle Comment", "ctrl+/"),
+    ("Edit: Select Next Occurrence", "ctrl+d"),
+    ("Edit: Select All Occurrences", "ctrl+shift+l"),
+    ("Edit: Add Caret Above", "ctrl+shift+up"),
+    ("Edit: Add Caret Below", "ctrl+shift+down"),
+    ("File: New File…", "ctrl+n"),
+    ("File: Reopen Closed Tab", "ctrl+shift+t"),
+    ("View: Full Screen", "f11"),
     ("Edit: Indent", "ctrl+]"),
     ("Edit: Outdent", "ctrl+["),
     ("Markdown: Toggle Preview / Edit", "ctrl+e"),
@@ -181,6 +196,21 @@ impl Palette {
                 action: Action::Keys(k),
             })
             .collect();
+        for (label, cmd) in [
+            ("Edit: Upper Case", "upper-case"),
+            ("Edit: Lower Case", "lower-case"),
+            ("Edit: Trim Trailing Whitespace", "trim-whitespace"),
+            ("Indentation: Convert to Spaces", "indent-spaces"),
+            ("Indentation: Convert to Tabs", "indent-tabs"),
+            ("Line Endings: LF (Unix)", "eol-lf"),
+            ("Line Endings: CRLF (Windows)", "eol-crlf"),
+        ] {
+            items.push(Item {
+                label: label.into(),
+                detail: String::new(),
+                action: Action::Command(cmd),
+            });
+        }
         items.push(Item {
             label: "File: Save Workspace As…".into(),
             detail: String::new(),

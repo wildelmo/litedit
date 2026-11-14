@@ -2,6 +2,11 @@
 
 ## 1.1.0 — unreleased
 
+- More editing commands: Ctrl+Enter / Ctrl+Shift+Enter (new line below /
+  above), Ctrl+J (join lines), Ctrl+Shift+Up/Down (add caret), upper / lower
+  case, trim trailing whitespace (also on save, setting
+  `trim_trailing_whitespace`), convert indentation, LF / CRLF; F11 full
+  screen.
 - Workspaces: every folder remembers its open files and split, like lite-xl
   — switch folders and come back to where you were (files with unsaved
   edits always stay open). Save a workspace to a `.litedit-workspace` file

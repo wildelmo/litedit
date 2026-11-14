@@ -915,6 +915,14 @@ impl View for MarkdownView {
         self.editor.text()
     }
 
+    fn run_command(&mut self, name: &str) -> bool {
+        let done = self.editor.run_command(name);
+        if done {
+            self.layout = None;
+        }
+        done
+    }
+
     fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
         self.editor.save(allow_lossy)
     }

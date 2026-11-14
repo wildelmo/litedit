@@ -66,6 +66,12 @@ pub trait View {
         None
     }
 
+    /// A named editing command from the command palette ("upper-case",
+    /// "trim-whitespace", …). Returns false if this view doesn't do it.
+    fn run_command(&mut self, _name: &str) -> bool {
+        false
+    }
+
     /// Called when metrics change (DPI scale or zoom).
     fn metrics_changed(&mut self) {}
 

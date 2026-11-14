@@ -180,6 +180,10 @@ fixed first (S5.0).
        Folder to Workspace… (palette, tree menu), Remove Folder from Workspace
        (tree menu on an added folder); quick open, watching, find in folder,
        session and workspace files cover every folder
+- [x] S5.7 Small lite-xl/VS Code editing commands: Ctrl+Enter / Ctrl+Shift+Enter
+       new line below/above, Ctrl+J join lines, Ctrl+Shift+Up/Down add caret,
+       upper/lower case, trim trailing whitespace (+ `trim_trailing_whitespace`
+       setting, never markdown), convert indentation, LF/CRLF, F11 full screen
 - [ ] S5.6 Full lite-xl command audit → one table of remaining differences
 
 ---
@@ -188,6 +192,9 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.7 editing commands (EditDoc replace_all / map_lines keep
+  each line's ending; one undo step each), View::run_command for palette
+  commands, F11, trim-on-save setting. Esc now keeps the first caret (VS Code).
 - 2026-11-14 — S5.5b several workspace folders: Tree.roots, root_of,
   add_root/remove_root; quick open indexes all folders (labels prefixed with
   the folder name); session `folder` lines; workspace files keep all folders.

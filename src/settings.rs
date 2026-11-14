@@ -28,6 +28,8 @@ pub struct Settings {
     pub wrap_code: bool,
     /// Extra file/folder names to hide, on top of the built-in list.
     pub ignore: Vec<String>,
+    /// Remove trailing spaces when saving (not in markdown).
+    pub trim_trailing_whitespace: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             code_font: None,
             wrap_code: false,
             ignore: Vec::new(),
+            trim_trailing_whitespace: false,
         }
     }
 }
@@ -64,6 +67,9 @@ markdown_font_size = 16
 
 # Soft wrap code files when they open (on/off). Markdown always wraps.
 wrap_code = off
+
+# Remove spaces at the ends of lines when saving (on/off; never in markdown).
+trim_trailing_whitespace = off
 
 # More file or folder names to hide from the tree, Ctrl+P and find in folder,
 # comma-separated (.git, node_modules and similar are always hidden).
@@ -135,6 +141,9 @@ impl Settings {
                     true
                 }
                 "wrap_code" => parse_bool(v).map(|b| s.wrap_code = b).is_some(),
+                "trim_trailing_whitespace" => parse_bool(v)
+                    .map(|b| s.trim_trailing_whitespace = b)
+                    .is_some(),
                 "ignore" => {
                     s.ignore = v
                         .split(',')

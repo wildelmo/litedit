@@ -567,8 +567,8 @@ impl CodeView {
             (Key::Right, ctrl, false) => mv(self, if ctrl { Move::WordRight } else { Move::Right }),
             (Key::Up, false, false) => mv(self, Move::Up),
             (Key::Down, false, false) => mv(self, Move::Down),
-            (Key::Up, true, false) => self.scroll.y -= lh,
-            (Key::Down, true, false) => self.scroll.y += lh,
+            (Key::Up, true, false) if !shift => self.scroll.y -= lh,
+            (Key::Down, true, false) if !shift => self.scroll.y += lh,
             (Key::Up | Key::Down, false, true) if !ro => {
                 self.doc.move_lines(*key == Key::Up);
                 self.after_edit(edit_from.saturating_sub(1));
@@ -578,6 +578,18 @@ impl CodeView {
             }
             (Key::Char('d'), true, false) if !shift => {
                 self.doc.select_next_occurrence();
+                self.reveal_caret = true;
+            }
+            (Key::Enter, true, false) if !ro => {
+                self.doc.new_line_beside(shift);
+                self.after_edit(edit_from);
+            }
+            (Key::Char('j'), true, false) if !ro && !shift => {
+                self.doc.join_lines();
+                self.after_edit(edit_from);
+            }
+            (Key::Up | Key::Down, true, false) if shift => {
+                self.doc.add_caret_vertical(*key == Key::Up);
                 self.reveal_caret = true;
             }
             (Key::Char('l'), true, false) if shift => {
@@ -1410,6 +1422,34 @@ impl View for CodeView {
 
     fn text(&self) -> Option<String> {
         Some(self.doc.buf.to_text())
+    }
+
+    fn run_command(&mut self, name: &str) -> bool {
+        use crate::editor::buffer::Eol;
+        use crate::editor::doc::Indent;
+        if self.read_only {
+            return false;
+        }
+        match name {
+            "upper-case" => self.doc.change_case(true),
+            "lower-case" => self.doc.change_case(false),
+            "trim-whitespace" => self.doc.trim_trailing_whitespace(),
+            "join-lines" => self.doc.join_lines(),
+            "indent-spaces" => {
+                let n = match self.doc.indent {
+                    Indent::Spaces(n) => n,
+                    Indent::Tab => 4,
+                };
+                self.doc.convert_indentation(Indent::Spaces(n))
+            }
+            "indent-tabs" => self.doc.convert_indentation(Indent::Tab),
+            "eol-lf" => self.doc.set_line_endings(Eol::Lf),
+            "eol-crlf" => self.doc.set_line_endings(Eol::CrLf),
+            _ => return false,
+        }
+        self.after_edit(0);
+        self.cache.clear();
+        true
     }
 
     fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {

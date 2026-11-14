@@ -3182,3 +3182,60 @@ fn several_folders_in_the_tree_quick_open_and_workspace_files() {
     );
     let _ = std::fs::remove_dir_all(a.parent().unwrap());
 }
+
+#[test]
+fn new_editing_keys_palette_commands_and_trim_on_save() {
+    let d = tmp_dir("edkeys");
+    let f = d.join("c.rs");
+    std::fs::write(&f, "fn a() {}   \nfn b() {}\n").unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    key(&mut app, "ctrl+shift+down"); // a caret on line 2 too
+    app.handle(Input::Text("// ".into()));
+    assert!(
+        app.view_text().starts_with("// fn a() {}   \n// fn b"),
+        "{:?}",
+        app.view_text()
+    );
+    key(&mut app, "escape");
+    key(&mut app, "ctrl+enter");
+    app.handle(Input::Text("x".into()));
+    assert!(
+        app.view_text().contains("   \nx\n"),
+        "{:?}",
+        app.view_text()
+    );
+    run_command(&mut app, "upper case");
+    assert!(app.view_text().contains("\nX\n"), "{:?}", app.view_text());
+    run_command(&mut app, "trim trailing");
+    assert!(
+        app.view_text().starts_with("// fn a() {}\n"),
+        "{:?}",
+        app.view_text()
+    );
+    run_command(&mut app, "line endings crlf");
+    assert!(app.view_text().contains("\r\n"));
+    key(&mut app, "f11");
+    assert!(app.take_requests().contains(&Request::ToggleFullscreen));
+    // Trim on save (setting) for code, never for markdown.
+    let set = d.join("settings.txt");
+    std::fs::write(&set, "trim_trailing_whitespace = on\n").unwrap();
+    let md = d.join("n.md");
+    std::fs::write(&md, "line one  \nline two\n").unwrap();
+    let code = d.join("t.py");
+    std::fs::write(&code, "x = 1   \n").unwrap();
+    let mut app = new_app();
+    app.use_settings(set);
+    for (p, keep) in [(&md, true), (&code, false)] {
+        app.open(p);
+        if keep {
+            key(&mut app, "ctrl+e");
+        }
+        key(&mut app, "ctrl+end");
+        app.handle(Input::Text("z".into()));
+        key(&mut app, "ctrl+s");
+        let t = std::fs::read_to_string(p).unwrap();
+        assert_eq!(t.contains("  \n"), keep, "{t:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

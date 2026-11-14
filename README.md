@@ -52,6 +52,11 @@ or drag a file or folder onto the window.
 | `Ctrl+A` / `Ctrl+L` | Select all / select line |
 | `Ctrl+Shift+D` / `Ctrl+Shift+K` | Duplicate line / delete line |
 | `Alt+Up` / `Alt+Down` | Move line(s) up / down |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | New line below / above |
+| `Ctrl+J` | Join lines |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Add a caret above / below |
+| Palette: Upper/Lower Case, Trim Trailing Whitespace, Convert Indentation, Line Endings | Text commands |
+| `F11` | Full screen |
 | `Ctrl+/` | Comment / uncomment line(s) |
 | `Ctrl+D` / `Ctrl+Shift+L` | Select next / all occurrences (type to edit them all; `Esc` for one caret) |
 | `Ctrl+click` / `Shift+click` | Add a caret / extend the selection |
