@@ -100,6 +100,15 @@ jobs:
           if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
           if (-not $alive) { Write-Error "window process exited early"; exit 1 }
 
+      - name: Performance numbers (litedit --bench)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "target\release\litedit.exe" -ArgumentList @("--bench", "out\bench.md") -Wait -NoNewWindow -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "bench failed"; exit 1 }
+          $b = Get-Content out\bench.md -Raw
+          Write-Output $b
+          $b | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
       - name: Real-window tests
         shell: pwsh
         run: |

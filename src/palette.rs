@@ -201,7 +201,13 @@ impl Palette {
                 }
             })
             .collect();
-        Self::new(Mode::Files, "Open file", items, 0)
+        // Say so when the folder has more files than quick open lists.
+        let label = if files.len() >= MAX_INDEX_FILES {
+            format!("Open file (first {MAX_INDEX_FILES} files)")
+        } else {
+            "Open file".to_string()
+        };
+        Self::new(Mode::Files, &label, items, 0)
     }
 
     /// Ask for a line of text (e.g. a file name), prefilled with `initial`.

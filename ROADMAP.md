@@ -132,8 +132,8 @@ asks for each dirty tab.
 
 - [ ] S4.1 Light theme + theme setting
 - [ ] S4.2 Settings file (fonts, sizes, ignore list)
-- [ ] S4.3 Smooth scrolling; dirty-rect redraw (lite-xl rencache) if needed
-- [ ] S4.4 Large-file performance pass
+- [-] S4.3 Smooth scrolling — dropped (D-023); dirty-rect redraw not needed (bench: frames well under 16 ms)
+- [x] S4.4 Large-file performance pass (litedit --bench; numbers in every Windows CI summary)
 - [ ] S4.5 App icon, version info, file associations (optional)
 - [ ] S4.6 Text selection + copy in preview
 - [x] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
@@ -145,6 +145,11 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S4.4 done: `--bench` (open 100k-line file, keystroke→frame plain /
+  with find bar / wrapped markdown, Ctrl+P index and find in folder over 25k
+  files) runs in Windows CI. Linux: open 52 ms, keystroke avg 4.3 ms, find-bar
+  keystroke 12→7 ms after deferring the match recount to idle time; quick open
+  says when the 20k-file cap is hit. Smooth scrolling dropped (D-023).
 - 2026-11-14 — S4.7 done: soft wrap. view/wrap.rs: word wrap by display columns
   (no shaping; 170k lines mapped fast) + Rows line↔row mapping (identity when off).
   Render, hit-testing, caret, selections, find highlights, scroll, go to line and

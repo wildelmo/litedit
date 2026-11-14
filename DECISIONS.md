@@ -22,6 +22,11 @@ library reports it. **Question:** if you use such a layout, check that @ and
 
 ## Decided — review when convenient
 
+### D-023 No smooth (animated) scrolling
+Animating scrolls means redrawing for many frames per wheel notch, which
+costs CPU for no functional gain; litedit jumps directly and stays idle.
+Measured frames are already a few milliseconds.
+
 ### D-022 Markdown wraps lines; code does not (Alt+Z toggles)
 Prose is easier to edit when long lines wrap at the window edge; code reads
 better unwrapped with horizontal scrolling. Alt+Z switches either way.

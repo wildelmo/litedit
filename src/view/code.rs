@@ -210,6 +210,7 @@ pub struct CodeView {
     goto_center: Option<usize>,
     /// Match count text keyed by (version, pattern, case, regex).
     find_count: Option<((u64, String, bool, bool), String)>,
+    find_count_stale: bool,
     /// Soft wrap (Alt+Z). On by default for markdown (D-022).
     pub wrap: bool,
     rows: Rows,
@@ -244,6 +245,7 @@ impl CodeView {
             find_note: None,
             goto_center: None,
             find_count: None,
+            find_count_stale: false,
             wrap: false,
             rows: Rows::default(),
             goal_x: None,
@@ -924,6 +926,17 @@ impl CodeView {
         let key = (version, f.pattern().to_string(), f.case_sensitive, f.regex);
         let info = match &self.find_count {
             Some((k, v)) if *k == key => v.clone(),
+            // Only the text changed (typing with the bar open): show the old
+            // count and recount after the frame (in `tick`), so keystrokes
+            // never wait for a whole-document scan.
+            Some((k, v)) if (&k.1, k.2, k.3) == (&key.1, key.2, key.3) => {
+                self.find_count_stale = true;
+                if v.ends_with('…') {
+                    v.clone()
+                } else {
+                    format!("{v} …")
+                }
+            }
             _ => {
                 let v = match f.error() {
                     Some(e) => e,
@@ -1281,6 +1294,14 @@ impl View for CodeView {
     }
 
     fn tick(&mut self, _ctx: &mut Ctx, budget: Duration) -> Tick {
+        if std::mem::take(&mut self.find_count_stale) {
+            // Recount now that the frame is out; next render shows it.
+            self.find_count = None;
+            return Tick {
+                more: true,
+                redraw: true,
+            };
+        }
         let before = self.highlighter.done();
         let more = self.highlighter.step(self.doc.buf.lines(), budget);
         let after = self.highlighter.done();

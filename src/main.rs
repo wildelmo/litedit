@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod bench;
 mod canvas;
 mod clipboard;
 mod doc;
@@ -42,6 +43,7 @@ struct Args {
     paths: Vec<String>,
     screenshot: Option<PathBuf>,
     script: Option<PathBuf>,
+    bench: Option<PathBuf>,
     size: (u32, u32),
     scale: f32,
     stats: Option<PathBuf>,
@@ -52,6 +54,7 @@ fn parse_args() -> Result<Args, String> {
         paths: Vec::new(),
         screenshot: None,
         script: None,
+        bench: None,
         size: (1280, 800),
         scale: 1.0,
         stats: None,
@@ -63,6 +66,7 @@ fn parse_args() -> Result<Args, String> {
                 a.screenshot = Some(it.next().ok_or("--screenshot needs a file")?.into())
             }
             "--script" => a.script = Some(it.next().ok_or("--script needs a file")?.into()),
+            "--bench" => a.bench = Some(it.next().ok_or("--bench needs an output file")?.into()),
             "--stats" => a.stats = Some(it.next().ok_or("--stats needs a file")?.into()),
             "--size" => {
                 let v = it.next().ok_or("--size needs WxH")?;
@@ -138,6 +142,13 @@ fn main() {
     let mut app = App::new(fonts, args.scale);
     // Window mode: load the saved session first (recents, preferences; the
     // folder and tabs only when started without files), then open arguments.
+    if let Some(out) = &args.bench {
+        if let Err(e) = bench::run(out, app) {
+            eprintln!("litedit: bench failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let window_mode = args.script.is_none() && args.screenshot.is_none();
     if window_mode && let Some(f) = session::session_file() {
         app.start_with_session(session::Session::load(&f), args.paths.is_empty());
