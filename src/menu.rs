@@ -17,6 +17,13 @@ pub enum MenuAction {
     CopyPath(PathBuf),
     /// Search inside this folder (also used for the Ctrl+Shift+F prompt).
     FindInFolder(PathBuf),
+    // Tab menu (ids are tab ids).
+    CloseTab(u64),
+    CloseOthers(u64),
+    CloseToRight(u64),
+    CloseSaved,
+    CloseAll,
+    RevealInTree(PathBuf),
 }
 
 pub struct Menu {
@@ -43,6 +50,13 @@ impl Menu {
             rects: Vec::new(),
             selected: None,
         }
+    }
+
+    /// Where the item with this label was drawn (tests).
+    #[cfg(test)]
+    pub fn item_rect(&self, label: &str) -> Option<Rect> {
+        let i = self.items.iter().position(|(l, _)| l == label)?;
+        self.rects.get(i).copied()
     }
 
     pub fn handle(&mut self, input: &Input) -> MenuResult {

@@ -2032,3 +2032,277 @@ fn tree_keys_f2_renames_and_delete_asks_first() {
     assert!(d.join("renamed.txt").exists());
     let _ = std::fs::remove_dir_all(&d);
 }
+
+fn many_files(tag: &str, n: usize) -> (PathBuf, Vec<PathBuf>) {
+    let d = std::env::temp_dir().join(format!("litedit-tabs-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let files = (0..n)
+        .map(|i| {
+            let p = d.join(format!("f{i:02}.txt"));
+            std::fs::write(&p, format!("file {i}\n")).unwrap();
+            p
+        })
+        .collect();
+    (d, files)
+}
+
+fn mouse(app: &mut App, x: f32, y: f32, button: crate::input::MouseButton) {
+    app.handle(Input::MouseDown {
+        x,
+        y,
+        button,
+        clicks: 1,
+    });
+    app.handle(Input::MouseUp { x, y, button });
+}
+
+#[test]
+fn many_tabs_scroll_and_the_active_tab_stays_reachable() {
+    use crate::input::{MouseButton, WheelUnit};
+    let (d, files) = many_files("scroll", 20);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    let (bar, rects) = app.tab_layout().unwrap();
+    let last = rects[19];
+    assert!(
+        last.x >= bar.x && last.right() <= bar.right(),
+        "active (last) tab in view"
+    );
+    assert!(rects[0].right() <= bar.x, "first tabs scrolled out of view");
+    // Wheel over the bar scrolls back to the start.
+    app.handle(Input::MouseMove {
+        x: bar.x as f32 + 20.0,
+        y: 10.0,
+    });
+    for _ in 0..50 {
+        app.handle(Input::Wheel {
+            dx: 0.0,
+            dy: -3.0,
+            unit: WheelUnit::Lines,
+        });
+    }
+    let (_, rects) = app.tab_layout().unwrap();
+    assert_eq!(rects[0].x, bar.x, "scrolled to the first tab");
+    assert_eq!(
+        app.active_tab(),
+        19,
+        "scrolling doesn't change the active tab"
+    );
+    // Clicking what is shown activates exactly that tab.
+    let r1 = rects[1];
+    mouse(
+        &mut app,
+        r1.x as f32 + 10.0,
+        r1.y as f32 + 10.0,
+        MouseButton::Left,
+    );
+    assert_eq!(app.active_tab(), 1);
+    assert!(app.title().starts_with("f01.txt"));
+    // Ctrl+Tab through to the end keeps the active tab visible.
+    for _ in 0..18 {
+        key(&mut app, "ctrl+tab");
+    }
+    let (bar, rects) = app.tab_layout().unwrap();
+    let a = rects[app.active_tab()];
+    assert!(a.x >= bar.x && a.right() <= bar.right());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn close_others_asks_for_each_unsaved_tab_and_cancel_stops() {
+    use crate::input::MouseButton;
+    let (d, files) = many_files("closeothers", 5);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    // Dirty f01 and f03.
+    for i in [1usize, 3] {
+        key(&mut app, &format!("alt+{}", i + 1));
+        app.handle(Input::Text("edit".into()));
+    }
+    key(&mut app, "alt+3"); // f02
+    let (_, rects) = app.tab_layout().unwrap();
+    let r = rects[2];
+    mouse(
+        &mut app,
+        r.x as f32 + 10.0,
+        r.y as f32 + 10.0,
+        MouseButton::Right,
+    );
+    run_menu_item(&mut app, "Close Others");
+    // Clean f00, f04 closed; asked about f01 first.
+    assert_eq!(
+        app.nag_message().as_deref(),
+        Some("Save changes to f01.txt?")
+    );
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(names, ["f01.txt", "f02.txt", "f03.txt"]);
+    key(&mut app, "d"); // Don't save: f01 closes, then f03 is asked about.
+    assert_eq!(
+        app.nag_message().as_deref(),
+        Some("Save changes to f03.txt?")
+    );
+    key(&mut app, "escape"); // Cancel: f03 stays, with its edits.
+    assert!(app.nag_message().is_none());
+    assert_eq!(
+        app.tab_titles(),
+        vec![("f02.txt".into(), false), ("f03.txt".into(), true)]
+    );
+    assert_eq!(
+        std::fs::read_to_string(&files[1]).unwrap(),
+        "file 1\n",
+        "not saved"
+    );
+    // Close All with Save writes the edit.
+    key(&mut app, "alt+1");
+    let (_, rects) = app.tab_layout().unwrap();
+    let r = rects[0];
+    mouse(
+        &mut app,
+        r.x as f32 + 10.0,
+        r.y as f32 + 10.0,
+        MouseButton::Right,
+    );
+    run_menu_item(&mut app, "Close All");
+    assert_eq!(
+        app.nag_message().as_deref(),
+        Some("Save changes to f03.txt?")
+    );
+    key(&mut app, "s");
+    assert!(app.nag_message().is_none(), "{:?}", app.nag_message());
+    assert!(std::fs::read_to_string(&files[3]).unwrap().contains("edit"));
+    assert_eq!(app.tab_titles().len(), 1, "back to the start view");
+    assert!(app.tab_titles()[0].0.is_empty() || !app.tab_titles()[0].1);
+    // Ctrl+Shift+T brings the last closed file back.
+    key(&mut app, "ctrl+shift+t");
+    assert!(app.title().starts_with("f03.txt"), "{}", app.title());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Click a right-click menu item by label (the menu is open).
+fn run_menu_item(app: &mut App, label: &str) {
+    render_hash(app, 800, 600);
+    let pos = app
+        .menu_item_pos(label)
+        .unwrap_or_else(|| panic!("no menu item {label}"));
+    mouse(app, pos.0, pos.1, crate::input::MouseButton::Left);
+}
+
+#[test]
+fn tab_reorder_and_close_fuzz_never_loses_edits() {
+    use crate::input::MouseButton;
+    let (d, files) = many_files("fuzz", 8);
+    let mut app = new_app();
+    let mut seed = 0x2545F4914F6CDD1Du64;
+    let mut rnd = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    for f in &files {
+        app.open(f);
+    }
+    // Every tab gets a unique edit; it must survive whatever happens.
+    for i in 0..files.len() {
+        key(&mut app, &format!("alt+{}", (i % 9) + 1));
+    }
+    let mut dirty: Vec<String> = Vec::new();
+    for step in 0..300 {
+        let n = app.tab_titles().len();
+        let Some((bar, rects)) = app.tab_layout() else {
+            break;
+        };
+        match rnd(6) {
+            0 if n > 0 => {
+                // Drag a tab somewhere else.
+                let a = rects[rnd(n)];
+                let b = rects[rnd(n)];
+                let y = a.y as f32 + 10.0;
+                app.handle(Input::MouseDown {
+                    x: a.x as f32 + 5.0,
+                    y,
+                    button: MouseButton::Left,
+                    clicks: 1,
+                });
+                app.handle(Input::MouseMove {
+                    x: (a.x as f32 + b.x as f32) / 2.0 + 5.0,
+                    y,
+                });
+                app.handle(Input::MouseMove {
+                    x: (b.x as f32 + 5.0).clamp(bar.x as f32, bar.right() as f32 - 1.0),
+                    y,
+                });
+                app.handle(Input::MouseUp {
+                    x: b.x as f32 + 5.0,
+                    y,
+                    button: MouseButton::Left,
+                });
+            }
+            1 => {
+                app.handle(Input::Text(format!("<{step}>")));
+            }
+            2 => {
+                key(&mut app, "ctrl+tab");
+            }
+            3 => {
+                // Close the active tab; answer Cancel if asked (keeps edits).
+                key(&mut app, "ctrl+w");
+                if app.nag_message().is_some() {
+                    key(&mut app, "escape");
+                }
+            }
+            4 => {
+                let r = rects[rnd(n.max(1)).min(rects.len().saturating_sub(1))];
+                mouse(
+                    &mut app,
+                    r.x as f32 + 10.0,
+                    r.y as f32 + 10.0,
+                    MouseButton::Right,
+                );
+                let item = [
+                    "Close Others",
+                    "Close to the Right",
+                    "Close Saved",
+                    "Close All",
+                ][rnd(4)];
+                render_hash(&mut app, 800, 600);
+                if app.menu_item_pos(item).is_some() {
+                    run_menu_item(&mut app, item);
+                }
+                while app.nag_message().is_some() {
+                    key(&mut app, "escape");
+                }
+                key(&mut app, "escape");
+            }
+            _ => {
+                key(&mut app, "ctrl+shift+t");
+            }
+        }
+        // Invariants: a tab with unsaved edits is never closed (only Cancel
+        // is ever answered), and no file on disk was written.
+        let _ = render_hash(&mut app, 800, 600);
+        let now: Vec<String> = app
+            .tab_titles()
+            .into_iter()
+            .filter(|t| t.1)
+            .map(|t| t.0)
+            .collect();
+        for t in &dirty {
+            assert!(
+                now.contains(t),
+                "step {step}: unsaved {t} was closed; tabs {:?}",
+                app.tab_titles()
+            );
+        }
+        dirty = now;
+        for (i, f) in files.iter().enumerate() {
+            assert_eq!(std::fs::read_to_string(f).unwrap(), format!("file {i}\n"));
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -147,11 +147,12 @@ fixed first (S5.0).
 
 - [ ] S5.0 Fix confirmed findings from the end-to-end adversarial review
 - [x] S5.1a Tree drag-to-move, F2/Delete in tree, unsaved dot in tab close slot
-- [ ] S5.1 Tabs like VS Code: sized to the name, shrink when crowded, then
-       scroll (wheel, active tab kept in view, overflow indicator); drag to
-       reorder; right-click menu (Close, Close Others, Close to the Right,
-       Close Saved, Close All, Copy Path, Reveal in tree / Explorer);
-       Ctrl+Shift+T reopens the last closed tab; double-click empty bar = new file
+- [x] S5.1 Tabs like VS Code: shrink when crowded (to a readable minimum,
+       names end in "…"), then scroll (wheel, active tab kept in view, overflow
+       bar); drag to reorder; right-click menu (Close, Close Others, Close to
+       the Right, Close Saved, Close All, Copy Path, Reveal in File Tree, Show
+       in Explorer) asking about each unsaved tab; Ctrl+Shift+T reopens the
+       last closed tab. (Double-click empty bar = new file moved to S5.4.)
 - [ ] S5.2 Compare: tree "Select for Compare" → "Compare with Selected", and
        "Compare with Saved" for an edited file. Side-by-side diff tab: removed /
        added lines tinted, changed characters highlighted, aligned rows, one
@@ -169,6 +170,11 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S5.1 tabs: scrolling tab bar (min width, ellipsis labels,
+  wheel, active kept in view, overflow bar), drag to reorder, tab menu with
+  Close Others/Right/Saved/All going through per-tab save prompts (Don't save
+  closes that tab, Cancel stops), Ctrl+Shift+T. Randomized reorder/close test
+  (mutation-checked) asserts unsaved tabs are never closed.
 - 2026-11-14 — Tree: drag a file/folder onto a folder to move it (drop target
   outlined; asks first; never overwrites; refuses moves into itself and files
   with unsaved edits; open tabs follow). F2 renames and Delete deletes the

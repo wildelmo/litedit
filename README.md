@@ -44,6 +44,8 @@ or drag a file or folder onto the window.
 | `Ctrl+Shift+V` | Markdown: side-by-side live preview |
 | `Ctrl+E` | Markdown: switch preview ↔ editing |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
+| `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
+| Tabs | Drag to reorder, wheel to scroll, middle-click to close, right-click for Close Others / Close All / Copy Path… |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (whole line when nothing is selected) |
 | `Ctrl+A` / `Ctrl+L` | Select all / select line |

@@ -15,6 +15,9 @@ pub enum Pending {
     CloseTab(u64),
     /// Quit (asks about each dirty tab in turn).
     Quit,
+    /// Close these tabs, asking about each dirty one in turn (Close Others,
+    /// Close All, ...). "Don't save" closes that tab at once; Cancel stops.
+    CloseTabs(Vec<u64>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -5,6 +5,11 @@
 - File tree: drag a file or folder onto a folder to move it (asks first,
   never overwrites); F2 renames and Delete deletes the selected entry.
 - Tabs with unsaved changes show a dot in place of the close button.
+- Tabs: when many are open the bar scrolls (mouse wheel) instead of hiding
+  tabs; the active tab is kept in view; long names end in "…". Drag tabs to
+  reorder. Right-click a tab for Close, Close Others, Close to the Right,
+  Close Saved, Close All, Copy Path, Reveal in File Tree, Show in Explorer.
+  Ctrl+Shift+T reopens the last closed tab.
 
 ## 1.0.0 — 2026-11-14
 

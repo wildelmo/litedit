@@ -93,6 +93,14 @@ pub struct App {
     wrap_code: bool,
     /// Extra ignored names currently in effect (setting `ignore`).
     ignore: Vec<String>,
+    /// Tab bar scroll offset in pixels (when tabs don't fit).
+    tab_scroll: i32,
+    /// The tab last scrolled into view (so wheel scrolling isn't undone).
+    tab_revealed: Option<u64>,
+    /// Left button pressed on a tab: (index, start x, dragging).
+    tab_drag: Option<(usize, f32, bool)>,
+    /// Recently closed files, most recent last (Ctrl+Shift+T).
+    closed: Vec<PathBuf>,
 }
 
 struct TabSlot {
@@ -160,6 +168,10 @@ impl App {
             settings_path: None,
             wrap_code: false,
             ignore: Vec::new(),
+            tab_scroll: 0,
+            tab_revealed: None,
+            tab_drag: None,
+            closed: Vec::new(),
         }
     }
 
@@ -366,6 +378,40 @@ impl App {
         self.clipboard = c;
     }
 
+    /// Tab bar rect and each tab's rect (tests).
+    #[cfg(test)]
+    pub fn tab_layout(&mut self) -> Option<(Rect, Vec<Rect>)> {
+        let bar = self.layout().tabs?;
+        self.reveal_active_tab(bar);
+        Some((
+            bar,
+            self.tab_rects(bar).into_iter().map(|(r, _)| r).collect(),
+        ))
+    }
+
+    /// (title, dirty) of every tab in order (tests).
+    #[cfg(test)]
+    pub fn tab_titles(&self) -> Vec<(String, bool)> {
+        (0..self.tabs.len())
+            .map(|i| {
+                let v = self.tab_view(i);
+                (v.title().trim_start_matches("● ").to_string(), v.is_dirty())
+            })
+            .collect()
+    }
+
+    /// Centre of a right-click menu item, after the menu was drawn (tests).
+    #[cfg(test)]
+    pub fn menu_item_pos(&self, label: &str) -> Option<(f32, f32)> {
+        let r = self.menu.as_ref()?.item_rect(label)?;
+        Some((r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0))
+    }
+
+    #[cfg(test)]
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
     #[cfg(test)]
     pub fn clipboard_text(&mut self) -> Option<String> {
         self.clipboard.get()
@@ -477,6 +523,13 @@ impl App {
     fn remove_tab(&mut self, id: u64) {
         self.session_dirty = true;
         let Some(i) = self.tab_index(id) else { return };
+        if let Some(p) = self.tab_view(i).path().map(Path::to_path_buf) {
+            self.closed.retain(|c| c != &p);
+            self.closed.push(p);
+            if self.closed.len() > 30 {
+                self.closed.remove(0);
+            }
+        }
         self.disk_prompt.retain(|t| *t != id);
         if self.tabs.len() == 1 {
             self.view = if self.tree.root().is_some() {
@@ -516,6 +569,34 @@ impl App {
     fn perform(&mut self, p: Pending) {
         match p {
             Pending::CloseTab(id) => self.remove_tab(id),
+            Pending::CloseTabs(ids) => {
+                let ids: Vec<u64> = ids
+                    .into_iter()
+                    .filter(|id| self.tab_index(*id).is_some())
+                    .collect();
+                // Clean ones go at once.
+                for &id in &ids {
+                    if let Some(i) = self.tab_index(id)
+                        && !self.tab_view(i).is_dirty()
+                    {
+                        self.remove_tab(id);
+                    }
+                }
+                let dirty: Vec<u64> = ids
+                    .into_iter()
+                    .filter(|id| {
+                        self.tab_index(*id)
+                            .is_some_and(|i| self.tab_view(i).is_dirty())
+                    })
+                    .collect();
+                if let Some(&first) = dirty.first()
+                    && let Some(i) = self.tab_index(first)
+                {
+                    self.activate(i);
+                    let name = self.view_name();
+                    self.nag = Some(Nag::unsaved(&name, Pending::CloseTabs(dirty)));
+                }
+            }
             Pending::Quit => {
                 // Ask about each dirty tab in turn (skipping ones already
                 // answered with "Don't save"), then quit.
@@ -612,6 +693,11 @@ impl App {
                 let id = self.tabs[self.active].id;
                 self.quit_skip.push(id);
                 self.perform(Pending::Quit);
+            }
+            NagAction::DiscardThen(Pending::CloseTabs(ids)) => {
+                let id = self.tabs[self.active].id;
+                self.remove_tab(id);
+                self.perform(Pending::CloseTabs(ids));
             }
             NagAction::DiscardThen(p) => self.perform(p),
             NagAction::SaveAnyway => {
@@ -816,6 +902,53 @@ impl App {
     }
 
     fn run_menu(&mut self, a: MenuAction) {
+        let ids = |s: &Self, keep: &dyn Fn(usize, u64) -> bool| -> Vec<u64> {
+            s.tabs
+                .iter()
+                .enumerate()
+                .filter(|(i, t)| keep(*i, t.id))
+                .map(|(_, t)| t.id)
+                .collect()
+        };
+        match &a {
+            MenuAction::CloseTab(id) => {
+                if let Some(i) = self.tab_index(*id) {
+                    self.close_tab(i);
+                }
+                return;
+            }
+            MenuAction::CloseOthers(id) => {
+                let list = ids(self, &|_, t| t != *id);
+                self.perform(Pending::CloseTabs(list));
+                return;
+            }
+            MenuAction::CloseToRight(id) => {
+                let at = self.tab_index(*id).unwrap_or(usize::MAX);
+                let list = ids(self, &|i, _| i > at);
+                self.perform(Pending::CloseTabs(list));
+                return;
+            }
+            MenuAction::CloseSaved => {
+                let clean: Vec<u64> = (0..self.tabs.len())
+                    .filter(|&i| !self.tab_view(i).is_dirty())
+                    .map(|i| self.tabs[i].id)
+                    .collect();
+                self.perform(Pending::CloseTabs(clean));
+                return;
+            }
+            MenuAction::CloseAll => {
+                let list = ids(self, &|_, _| true);
+                self.perform(Pending::CloseTabs(list));
+                return;
+            }
+            MenuAction::RevealInTree(p) => {
+                self.tree.visible = true;
+                self.tree.reveal(p);
+                self.focus = Focus::Tree;
+                return;
+            }
+            _ => {}
+        }
         match &a {
             MenuAction::NewFile(_) => {
                 self.palette = Some(Palette::text(
@@ -879,6 +1012,8 @@ impl App {
                     "Text to search for, then Enter",
                 ));
             }
+            // Handled above.
+            _ => return,
         }
         self.prompt_for = Some(a);
     }
@@ -1175,15 +1310,23 @@ impl App {
     }
 
     /// Rectangles of each tab and its close button in the tab bar.
-    fn tab_rects(&self, bar: Rect) -> Vec<(Rect, Rect)> {
+    /// Tab width and the largest scroll offset. Tabs share the bar equally,
+    /// shrink to a minimum when crowded, and then the bar scrolls.
+    fn tab_metrics(&self, bar: Rect) -> (i32, i32) {
         let n = self.tabs.len().max(1) as i32;
         let max_w = (theme::TAB_WIDTH * self.scale * self.zoom * theme::ui_ratio()) as i32;
-        let min_w = (90.0 * self.scale) as i32;
-        let w = (bar.w / n).clamp(min_w.min(bar.w), max_w.max(1));
+        let min_w = (130.0 * self.scale * self.zoom * theme::ui_ratio()) as i32;
+        let w = (bar.w / n).clamp(min_w.min(bar.w).max(1), max_w.max(1));
+        (w, (n * w - bar.w).max(0))
+    }
+
+    fn tab_rects(&self, bar: Rect) -> Vec<(Rect, Rect)> {
+        let (w, max_scroll) = self.tab_metrics(bar);
+        let scroll = self.tab_scroll.clamp(0, max_scroll);
         let cs = (bar.h as f32 * 0.5) as i32;
         (0..self.tabs.len() as i32)
             .map(|i| {
-                let r = Rect::new(bar.x + i * w, bar.y, w, bar.h);
+                let r = Rect::new(bar.x + i * w - scroll, bar.y, w, bar.h);
                 let close = Rect::new(
                     r.right() - cs - (8.0 * self.scale) as i32,
                     r.y + (r.h - cs) / 2,
@@ -1193,6 +1336,79 @@ impl App {
                 (r, close)
             })
             .collect()
+    }
+
+    /// Scroll the tab bar so the active tab is fully visible (once per
+    /// activation, so wheel scrolling sticks).
+    fn reveal_active_tab(&mut self, bar: Rect) {
+        let (w, max_scroll) = self.tab_metrics(bar);
+        let id = self.tabs.get(self.active).map(|t| t.id);
+        self.tab_scroll = self.tab_scroll.clamp(0, max_scroll);
+        if self.tab_revealed == id {
+            return;
+        }
+        self.tab_revealed = id;
+        let left = self.active as i32 * w;
+        if left < self.tab_scroll {
+            self.tab_scroll = left;
+        } else if left + w > self.tab_scroll + bar.w {
+            self.tab_scroll = (left + w - bar.w).min(max_scroll);
+        }
+    }
+
+    /// Index of the tab under window x (visible part of the bar only).
+    fn tab_at(&self, bar: Rect, x: f32) -> Option<usize> {
+        if x < bar.x as f32 || x >= bar.right() as f32 {
+            return None;
+        }
+        self.tab_rects(bar)
+            .iter()
+            .position(|(r, _)| (x as i32) >= r.x && (x as i32) < r.right())
+    }
+
+    /// Move tab `from` to position `to` (drag reorder), keeping which tab
+    /// is active.
+    fn move_tab(&mut self, from: usize, to: usize) {
+        if from >= self.tabs.len() || to >= self.tabs.len() || from == to {
+            return;
+        }
+        let active_id = self.tabs[self.active].id;
+        let slot = self.tabs.remove(from);
+        self.tabs.insert(to, slot);
+        self.active = self.tab_index(active_id).unwrap_or(0);
+        self.tab_revealed = None;
+        self.session_dirty = true;
+    }
+
+    /// Right-click on a tab.
+    fn open_tab_menu(&mut self, i: usize, x: f32, y: f32) {
+        let id = self.tabs[i].id;
+        let path = self.tab_view(i).path().map(Path::to_path_buf);
+        let mut items = vec![
+            ("Close", MenuAction::CloseTab(id)),
+            ("Close Others", MenuAction::CloseOthers(id)),
+            ("Close to the Right", MenuAction::CloseToRight(id)),
+            ("Close Saved", MenuAction::CloseSaved),
+            ("Close All", MenuAction::CloseAll),
+        ];
+        if let Some(p) = path {
+            items.push(("Copy Path", MenuAction::CopyPath(p.clone())));
+            items.push(("Reveal in File Tree", MenuAction::RevealInTree(p.clone())));
+            items.push(("Show in Explorer", MenuAction::Reveal(p)));
+        }
+        self.menu = Some(Menu::new(x, y, items));
+    }
+
+    /// Ctrl+Shift+T: reopen the most recently closed file that still exists.
+    fn reopen_closed_tab(&mut self) -> bool {
+        while let Some(p) = self.closed.pop() {
+            if p.is_file() && self.find_tab(&p).is_none() {
+                self.open(&p);
+                return true;
+            }
+        }
+        self.notice = Some("No closed tabs to reopen".into());
+        true
     }
 
     fn near_divider(&self, x: f32) -> bool {
@@ -1441,6 +1657,7 @@ impl App {
                         true
                     }
                     Key::Char('s') => self.save(),
+                    Key::Char('t') if mods.shift => self.reopen_closed_tab(),
                     Key::Char('w') => {
                         let i = self.active;
                         self.close_tab(i);
@@ -1522,22 +1739,48 @@ impl App {
         }
 
         let layout = self.layout();
-        // Tab bar: activate / close.
+        // Tab bar: activate / close / reorder / scroll / menu.
         if let Some(bar) = layout.tabs {
+            self.reveal_active_tab(bar);
             let inside = |x: f32, y: f32| {
                 x >= bar.x as f32
                     && x < bar.right() as f32
                     && y >= bar.y as f32
                     && y < bar.bottom() as f32
             };
+            // Dragging a tab: it follows the mouse until release.
+            if let Some((from, start, dragging)) = self.tab_drag {
+                match input {
+                    Input::MouseMove { x, y } => {
+                        self.mouse = (*x, *y);
+                        let dragging = dragging || (x - start).abs() > 6.0 * self.scale;
+                        self.tab_drag = Some((from, start, dragging));
+                        if dragging {
+                            let (w, _) = self.tab_metrics(bar);
+                            let scroll = self.tab_scroll;
+                            let to = (((x - bar.x as f32) + scroll as f32) / w.max(1) as f32)
+                                .floor()
+                                .clamp(0.0, (self.tabs.len() - 1) as f32)
+                                as usize;
+                            if to != from {
+                                self.move_tab(from, to);
+                                self.tab_drag = Some((to, start, true));
+                            }
+                        }
+                        return true;
+                    }
+                    Input::MouseUp { .. } => {
+                        self.tab_drag = None;
+                        return true;
+                    }
+                    Input::MouseDown { .. } => self.tab_drag = None,
+                    _ => {}
+                }
+            }
             match input {
                 Input::MouseDown { x, y, button, .. } if inside(*x, *y) => {
                     self.mouse = (*x, *y);
-                    let hit = self
-                        .tab_rects(bar)
-                        .iter()
-                        .position(|(r, _)| (*x as i32) >= r.x && (*x as i32) < r.right());
-                    if let Some(i) = hit {
+                    if let Some(i) = self.tab_at(bar, *x) {
                         let (_, close) = self.tab_rects(bar)[i];
                         let on_close = (*x as i32) >= close.x && (*x as i32) < close.right();
                         match button {
@@ -1546,8 +1789,9 @@ impl App {
                             MouseButton::Left => {
                                 self.activate(i);
                                 self.focus = Focus::Main;
+                                self.tab_drag = Some((i, *x, false));
                             }
-                            _ => {}
+                            MouseButton::Right => self.open_tab_menu(i, *x, *y),
                         }
                     }
                     return true;
@@ -1556,6 +1800,13 @@ impl App {
                     self.mouse = (*x, *y);
                     self.cursor = Cursor::Default;
                     return true; // hover highlight
+                }
+                Input::Wheel { dx, dy, .. } if inside(self.mouse.0, self.mouse.1) => {
+                    let (_, max_scroll) = self.tab_metrics(bar);
+                    let step = 40.0 * self.scale;
+                    let d = if dx.abs() > dy.abs() { *dx } else { *dy };
+                    self.tab_scroll = (self.tab_scroll + (d * step) as i32).clamp(0, max_scroll);
+                    return true;
                 }
                 _ => {}
             }
@@ -1702,6 +1953,17 @@ impl App {
         canvas.set_clip(canvas.bounds());
         canvas.fill_rect(canvas.bounds(), theme::p().background);
 
+        if let Some(bar) = layout.tabs {
+            self.reveal_active_tab(bar);
+        }
+        let tab_overflow = layout.tabs.map(|bar| {
+            let (w, max_scroll) = self.tab_metrics(bar);
+            (
+                max_scroll,
+                self.tab_scroll.clamp(0, max_scroll),
+                w * self.tabs.len() as i32,
+            )
+        });
         let tab_info = layout.tabs.map(|bar| {
             let titles: Vec<(String, bool)> = (0..self.tabs.len())
                 .map(|i| {
@@ -1807,6 +2069,20 @@ impl App {
                     canvas.draw_line(cx - s, cy - s, cx + s, cy + s, lw, theme::p().text);
                     canvas.draw_line(cx - s, cy + s, cx + s, cy - s, lw, theme::p().text);
                 }
+            }
+            // More tabs than fit: a thin bar along the bottom shows which
+            // part is in view (scroll with the mouse wheel over the tabs).
+            if let Some((max_scroll, scroll, total)) = tab_overflow
+                && max_scroll > 0
+                && total > 0
+            {
+                let h = ctx.px(3.0).max(2.0) as i32;
+                let w = (bar.w as i64 * bar.w as i64 / total as i64) as i32;
+                let x = bar.x + (scroll as i64 * bar.w as i64 / total as i64) as i32;
+                canvas.fill_rect(
+                    Rect::new(x, bar.bottom() - h, w.max(h * 4), h),
+                    theme::p().scrollbar,
+                );
             }
         }
 

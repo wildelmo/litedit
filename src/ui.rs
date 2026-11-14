@@ -75,15 +75,35 @@ impl Ctx<'_> {
             self.ui_metrics()
         };
         let fam = self.family(kind);
+        let attrs = Attrs::new().family(Family::Name(&fam));
+        let mut text: String = crate::text::sanitize(clip_chars(text, 2000)).into_owned();
         let mut b = Buffer::new_empty(m);
         b.set_wrap(Wrap::None);
+        b.set_size(None, Some(m.line_height));
+        b.set_text(&text, &attrs, Shaping::Advanced, None);
+        b.shape_until_scroll(&mut self.fonts.system, false);
+        // Too wide: cut at a glyph boundary and end with "…".
+        let fits = |b: &Buffer| b.layout_runs().all(|r| r.line_w <= max_w as f32);
+        if !fits(&b) {
+            let room = max_w as f32 - m.font_size * 0.9;
+            let cut = b
+                .layout_runs()
+                .next()
+                .and_then(|r| {
+                    r.glyphs
+                        .iter()
+                        .filter(|g| g.x + g.w <= room && g.level.is_ltr())
+                        .map(|g| g.end)
+                        .max()
+                })
+                .unwrap_or(0);
+            if text.is_char_boundary(cut) {
+                text.truncate(cut);
+                text = format!("{}…", text.trim_end());
+                b.set_text(&text, &attrs, Shaping::Advanced, None);
+            }
+        }
         b.set_size(Some(max_w as f32), Some(m.line_height));
-        b.set_text(
-            &crate::text::sanitize(clip_chars(text, 2000)),
-            &Attrs::new().family(Family::Name(&fam)),
-            Shaping::Advanced,
-            None,
-        );
         let prev = canvas.clip();
         canvas.set_clip(Rect::new(x, y, max_w, m.line_height as i32).intersect(&prev));
         self.fonts.draw_buffer(canvas, &mut b, x, y, color);
