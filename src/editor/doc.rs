@@ -651,6 +651,56 @@ impl EditDoc {
         });
     }
 
+    /// Replace several ranges (any order, non-overlapping) as ONE undo step.
+    /// Used by replace / replace-all.
+    pub fn replace_ranges(&mut self, mut edits: Vec<(Pos, Pos, String)>) {
+        if edits.is_empty() {
+            return;
+        }
+        edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+        let before = self.sels.clone();
+        let eol = self.buf.default_eol();
+        let mut inverse = Vec::with_capacity(edits.len() * 2);
+        let mut last_caret = None;
+        for (a, b, text) in edits {
+            let (a, b) = (self.buf.clamp(a), self.buf.clamp(b));
+            let mut ops = Vec::new();
+            if a != b {
+                ops.push(Op::Remove {
+                    at: a,
+                    chunk: self.buf.slice(a, b),
+                });
+            }
+            let chunk = Chunk::typed(&text, eol);
+            if !chunk.is_empty() {
+                ops.push(Op::Insert {
+                    at: a,
+                    chunk: chunk.clone(),
+                });
+            }
+            for op in ops {
+                inverse.push(op.apply(&mut self.buf));
+                for s in &mut self.sels {
+                    s.anchor = transform(s.anchor, &op, true);
+                    s.head = transform(s.head, &op, true);
+                }
+            }
+            if last_caret.is_none() {
+                last_caret = Some(chunk.end_from(a));
+            }
+        }
+        // Leave the caret after the first (top-most processed last) edit.
+        if let Some(c) = last_caret
+            && self.sels.len() == 1
+        {
+            let c = self.buf.clamp(c);
+            self.sels[0] = Sel::caret(c);
+        }
+        let after = self.sels.clone();
+        self.hist.record(inverse, before, after, GroupKind::Other);
+        self.version += 1;
+    }
+
     pub fn delete_selection(&mut self) {
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();

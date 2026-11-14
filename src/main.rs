@@ -6,6 +6,7 @@ mod canvas;
 mod clipboard;
 mod doc;
 mod editor;
+mod find;
 mod images;
 mod input;
 mod inputbar;

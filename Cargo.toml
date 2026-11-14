@@ -16,6 +16,7 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 notify = "8"
 unicode-segmentation = "1.13.3"
+fancy-regex = { version = "0.16", default-features = false, features = ["std", "unicode", "perf"] }
 
 [profile.release]
 opt-level = 3

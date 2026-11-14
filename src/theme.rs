@@ -12,6 +12,7 @@ pub const DIVIDER: Color = Color::hex(0x202024);
 pub const LINE_NUMBER: Color = Color::hex(0x525259);
 pub const LINE_NUMBER2: Color = Color::hex(0x83838f);
 pub const CARET: Color = Color::hex(0x93ddfa);
+pub const FIND_MATCH: Color = Color::hex(0x5a4d2b);
 pub const LINE_HIGHLIGHT: Color = Color::hex(0x343438);
 pub const SELECTION: Color = Color::hex(0x48484f);
 pub const SCROLLBAR: Color = Color::hex(0x414146);

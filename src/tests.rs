@@ -980,3 +980,102 @@ fn fuzz_editor_through_the_app() {
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 }
+
+#[test]
+fn find_and_replace_through_the_app() {
+    let p = temp_file("find.txt", "alpha beta\nbeta gamma\nBETA\n");
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+f");
+    type_text(&mut app, "beta");
+    // Incremental search selected the first match.
+    assert!(
+        app.status_text().starts_with("Ln 1, Col 11"),
+        "{}",
+        app.status_text()
+    );
+    press(&mut app, "enter");
+    assert!(
+        app.status_text().starts_with("Ln 2, Col 5"),
+        "{}",
+        app.status_text()
+    );
+    press(&mut app, "enter");
+    assert!(
+        app.status_text().starts_with("Ln 3, Col 5"),
+        "case-insensitive: {}",
+        app.status_text()
+    );
+    press(&mut app, "shift+enter");
+    assert!(app.status_text().starts_with("Ln 2, Col 5"));
+    render_hash(&mut app, 800, 600);
+    press(&mut app, "escape");
+    // F3 still repeats the search with the bar closed.
+    press(&mut app, "f3");
+    assert!(app.status_text().starts_with("Ln 3, Col 5"));
+
+    // Replace all is one undo step.
+    press(&mut app, "ctrl+h");
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "beta");
+    press(&mut app, "tab");
+    type_text(&mut app, "B");
+    press(&mut app, "ctrl+enter");
+    render_hash(&mut app, 800, 600);
+    press(&mut app, "escape");
+    press(&mut app, "ctrl+s");
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "alpha B\nB gamma\nB\n"
+    );
+    press(&mut app, "ctrl+z");
+    press(&mut app, "ctrl+s");
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "alpha beta\nbeta gamma\nBETA\n"
+    );
+
+    // Regex mode with groups, case-sensitive.
+    press(&mut app, "ctrl+h");
+    press(&mut app, "alt+r");
+    press(&mut app, "alt+c");
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "(\\w+) (\\w+)");
+    press(&mut app, "tab");
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "$2 $1");
+    press(&mut app, "ctrl+enter");
+    press(&mut app, "escape");
+    press(&mut app, "ctrl+s");
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "beta alpha\ngamma beta\nBETA\n"
+    );
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+#[test]
+fn find_in_markdown_preview_switches_to_source() {
+    let p = temp_file("f.md", "# Hello\n\nworld\n");
+    let mut app = new_app();
+    app.open(&p);
+    press(&mut app, "ctrl+f");
+    assert!(app.status_text().starts_with("Markdown source"));
+    type_text(&mut app, "world");
+    assert!(
+        app.status_text().contains("Ln 3, Col 6"),
+        "{}",
+        app.status_text()
+    );
+    std::fs::remove_dir_all(p.parent().unwrap()).ok();
+}
+
+/// The CI smoke script must pass locally too (it is run on Windows CI).
+#[test]
+fn ci_smoke_script_passes() {
+    let script =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/ci/smoke.script")).unwrap();
+    std::env::set_current_dir(env!("CARGO_MANIFEST_DIR")).unwrap();
+    let mut app = new_app();
+    crate::script::run(&mut app, &script).unwrap();
+}

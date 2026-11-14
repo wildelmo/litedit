@@ -22,10 +22,10 @@ key ctrl+e
 expect status Markdown preview
 expect title ● sample.md
 shot out/markdown-edited.png
-open tests/fixtures/sample.rs
+key ctrl+w
 expect nag Save changes to sample.md
 key d
-expect title sample.rs
+expect no-nag
 open tests/fixtures/sample.md
 key ctrl+o
 expect request OpenFileDialog

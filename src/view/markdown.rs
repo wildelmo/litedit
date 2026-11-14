@@ -541,6 +541,14 @@ impl View for MarkdownView {
             *ctx.cursor = Cursor::Default;
             return true;
         }
+        // Find / replace work on the source: switch to editing first.
+        if self.mode == Mode::Preview
+            && let Input::Key { key, mods } = input
+            && ((mods.ctrl && matches!(key, Key::Char('f') | Key::Char('h')))
+                || matches!(key, Key::F(3)))
+        {
+            self.toggle_mode(ctx);
+        }
         if self.mode == Mode::Source {
             return self.editor.handle(input, rect, ctx);
         }

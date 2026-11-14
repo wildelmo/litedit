@@ -114,7 +114,7 @@ asks for each dirty tab.
 - [x] S3.1 Tabs: tab bar, click/middle-click, Ctrl+Tab / Ctrl+PgUp/PgDn,
        Ctrl+W (guarded), dirty dot, reopen activates existing tab, quit asks
        per dirty tab, watcher covers all open files
-- [ ] S3.2 Find / replace in file: Ctrl+F (prefill from selection), F3 /
+- [x] S3.2 Find / replace in file: Ctrl+F (prefill from selection), F3 /
        Shift+F3, all matches highlighted, Ctrl+H replace one / all (one undo
        step), case toggle, regex toggle (fancy-regex, already a dependency)
 - [ ] S3.3 Side-by-side live preview for markdown (Ctrl+Shift+V), debounced
@@ -143,6 +143,12 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S3.2 done: find/replace bar (Ctrl+F / Ctrl+H, incremental, F3,
+  Enter/Shift+Enter, Tab between fields, Enter replaces one, Ctrl+Enter all as one
+  undo step, Alt+C case, Alt+R regex with $1 groups, all matches highlighted,
+  count). fancy-regex with backtrack limit; empty matches skipped. Fixed CI: smoke
+  script still expected the pre-tabs prompt; `cargo test` now runs the smoke
+  script so this cannot recur.
 - 2026-11-14 — S3.0/S3.1 done: input bar widget (reuses EditDoc); tabs (tab bar with
   hover ×, click/middle-click, Ctrl+Tab/Ctrl+PgUp/PgDn/Alt+1..9, Ctrl+W asks when
   dirty, quit asks per dirty tab, opening never discards, background tabs reload

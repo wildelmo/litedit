@@ -17,7 +17,9 @@ use crate::doc::Document;
 use crate::editor::buffer::{Eol, Pos};
 use crate::editor::doc::SaveError;
 use crate::editor::doc::{EditDoc, Move, snap_grapheme};
+use crate::find::Finder;
 use crate::input::{Cursor, Input, Key, MouseButton};
+use crate::inputbar::BarEvent;
 use crate::syntax::{LineHighlighter, Span, find_syntax};
 use crate::text::display_char;
 use crate::theme;
@@ -194,6 +196,15 @@ pub struct CodeView {
     /// Text of the last line-mode copy (pasting it inserts whole lines).
     line_clip: Option<String>,
     caret_screen: Option<Rect>,
+    /// Find / replace bar (open when Some).
+    find: Option<Finder>,
+    find_focus: bool,
+    /// Last search, kept for F3 after the bar is closed.
+    last_find: Option<Finder>,
+    /// Where the caret was when the find bar opened (incremental search origin).
+    find_origin: Pos,
+    /// Status of the last replace-all, etc.
+    find_note: Option<String>,
 }
 
 impl CodeView {
@@ -216,6 +227,11 @@ impl CodeView {
             read_only: false,
             line_clip: None,
             caret_screen: None,
+            find: None,
+            find_focus: false,
+            last_find: None,
+            find_origin: Pos::default(),
+            find_note: None,
         }
     }
 
@@ -556,8 +572,307 @@ impl CodeView {
     }
 }
 
-impl View for CodeView {
-    fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+impl CodeView {
+    fn bar_row_height(ctx: &Ctx) -> i32 {
+        (ctx.ui_metrics().line_height + ctx.px(theme::PADDING_Y) * 2.0) as i32 + ctx.px(4.0) as i32
+    }
+
+    /// Split the view into the editor area and the find bar (if open).
+    fn split(&self, rect: Rect, ctx: &Ctx) -> (Rect, Option<Rect>) {
+        let Some(f) = &self.find else {
+            return (rect, None);
+        };
+        let rows = if f.replace.is_some() { 2 } else { 1 };
+        let h = (Self::bar_row_height(ctx) * rows).min(rect.h);
+        (
+            Rect::new(rect.x, rect.y, rect.w, rect.h - h),
+            Some(Rect::new(rect.x, rect.bottom() - h, rect.w, h)),
+        )
+    }
+
+    /// Open the find bar (Ctrl+F / Ctrl+H), prefilled from the selection.
+    pub fn open_find(&mut self, with_replace: bool) {
+        let sel = self.doc.selected_text();
+        let prefill = if !sel.is_empty() && !sel.contains('\n') {
+            sel
+        } else {
+            self.find
+                .as_ref()
+                .or(self.last_find.as_ref())
+                .map(|f| f.pattern().to_string())
+                .unwrap_or_default()
+        };
+        let mut f = Finder::new(&prefill, with_replace);
+        if let Some(old) = self.find.take().or_else(|| self.last_find.take()) {
+            f.case_sensitive = old.case_sensitive;
+            f.regex = old.regex;
+            if let (Some(r), Some(old_r)) = (f.replace.as_mut(), old.replace.as_ref()) {
+                r.set_text(old_r.text());
+            }
+        }
+        self.find_origin = self
+            .doc
+            .sels
+            .iter()
+            .map(|s| s.range().0)
+            .min()
+            .unwrap_or_default();
+        self.find = Some(f);
+        self.find_focus = true;
+        self.find_note = None;
+    }
+
+    fn close_find(&mut self) {
+        self.last_find = self.find.take();
+        self.find_focus = false;
+    }
+
+    /// Select the next (or previous) match from the caret.
+    pub fn find_step(&mut self, back: bool) -> bool {
+        let finder = match self.find.as_mut().or(self.last_find.as_mut()) {
+            Some(f) => f,
+            None => return false,
+        };
+        let (a, b) = self.doc.primary().range();
+        let from = if back { a } else { b };
+        if let Some((m0, m1)) = finder.next(&self.doc.buf, from, back) {
+            self.doc.sels = vec![crate::editor::history::Sel {
+                anchor: m0,
+                head: m1,
+            }];
+            self.reveal_caret = true;
+            return true;
+        }
+        false
+    }
+
+    /// Incremental search: select the first match at/after the origin.
+    fn find_incremental(&mut self) {
+        let origin = self.find_origin;
+        let Some(f) = self.find.as_mut() else { return };
+        // Search from just before the origin so a match at the origin counts.
+        if let Some((m0, m1)) = f.next(&self.doc.buf, origin, false) {
+            self.doc.sels = vec![crate::editor::history::Sel {
+                anchor: m0,
+                head: m1,
+            }];
+            self.reveal_caret = true;
+        }
+    }
+
+    /// Replace the current match (if the selection is one) and go to the next.
+    fn replace_one(&mut self) {
+        let Some(f) = self.find.as_mut() else { return };
+        let (a, b) = self.doc.primary().range();
+        let is_match = a.line == b.line
+            && f.line_matches(self.doc.buf.line(a.line))
+                .contains(&(a.col, b.col));
+        if is_match {
+            let line = self.doc.buf.line(a.line).to_string();
+            if let Some(r) = f.replacement_for(&line, a.col) {
+                self.doc.replace_ranges(vec![(a, b, r)]);
+                self.after_edit(a.line.saturating_sub(1));
+            }
+        }
+        self.find_step(false);
+    }
+
+    /// Replace every match as one undo step.
+    fn replace_all(&mut self) {
+        let Some(f) = self.find.as_mut() else { return };
+        let all = f.all(&self.doc.buf);
+        let mut edits = Vec::with_capacity(all.len());
+        for (a, b) in all {
+            let line = self.doc.buf.line(a.line).to_string();
+            if let Some(r) = f.replacement_for(&line, a.col) {
+                edits.push((a, b, r));
+            }
+        }
+        let n = edits.len();
+        if n > 0 {
+            self.doc.replace_ranges(edits);
+            self.after_edit(0);
+        }
+        self.find_note = Some(format!("replaced {n}"));
+    }
+
+    /// Route input to the find bar when it has focus. Returns Some(redraw)
+    /// if the input was consumed.
+    fn handle_find(
+        &mut self,
+        input: &Input,
+        edit: Rect,
+        bar: Option<Rect>,
+        ctx: &mut Ctx,
+    ) -> Option<bool> {
+        // Shortcuts that work whether or not the bar has focus.
+        if let Input::Key { key, mods } = input {
+            match (key, mods.ctrl, mods.shift, mods.alt) {
+                (Key::Char('f'), true, false, false) => {
+                    self.open_find(false);
+                    return Some(true);
+                }
+                (Key::Char('h'), true, false, false) if !self.read_only => {
+                    self.open_find(true);
+                    return Some(true);
+                }
+                (Key::F(3), false, back, false) => {
+                    self.find_step(back);
+                    return Some(true);
+                }
+                (Key::Char('c'), false, false, true) if self.find.is_some() => {
+                    if let Some(f) = self.find.as_mut() {
+                        f.case_sensitive = !f.case_sensitive;
+                    }
+                    self.find_incremental();
+                    return Some(true);
+                }
+                (Key::Char('r'), false, false, true) if self.find.is_some() => {
+                    if let Some(f) = self.find.as_mut() {
+                        f.regex = !f.regex;
+                    }
+                    self.find_incremental();
+                    return Some(true);
+                }
+                _ => {}
+            }
+        }
+        // Clicks: on the bar focus it, in the editor focus the editor.
+        if let (Input::MouseDown { y, .. }, Some(b)) = (input, bar) {
+            let on_bar = (*y as i32) >= b.y;
+            self.find_focus = on_bar;
+            if on_bar {
+                if let Some(f) = self.find.as_mut()
+                    && f.replace.is_some()
+                {
+                    f.on_replace = (*y as i32) >= b.y + Self::bar_row_height(ctx);
+                }
+                return Some(true);
+            }
+            let _ = edit;
+            return None;
+        }
+        if !self.find_focus
+            || self.find.is_none()
+            || !matches!(input, Input::Key { .. } | Input::Text(_))
+        {
+            return None;
+        }
+        // Tab switches between the find and replace fields.
+        if let Input::Key { key: Key::Tab, .. } = input {
+            if let Some(f) = self.find.as_mut()
+                && f.replace.is_some()
+            {
+                f.on_replace = !f.on_replace;
+            }
+            return Some(true);
+        }
+        let ctrl_enter = matches!(input, Input::Key { key: Key::Enter, mods } if mods.ctrl);
+        let f = self.find.as_mut()?;
+        let on_replace = f.on_replace && f.replace.is_some();
+        let ev = if on_replace {
+            f.replace
+                .as_mut()
+                .map_or(BarEvent::Ignored, |r| r.handle(input, ctx))
+        } else {
+            f.find.handle(input, ctx)
+        };
+        match ev {
+            BarEvent::Changed if !on_replace => self.find_incremental(),
+            BarEvent::Submit { .. } if ctrl_enter && !self.read_only => self.replace_all(),
+            BarEvent::Submit { .. } if on_replace && !self.read_only => self.replace_one(),
+            BarEvent::Submit { back } => {
+                self.find_step(back);
+            }
+            BarEvent::Cancel => self.close_find(),
+            BarEvent::Ignored => return None,
+            _ => {}
+        }
+        Some(true)
+    }
+
+    fn render_find(&mut self, canvas: &mut Canvas, bar: Rect, ctx: &mut Ctx) {
+        let row_h = Self::bar_row_height(ctx);
+        canvas.fill_rect(bar, theme::BACKGROUND2);
+        canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::DIVIDER);
+        let focused = self.find_focus && ctx.focused;
+        let buf = &self.doc.buf;
+        let Some(f) = self.find.as_mut() else { return };
+        // Info on the right: count / error, then toggles.
+        let info = match f.error() {
+            Some(e) => e,
+            None if f.pattern().is_empty() => String::new(),
+            None => match f.count(buf) {
+                (0, _) => "no matches".into(),
+                (n, false) => format!("{n} {}", if n == 1 { "match" } else { "matches" }),
+                (n, true) => format!("{n}+ matches"),
+            },
+        };
+        let info = match &self.find_note {
+            Some(n) => format!("{n} · {info}"),
+            None => info,
+        };
+        let pad = ctx.px(theme::PADDING_X) as i32;
+        let lh = ctx.ui_metrics().line_height as i32;
+        let toggles = format!(
+            "{}  {}",
+            if f.case_sensitive { "[Aa]" } else { " Aa " },
+            if f.regex { "[.*]" } else { " .* " }
+        );
+        let tw = ctx.text_width(&toggles, FontKind::Mono) as i32;
+        let iw = ctx.text_width(&info, FontKind::Ui) as i32;
+        let right = tw + iw + pad * 3;
+        let row1 = Rect::new(bar.x, bar.y, bar.w, row_h);
+        let field1 = Rect::new(
+            row1.x,
+            row1.y,
+            (row1.w - right).max(ctx.px(120.0) as i32),
+            row1.h,
+        );
+        f.find.render(canvas, field1, ctx, focused && !f.on_replace);
+        let ty = row1.y + (row1.h - lh) / 2;
+        let err = info.starts_with("invalid pattern") || info == "no matches";
+        ctx.label(
+            canvas,
+            &info,
+            field1.right() + pad,
+            ty,
+            if err { theme::ERROR } else { theme::TEXT },
+            iw + 2,
+            FontKind::Ui,
+        );
+        ctx.label(
+            canvas,
+            &toggles,
+            row1.right() - tw - pad,
+            ty,
+            theme::ACCENT,
+            tw + 2,
+            FontKind::Mono,
+        );
+        if let Some(r) = f.replace.as_mut() {
+            let row2 = Rect::new(
+                bar.x,
+                bar.y + row_h,
+                (bar.w - right).max(ctx.px(120.0) as i32),
+                row_h,
+            );
+            r.render(canvas, row2, ctx, focused && f.on_replace);
+            let hint = "Enter: replace · Ctrl+Enter: all";
+            let hw = ctx.text_width(hint, FontKind::Ui) as i32;
+            ctx.label(
+                canvas,
+                hint,
+                row2.right() + pad,
+                row2.y + (row2.h - lh) / 2,
+                theme::DIM,
+                hw + 2,
+                FontKind::Ui,
+            );
+        }
+    }
+
+    fn render_editor(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         canvas.fill_rect(rect, theme::BACKGROUND);
         self.last_rect = rect;
         self.view_w = rect.w as f32;
@@ -623,6 +938,22 @@ impl View for CodeView {
             ctx.label(canvas, &label, lx, y, num_color, lw + 2, FontKind::Mono);
 
             canvas.set_clip(text_rect.intersect(&outer));
+            // Find matches.
+            if let Some(f) = self.find.as_mut() {
+                let ms = f.line_matches(self.doc.buf.line(i));
+                for (a, b) in ms {
+                    let (x0, x1) = (self.col_to_x(i, a, ctx), self.col_to_x(i, b, ctx));
+                    canvas.fill_rect(
+                        Rect::new(
+                            (ox + x0).round() as i32,
+                            y,
+                            (x1 - x0).round().max(2.0) as i32,
+                            lh as i32,
+                        ),
+                        theme::FIND_MATCH,
+                    );
+                }
+            }
             // Selections.
             for s in &sels {
                 let (a, b) = s.range();
@@ -678,7 +1009,7 @@ impl View for CodeView {
         draw_vscrollbar(canvas, rect, self.scroll.y, content_h, ctx);
     }
 
-    fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+    fn handle_editor(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
         self.last_rect = rect;
         let lh = ctx.code_metrics().line_height;
         let before = (
@@ -748,6 +1079,25 @@ impl View for CodeView {
                 self.doc.version(),
                 self.doc.sels.clone(),
             )
+    }
+}
+
+impl View for CodeView {
+    fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        let (edit, bar) = self.split(rect, ctx);
+        self.render_editor(canvas, edit, ctx);
+        if let Some(bar) = bar {
+            canvas.set_clip(bar);
+            self.render_find(canvas, bar, ctx);
+        }
+    }
+
+    fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        let (edit, bar) = self.split(rect, ctx);
+        if let Some(r) = self.handle_find(input, edit, bar, ctx) {
+            return r;
+        }
+        self.handle_editor(input, edit, ctx)
     }
 
     fn tick(&mut self, _ctx: &mut Ctx, budget: Duration) -> Tick {
