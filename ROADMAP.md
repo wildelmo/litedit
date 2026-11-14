@@ -54,9 +54,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 - [ ] S1.5 Preview: tables
 - [ ] S1.6 Preview: local images (size-limited decode, no remote fetch)
 - [ ] S1.7 Links: click opens http/https/mailto only; local .md opens in litedit
-- [ ] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
+- [x] S1.8 Code view: syntect highlighting (fancy-regex, pure Rust), line numbers,
        lazy highlighting, scrolling
-- [ ] S1.9 Theme: lite-xl default dark palette for UI + syntax
+- [x] S1.9 Theme: lite-xl default dark palette for UI + syntax
 - [ ] S1.10 File tree: open folder, lazy expand/collapse, icons, ignore list,
         hidden toggle, keyboard nav, resize, highlight current file, Ctrl+\
 - [ ] S1.11 Open file / folder: CLI arg, Ctrl+O, Ctrl+Shift+O, drag-drop
@@ -99,6 +99,10 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S1.8/S1.9 done: syntect + two-face (fancy-regex), lite-xl colours,
+  budgeted incremental highlighting with checkpoints. 173k-line file: ~17k
+  lines/s, 66 MB peak. Linux exe grew 4.7 → 7.5 MB (grammar set).
+  Gap: no PowerShell grammar in two-face (S4.x: consider adding one).
 - 2026-11-14 — S1.0 done: Input enum, View trait, per-line cached CodeView,
   `--script` mode with assertions, CI smoke script + base64 screenshots
   (`scripts/ci-shots.sh`), budgeted tick + EventLoopProxy. 22 tests.

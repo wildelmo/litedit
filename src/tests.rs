@@ -186,3 +186,30 @@ fn plain_keys_without_ctrl_do_not_trigger_shortcuts() {
     });
     assert!(app.take_requests().is_empty());
 }
+
+#[test]
+fn highlighting_big_files_is_budgeted() {
+    let dir = std::env::temp_dir().join(format!("litedit-hl-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("big.rs");
+    let text: String = (0..60_000)
+        .map(|i| format!("fn f{i}() -> i32 {{ let s = \"x\"; {i} }} // c\n"))
+        .collect();
+    std::fs::write(&path, text).unwrap();
+    let mut app = new_app();
+    app.open(&path);
+    render_hash(&mut app, 800, 600);
+    let t = std::time::Instant::now();
+    let tick = app.tick(Duration::from_millis(5));
+    assert!(
+        t.elapsed() < Duration::from_millis(250),
+        "tick took {:?}",
+        t.elapsed()
+    );
+    assert!(tick.more, "60k lines cannot finish in 5ms");
+    assert!(tick.redraw, "first lines are visible and just got colours");
+    // Jump to the end: unhighlighted text renders fine meanwhile.
+    key(&mut app, "ctrl+end");
+    render_hash(&mut app, 800, 600);
+    std::fs::remove_dir_all(&dir).ok();
+}

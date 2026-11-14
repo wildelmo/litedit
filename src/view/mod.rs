@@ -10,6 +10,15 @@ use crate::input::Input;
 use crate::theme;
 use crate::ui::Ctx;
 
+/// Result of a unit of deferred work.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tick {
+    /// More work remains.
+    pub more: bool,
+    /// Something visible changed.
+    pub redraw: bool,
+}
+
 pub trait View {
     /// Draw into `rect`. The canvas clip is already set to `rect`.
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx);
@@ -19,9 +28,8 @@ pub trait View {
     fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool;
 
     /// Do up to `budget` of deferred work (e.g. syntax highlighting).
-    /// Returns true if more work remains.
-    fn tick(&mut self, _ctx: &mut Ctx, _budget: Duration) -> bool {
-        false
+    fn tick(&mut self, _ctx: &mut Ctx, _budget: Duration) -> Tick {
+        Tick::default()
     }
 
     /// Window title fragment (usually the file name).

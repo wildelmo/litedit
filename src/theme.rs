@@ -13,7 +13,18 @@ pub const LINE_NUMBER: Color = Color::hex(0x525259);
 pub const SCROLLBAR: Color = Color::hex(0x414146);
 pub const ERROR: Color = Color::hex(0xff3333);
 
+pub const GOOD: Color = Color::hex(0x72b886);
+
+// Syntax colours (lite-xl `style.syntax`).
 pub const SYNTAX_NORMAL: Color = Color::hex(0xe1e1e6);
+pub const SYNTAX_COMMENT: Color = Color::hex(0x676b6f);
+pub const SYNTAX_KEYWORD: Color = Color::hex(0xe58ac9);
+pub const SYNTAX_KEYWORD2: Color = Color::hex(0xf77483);
+pub const SYNTAX_NUMBER: Color = Color::hex(0xffa94d);
+pub const SYNTAX_LITERAL: Color = Color::hex(0xffa94d);
+pub const SYNTAX_STRING: Color = Color::hex(0xf7c95c);
+pub const SYNTAX_OPERATOR: Color = Color::hex(0x93ddfa);
+pub const SYNTAX_FUNCTION: Color = Color::hex(0x93ddfa);
 
 /// Base sizes in logical pixels (lite-xl defaults).
 pub const FONT_SIZE: f32 = 15.0;

@@ -6,6 +6,7 @@ mod canvas;
 mod doc;
 mod input;
 mod script;
+mod syntax;
 mod text;
 mod theme;
 mod ui;

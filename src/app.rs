@@ -10,9 +10,9 @@ use crate::input::{Cursor, Input, Key, Request};
 use crate::text::Fonts;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
-use crate::view::View;
 use crate::view::code::CodeView;
 use crate::view::message::MessageView;
+use crate::view::{Tick, View};
 
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 3.0;
@@ -193,8 +193,8 @@ impl App {
         true
     }
 
-    /// Run deferred work for at most `budget`. Returns true if more remains.
-    pub fn tick(&mut self, budget: Duration) -> bool {
+    /// Run deferred work for at most `budget`.
+    pub fn tick(&mut self, budget: Duration) -> Tick {
         let mut ctx = Ctx {
             fonts: &mut self.fonts,
             scale: self.scale,
@@ -202,14 +202,15 @@ impl App {
             requests: &mut self.requests,
             cursor: &mut self.cursor,
         };
-        self.pending = self.view.tick(&mut ctx, budget);
-        self.pending
+        let t = self.view.tick(&mut ctx, budget);
+        self.pending = t.more;
+        t
     }
 
     /// Finish all deferred work (scripts and screenshots), bounded by `limit`.
     pub fn settle(&mut self, limit: Duration) {
         let start = Instant::now();
-        while self.tick(Duration::from_millis(50)) && start.elapsed() < limit {}
+        while self.tick(Duration::from_millis(50)).more && start.elapsed() < limit {}
     }
 
     pub fn render(&mut self, canvas: &mut Canvas) {

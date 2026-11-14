@@ -5,15 +5,17 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 
-use cosmic_text::{Attrs, Buffer, Family, Shaping, Wrap};
+use cosmic_text::{Attrs, Buffer, Family, Metrics, Shaping, Style, Weight, Wrap};
 
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::input::{Input, Key};
+use crate::syntax::{LineHighlighter, Span, find_syntax};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
-use crate::view::{Scroll, View, draw_vscrollbar};
+use crate::view::{Scroll, Tick, View, draw_vscrollbar};
 
 /// Lines longer than this are cut for display (minified files). The full line
 /// is kept in memory; only shaping is capped.
@@ -24,25 +26,34 @@ pub struct CodeView {
     doc: Document,
     lines: Vec<String>,
     scroll: Scroll,
-    cache: HashMap<usize, Buffer>,
+    /// Shaped lines around the viewport; the flag says whether the line was
+    /// shaped with syntax colours (so it is rebuilt once highlighting arrives).
+    cache: HashMap<usize, (Buffer, bool)>,
+    highlighter: LineHighlighter,
     /// (font size, char width) — recomputed when the font size changes.
     char_w: Option<(f32, f32)>,
     longest_line_chars: usize,
     view_w: f32,
     view_h: f32,
+    /// Visible line range at the last render.
+    visible: (usize, usize),
 }
 
 impl CodeView {
     pub fn new(doc: Document) -> Self {
+        let first_line = doc.text.lines().next().unwrap_or("");
+        let highlighter = LineHighlighter::new(find_syntax(&doc.path, first_line));
         let mut v = Self {
             doc,
             lines: Vec::new(),
             scroll: Scroll::default(),
             cache: HashMap::new(),
+            highlighter,
             char_w: None,
             longest_line_chars: 0,
             view_w: 0.0,
             view_h: 0.0,
+            visible: (0, usize::MAX),
         };
         v.load_lines();
         v
@@ -109,18 +120,83 @@ impl CodeView {
     }
 
     fn line_buffer(&mut self, i: usize, ctx: &mut Ctx) -> &mut Buffer {
-        let m = ctx.code_metrics();
-        let fam = ctx.family(FontKind::Mono);
-        let line = &self.lines[i];
-        self.cache.entry(i).or_insert_with(|| {
-            let mut b = Buffer::new_empty(m);
-            b.set_wrap(Wrap::None);
-            let text = expand_tabs(line, MAX_DISPLAY_CHARS);
-            let attrs = Attrs::new().family(Family::Name(&fam));
-            b.set_text(&text, &attrs, Shaping::Advanced, None);
-            b
-        })
+        let spans = self.highlighter.spans(i);
+        let stale = match self.cache.get(&i) {
+            Some((_, colored)) => !colored && spans.is_some(),
+            None => true,
+        };
+        if stale {
+            let fam = ctx.family(FontKind::Mono);
+            let b = shape_code_line(&self.lines[i], spans, &fam, ctx.code_metrics());
+            self.cache.insert(i, (b, spans.is_some()));
+        }
+        &mut self.cache.get_mut(&i).expect("just inserted").0
     }
+}
+
+/// Split a line into styled pieces with tabs expanded, cut at `max_cols`.
+/// `spans` are byte ranges into the original (unexpanded) line.
+pub fn styled_pieces(line: &str, spans: &[Span], max_cols: usize) -> Vec<(String, Option<Span>)> {
+    let mut pieces: Vec<(String, Option<Span>)> = Vec::new();
+    let mut col = 0;
+    let mut si = 0;
+    for (b, c) in line.char_indices() {
+        let b = b as u32;
+        while si < spans.len() && spans[si].end <= b {
+            si += 1;
+        }
+        let span = spans.get(si).copied().filter(|s| s.start <= b);
+        if col >= max_cols {
+            pieces.push(("…".into(), None));
+            break;
+        }
+        let text: String = if c == '\t' {
+            let n = TAB_WIDTH - col % TAB_WIDTH;
+            col += n;
+            " ".repeat(n)
+        } else {
+            col += 1;
+            c.to_string()
+        };
+        match pieces.last_mut() {
+            Some((t, s)) if *s == span => t.push_str(&text),
+            _ => pieces.push((text, span)),
+        }
+    }
+    pieces
+}
+
+/// Shape one code line (optionally syntax-coloured) into a buffer.
+pub fn shape_code_line(line: &str, spans: Option<&[Span]>, family: &str, m: Metrics) -> Buffer {
+    let mut b = Buffer::new_empty(m);
+    b.set_wrap(Wrap::None);
+    let base = Attrs::new().family(Family::Name(family));
+    match spans {
+        Some(spans) if !spans.is_empty() => {
+            let pieces = styled_pieces(line, spans, MAX_DISPLAY_CHARS);
+            let rich = pieces.iter().map(|(t, s)| {
+                let mut a = base.clone();
+                if let Some(s) = s {
+                    a = a.color(cosmic_text::Color::rgb(s.color.r, s.color.g, s.color.b));
+                    if s.bold {
+                        a = a.weight(Weight::BOLD);
+                    }
+                    if s.italic {
+                        a = a.style(Style::Italic);
+                    }
+                }
+                (t.as_str(), a)
+            });
+            b.set_rich_text(rich, &base, Shaping::Advanced, None);
+        }
+        _ => b.set_text(
+            &expand_tabs(line, MAX_DISPLAY_CHARS),
+            &base,
+            Shaping::Advanced,
+            None,
+        ),
+    }
+    b
 }
 
 /// Visible width of a line in columns, with tabs expanded.
@@ -178,6 +254,7 @@ impl View for CodeView {
             .max(0.0) as usize)
             .min(self.lines.len());
 
+        self.visible = (first, last);
         // Drop cached lines far from the viewport.
         if self.cache.len() > 4 * (last - first + 1) + 64 {
             let keep = first.saturating_sub(64)..last + 64;
@@ -249,6 +326,16 @@ impl View for CodeView {
         before != (self.scroll.x, self.scroll.y)
     }
 
+    fn tick(&mut self, _ctx: &mut Ctx, budget: Duration) -> Tick {
+        let before = self.highlighter.done();
+        let more = self.highlighter.step(&self.lines, budget);
+        let after = self.highlighter.done();
+        let (first, last) = self.visible;
+        // Redraw only if newly highlighted lines are on screen.
+        let redraw = after > before && before < last && after > first;
+        Tick { more, redraw }
+    }
+
     fn title(&self) -> String {
         self.doc.file_name()
     }
@@ -256,6 +343,7 @@ impl View for CodeView {
     fn status(&self) -> Vec<String> {
         vec![
             format!("{} lines", self.lines.len()),
+            self.highlighter.name().to_string(),
             match self.doc.line_ending {
                 crate::doc::LineEnding::Lf => "LF".into(),
                 crate::doc::LineEnding::CrLf => "CRLF".into(),
@@ -280,6 +368,8 @@ impl View for CodeView {
             Ok(d) if d.text != self.doc.text => {
                 self.doc = d;
                 self.load_lines();
+                let first_line = self.lines.first().map(String::as_str).unwrap_or("");
+                self.highlighter = LineHighlighter::new(find_syntax(&self.doc.path, first_line));
                 true
             }
             _ => false,

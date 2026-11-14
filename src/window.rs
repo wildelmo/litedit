@@ -251,8 +251,7 @@ impl ApplicationHandler<UserEvent> for Runner {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if self.app.has_pending_work() {
-            self.app.tick(TICK_BUDGET);
+        if self.app.has_pending_work() && self.app.tick(TICK_BUDGET).redraw {
             if let Some(g) = &self.gfx {
                 g.window.request_redraw();
             }
