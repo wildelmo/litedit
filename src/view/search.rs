@@ -217,13 +217,13 @@ impl Drop for SearchView {
 impl View for SearchView {
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         self.last_rect = rect;
-        canvas.fill_rect(rect, theme::BACKGROUND);
+        canvas.fill_rect(rect, theme::p().background);
         self.clamp(ctx);
         let pad = ctx.px(theme::PADDING_X) as i32;
         let hh = Self::header_h(ctx) as i32;
         let lh_ui = ctx.ui_metrics().line_height as i32;
         let header = Rect::new(rect.x, rect.y, rect.w, hh);
-        canvas.fill_rect(header, theme::BACKGROUND2);
+        canvas.fill_rect(header, theme::p().background2);
         let status = format!(
             "{} result{} for \"{}\" in {}{}",
             self.hits.len(),
@@ -241,7 +241,7 @@ impl View for SearchView {
             &status,
             rect.x + pad,
             rect.y + (hh - lh_ui) / 2,
-            theme::ACCENT,
+            theme::p().accent,
             rect.w - pad * 2,
             FontKind::Ui,
         );
@@ -265,9 +265,9 @@ impl View for SearchView {
                 canvas.fill_rect(
                     row,
                     if ctx.focused {
-                        theme::SELECTION
+                        theme::p().selection
                     } else {
-                        theme::LINE_HIGHLIGHT
+                        theme::p().line_highlight
                     },
                 );
             }
@@ -286,7 +286,7 @@ impl View for SearchView {
                 &loc,
                 list.x + pad,
                 ty,
-                theme::SYNTAX_FUNCTION,
+                theme::p().syntax_function,
                 loc_w,
                 FontKind::Ui,
             );
@@ -300,13 +300,13 @@ impl View for SearchView {
             let before = text.get(..a).unwrap_or("");
             let mx = tx + (before.chars().count() as f32 * char_w) as i32;
             let mw = (text.get(a..b).unwrap_or("").chars().count() as f32 * char_w) as i32;
-            canvas.fill_rect(Rect::new(mx, ty, mw.max(2), lh), theme::FIND_MATCH);
+            canvas.fill_rect(Rect::new(mx, ty, mw.max(2), lh), theme::p().find_match);
             ctx.label(
                 canvas,
                 text,
                 tx,
                 ty,
-                theme::SYNTAX_NORMAL,
+                theme::p().syntax_normal,
                 list.right() - tx - pad,
                 FontKind::Mono,
             );

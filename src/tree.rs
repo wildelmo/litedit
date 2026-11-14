@@ -432,7 +432,7 @@ impl Tree {
     ) {
         self.view_h = rect.h as f32;
         self.clamp(ctx);
-        canvas.fill_rect(rect, theme::BACKGROUND2);
+        canvas.fill_rect(rect, theme::p().background2);
         let rh = Self::row_height(ctx);
         let pad_y = ctx.px(theme::PADDING_Y);
         let indent = ctx.px(14.0);
@@ -447,20 +447,20 @@ impl Tree {
             let y = top + i as f32 * rh;
             let row_rect = Rect::new(rect.x, y.round() as i32, rect.w, rh as i32);
             if Some(row.entry.path.as_path()) == current {
-                canvas.fill_rect(row_rect, theme::LINE_HIGHLIGHT);
+                canvas.fill_rect(row_rect, theme::p().line_highlight);
             }
             if self.selected == Some(i) && focused {
-                canvas.fill_rect(row_rect, theme::SELECTION);
+                canvas.fill_rect(row_rect, theme::p().selection);
             } else if self.hover == Some(i) {
-                canvas.fill_rect(row_rect, theme::LINE_HIGHLIGHT);
+                canvas.fill_rect(row_rect, theme::p().line_highlight);
             }
             let x = rect.x as f32 + ctx.px(10.0) + row.depth.saturating_sub(1) as f32 * indent;
             let cy = y + rh / 2.0;
             let icon = ctx.px(6.0);
             let color = if row.entry.is_dir {
-                theme::ACCENT
+                theme::p().accent
             } else {
-                theme::TEXT
+                theme::p().text
             };
             let lw = ctx.px(1.6).max(1.2);
             if row.depth == 0 {
@@ -469,11 +469,11 @@ impl Tree {
                 // Chevron ▸ / ▾
                 let (cx, s) = (x + icon * 0.5, icon * 0.55);
                 if row.expanded {
-                    canvas.draw_line(cx - s, cy - s * 0.4, cx, cy + s * 0.5, lw, theme::TEXT);
-                    canvas.draw_line(cx, cy + s * 0.5, cx + s, cy - s * 0.4, lw, theme::TEXT);
+                    canvas.draw_line(cx - s, cy - s * 0.4, cx, cy + s * 0.5, lw, theme::p().text);
+                    canvas.draw_line(cx, cy + s * 0.5, cx + s, cy - s * 0.4, lw, theme::p().text);
                 } else {
-                    canvas.draw_line(cx - s * 0.4, cy - s, cx + s * 0.5, cy, lw, theme::TEXT);
-                    canvas.draw_line(cx + s * 0.5, cy, cx - s * 0.4, cy + s, lw, theme::TEXT);
+                    canvas.draw_line(cx - s * 0.4, cy - s, cx + s * 0.5, cy, lw, theme::p().text);
+                    canvas.draw_line(cx + s * 0.5, cy, cx - s * 0.4, cy + s, lw, theme::p().text);
                 }
             } else {
                 // File: small type-coloured dot.
@@ -499,7 +499,11 @@ impl Tree {
                 name.push_str(" ↗");
             }
             let ty = (cy - lh / 2.0).round() as i32;
-            let label_color = if row.depth == 0 { theme::ACCENT } else { color };
+            let label_color = if row.depth == 0 {
+                theme::p().accent
+            } else {
+                color
+            };
             ctx.label(
                 canvas,
                 &name,
@@ -528,13 +532,13 @@ impl Tree {
 fn file_color(name: &str) -> crate::canvas::Color {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
-        "md" | "markdown" | "txt" => theme::SYNTAX_FUNCTION,
-        "rs" | "toml" => theme::SYNTAX_NUMBER,
-        "js" | "ts" | "jsx" | "tsx" | "json" => theme::SYNTAX_STRING,
-        "py" | "rb" | "go" | "c" | "h" | "cpp" | "cs" | "java" => theme::SYNTAX_KEYWORD,
-        "html" | "css" | "xml" | "svg" => theme::SYNTAX_KEYWORD2,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => theme::GOOD,
-        _ => theme::DIM,
+        "md" | "markdown" | "txt" => theme::p().syntax_function,
+        "rs" | "toml" => theme::p().syntax_number,
+        "js" | "ts" | "jsx" | "tsx" | "json" => theme::p().syntax_string,
+        "py" | "rb" | "go" | "c" | "h" | "cpp" | "cs" | "java" => theme::p().syntax_keyword,
+        "html" | "css" | "xml" | "svg" => theme::p().syntax_keyword2,
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => theme::p().good,
+        _ => theme::p().dim,
     }
 }
 

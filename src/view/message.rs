@@ -23,7 +23,7 @@ impl MessageView {
                 "Ctrl+Shift+O  open a folder".into(),
                 "or drag a file or folder onto this window".into(),
             ],
-            color: theme::TEXT,
+            color: theme::p().text,
         }
     }
 
@@ -36,7 +36,7 @@ impl MessageView {
                 "Pick a file in the tree on the left".into(),
                 "Ctrl+\\  show / hide the tree    Ctrl+Shift+E  focus the tree".into(),
             ],
-            color: theme::TEXT,
+            color: theme::p().text,
         }
     }
 
@@ -44,14 +44,14 @@ impl MessageView {
         Self {
             title: title.to_string(),
             lines: vec![msg],
-            color: theme::ERROR,
+            color: theme::p().error,
         }
     }
 }
 
 impl View for MessageView {
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
-        canvas.fill_rect(rect, theme::BACKGROUND);
+        canvas.fill_rect(rect, theme::p().background);
         let lh = ctx.ui_metrics().line_height as i32;
         let total = lh * self.lines.len() as i32;
         let mut y = rect.y + (rect.h - total) / 2;
@@ -59,7 +59,7 @@ impl View for MessageView {
             let w = ctx.text_width(line, FontKind::Ui) as i32;
             let x = rect.x + ((rect.w - w) / 2).max(ctx.px(theme::PADDING_X) as i32);
             let color = if i == 0 && self.title.is_empty() {
-                theme::ACCENT
+                theme::p().accent
             } else {
                 self.color
             };

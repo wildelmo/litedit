@@ -1632,3 +1632,29 @@ fn preview_text_can_be_selected_and_copied() {
     render_hash(&mut app, 900, 600);
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+/// Pixel hashes of representative scenes. The runtime-theme refactor must
+/// leave dark mode byte-identical; this prints them for comparison.
+#[test]
+#[ignore]
+fn print_scene_hashes() {
+    let mut out = String::new();
+    let scenes: Vec<(&str, Vec<&str>)> = vec![
+        ("sample.rs", vec![]),
+        ("sample.md", vec![]),
+        ("sample.md", vec!["ctrl+e"]),
+        ("sample.md", vec!["ctrl+shift+v"]),
+        ("sample.rs", vec!["ctrl+f"]),
+        ("crlf.txt", vec!["ctrl+shift+p"]),
+    ];
+    for (f, keys) in scenes {
+        let mut app = new_app();
+        app.open(&fixture(f));
+        for k in keys {
+            key(&mut app, k);
+        }
+        app.settle(Duration::from_secs(5));
+        out.push_str(&format!("{f} {:?}\n", render_hash(&mut app, 1000, 700)));
+    }
+    std::fs::write(std::env::var("HASH_OUT").unwrap(), out).unwrap();
+}

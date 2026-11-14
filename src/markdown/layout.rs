@@ -186,9 +186,9 @@ fn inline_pieces<'a>(
     tone: Tone,
 ) -> Vec<(String, Attrs<'a>)> {
     let text_color = if tone == Tone::Muted {
-        theme::MD_MUTED
+        theme::p().md_muted
     } else {
-        theme::MD_TEXT
+        theme::p().md_text
     };
     let mut out: Vec<(String, Attrs<'a>)> = Vec::new();
     for inl in inlines {
@@ -196,7 +196,7 @@ fn inline_pieces<'a>(
             Inline::Text { text, style, link } => {
                 let mut a = base.clone().color(ccol(text_color));
                 if style.bold {
-                    a = a.weight(Weight::BOLD).color(ccol(theme::MD_HEADING));
+                    a = a.weight(Weight::BOLD).color(ccol(theme::p().md_heading));
                 }
                 if style.italic {
                     a = a.style(Style::Italic);
@@ -209,11 +209,11 @@ fn inline_pieces<'a>(
                 if style.code {
                     a = a
                         .family(Family::Name(mono))
-                        .color(ccol(theme::SYNTAX_STRING));
+                        .color(ccol(theme::p().syntax_string));
                     meta |= META_CODE;
                 }
                 if let Some(l) = link {
-                    a = a.color(ccol(theme::MD_LINK));
+                    a = a.color(ccol(theme::p().md_link));
                     deco.underline = cosmic_text::UnderlineStyle::Single;
                     meta |= meta_link(*l);
                 }
@@ -225,7 +225,7 @@ fn inline_pieces<'a>(
             Inline::Image { alt, link, .. } => {
                 let mut a = base
                     .clone()
-                    .color(ccol(theme::MD_MUTED))
+                    .color(ccol(theme::p().md_muted))
                     .style(Style::Italic);
                 if let Some(l) = link {
                     a = a.metadata(meta_link(*l));
@@ -355,11 +355,11 @@ fn layout_block(
             let hb = base
                 .clone()
                 .weight(Weight::BOLD)
-                .color(ccol(theme::MD_HEADING));
+                .color(ccol(theme::p().md_heading));
             let mut pieces = inline_pieces(inlines, &mono, &hb, tone);
             for (_, a) in pieces.iter_mut() {
-                if a.color_opt == Some(ccol(theme::MD_TEXT)) {
-                    *a = a.clone().color(ccol(theme::MD_HEADING));
+                if a.color_opt == Some(ccol(theme::p().md_text)) {
+                    *a = a.clone().color(ccol(theme::p().md_heading));
                 }
                 *a = a.clone().weight(Weight::BOLD);
             }
@@ -371,7 +371,7 @@ fn layout_block(
                 y,
                 h,
                 buffer: buf,
-                color: theme::MD_HEADING,
+                color: theme::p().md_heading,
                 sel: true,
             });
             let mut y = y + h;
@@ -382,7 +382,7 @@ fn layout_block(
                     y,
                     w,
                     h: ctx.px(1.0).max(1.0),
-                    color: theme::MD_BORDER,
+                    color: theme::p().md_border,
                 });
                 y += ctx.px(2.0);
             }
@@ -440,9 +440,9 @@ fn layout_block(
             let buf = shape_rich(ctx, &pieces, &base, m, w, None);
             let h = buffer_height(&buf);
             let color = if tone == Tone::Muted {
-                theme::MD_MUTED
+                theme::p().md_muted
             } else {
-                theme::MD_TEXT
+                theme::p().md_text
             };
             out.elements.push(Element::Text {
                 x,
@@ -459,7 +459,7 @@ fn layout_block(
             let m = ctx.code();
             let mono_attrs = Attrs::new()
                 .family(Family::Name(&mono))
-                .color(ccol(theme::SYNTAX_NORMAL));
+                .color(ccol(theme::p().syntax_normal));
             let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
             let hidden = lines.len().saturating_sub(MAX_CODE_BLOCK_LINES);
             lines.truncate(MAX_CODE_BLOCK_LINES);
@@ -499,7 +499,7 @@ fn layout_block(
                     y: cy,
                     h,
                     buffer: buf,
-                    color: theme::SYNTAX_NORMAL,
+                    color: theme::p().syntax_normal,
                     sel: true,
                 });
                 cy += h;
@@ -507,7 +507,7 @@ fn layout_block(
             if hidden > 0 {
                 let a = Attrs::new()
                     .family(Family::Name(&sans))
-                    .color(ccol(theme::MD_MUTED))
+                    .color(ccol(theme::p().md_muted))
                     .style(Style::Italic);
                 let note = format!("… {hidden} more lines (Ctrl+E shows the full source)");
                 let buf = shape_rich(
@@ -524,7 +524,7 @@ fn layout_block(
                     y: cy,
                     h,
                     buffer: buf,
-                    color: theme::MD_MUTED,
+                    color: theme::p().md_muted,
                     sel: true,
                 });
                 cy += h;
@@ -537,7 +537,7 @@ fn layout_block(
                     y,
                     w,
                     h: total,
-                    color: theme::MD_BLOCK_BG,
+                    color: theme::p().md_block_bg,
                 },
             );
             y + total
@@ -548,12 +548,12 @@ fn layout_block(
             let start_idx = out.elements.len();
             let mut cy = y;
             let bar_color = match callout {
-                Some(Callout::Note) => theme::MD_NOTE,
-                Some(Callout::Tip) => theme::MD_TIP,
-                Some(Callout::Important) => theme::MD_IMPORTANT,
-                Some(Callout::Warning) => theme::MD_WARNING,
-                Some(Callout::Caution) => theme::MD_CAUTION,
-                None => theme::MD_BORDER,
+                Some(Callout::Note) => theme::p().md_note,
+                Some(Callout::Tip) => theme::p().md_tip,
+                Some(Callout::Important) => theme::p().md_important,
+                Some(Callout::Warning) => theme::p().md_warning,
+                Some(Callout::Caution) => theme::p().md_caution,
+                None => theme::p().md_border,
             };
             if let Some(c) = callout {
                 let title = match c {
@@ -620,13 +620,13 @@ fn layout_block(
                 y: y + ctx.px(6.0),
                 w,
                 h,
-                color: theme::MD_BORDER,
+                color: theme::p().md_border,
             });
             y + h + ctx.px(12.0)
         }
         BlockKind::Footnote { label, blocks } => {
             let m = ctx.body();
-            let a = base.clone().color(ccol(theme::MD_MUTED));
+            let a = base.clone().color(ccol(theme::p().md_muted));
             let lbl = format!("[{label}]");
             let buf = shape_rich(ctx, &[(lbl, a.clone())], &a, m, w, None);
             let lw = buffer_width(&buf) + ctx.px(8.0);
@@ -636,7 +636,7 @@ fn layout_block(
                 y,
                 h,
                 buffer: buf,
-                color: theme::MD_MUTED,
+                color: theme::p().md_muted,
                 sel: true,
             });
             layout_blocks(blocks, ctx, out, x + lw, w - lw, y, depth + 1, Tone::Muted).max(y + h)
@@ -661,7 +661,7 @@ fn layout_list(
     let sans = ctx.sans.clone();
     let base = Attrs::new()
         .family(Family::Name(&sans))
-        .color(ccol(theme::MD_MUTED));
+        .color(ccol(theme::p().md_muted));
     let mut y = y;
     let bullet = ["•", "◦", "▪"][depth.min(30) % 3];
     for (i, item) in items.iter().enumerate() {
@@ -695,7 +695,7 @@ fn layout_list(
                 y,
                 h,
                 buffer: buf,
-                color: theme::MD_MUTED,
+                color: theme::p().md_muted,
                 sel: false,
             });
         }
@@ -812,7 +812,7 @@ fn layout_table(
                 y: cy,
                 w: table_w,
                 h: full_h,
-                color: theme::MD_BLOCK_BG,
+                color: theme::p().md_block_bg,
             });
         } else if ri % 2 == 0 {
             out.elements.push(Element::Fill {
@@ -820,7 +820,7 @@ fn layout_table(
                 y: cy,
                 w: table_w,
                 h: full_h,
-                color: theme::MD_ZEBRA,
+                color: theme::p().md_zebra,
             });
         }
         for (cx, buf) in cells {
@@ -829,7 +829,7 @@ fn layout_table(
                 y: cy + pad_y,
                 h: row_h,
                 buffer: buf,
-                color: theme::MD_TEXT,
+                color: theme::p().md_text,
                 sel: true,
             });
         }
@@ -844,7 +844,7 @@ fn layout_table(
             y: ty,
             w: table_w,
             h: line,
-            color: theme::MD_BORDER,
+            color: theme::p().md_border,
         });
     }
     let mut gx = x;
@@ -854,7 +854,7 @@ fn layout_table(
             y,
             w: line,
             h: cy - y,
-            color: theme::MD_BORDER,
+            color: theme::p().md_border,
         });
         gx += cw;
     }
@@ -863,7 +863,7 @@ fn layout_table(
         y,
         w: line,
         h: cy - y,
-        color: theme::MD_BORDER,
+        color: theme::p().md_border,
     });
     cy + line
 }

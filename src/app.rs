@@ -1392,7 +1392,7 @@ impl App {
         }
         let layout = self.layout();
         canvas.set_clip(canvas.bounds());
-        canvas.fill_rect(canvas.bounds(), theme::BACKGROUND);
+        canvas.fill_rect(canvas.bounds(), theme::p().background);
 
         let tab_info = layout.tabs.map(|bar| {
             let titles: Vec<(String, bool)> = (0..self.tabs.len())
@@ -1431,13 +1431,13 @@ impl App {
                 focus == Focus::Tree,
             );
             canvas.set_clip(d);
-            canvas.fill_rect(d, theme::DIVIDER);
+            canvas.fill_rect(d, theme::p().divider);
         }
 
         if let Some((bar, rects, titles)) = &tab_info {
             let bar = *bar;
             canvas.set_clip(bar);
-            canvas.fill_rect(bar, theme::BACKGROUND2);
+            canvas.fill_rect(bar, theme::p().background2);
             let pad = ctx.px(theme::PADDING_X) as i32;
             let lh = ctx.ui_metrics().line_height as i32;
             for (i, ((r, close), (title, _dirty))) in rects.iter().zip(titles.iter()).enumerate() {
@@ -1447,9 +1447,9 @@ impl App {
                     && (mouse.1 as i32) >= r.y
                     && (mouse.1 as i32) < r.bottom();
                 if active {
-                    canvas.fill_rect(*r, theme::BACKGROUND);
+                    canvas.fill_rect(*r, theme::p().background);
                 } else if hovered {
-                    canvas.fill_rect(*r, theme::LINE_HIGHLIGHT);
+                    canvas.fill_rect(*r, theme::p().line_highlight);
                 }
                 canvas.fill_rect(
                     Rect::new(
@@ -1458,9 +1458,13 @@ impl App {
                         1,
                         r.h - ctx.px(12.0) as i32,
                     ),
-                    theme::DIVIDER,
+                    theme::p().divider,
                 );
-                let color = if active { theme::ACCENT } else { theme::TEXT };
+                let color = if active {
+                    theme::p().accent
+                } else {
+                    theme::p().text
+                };
                 let text_w = (close.x - r.x - pad - ctx.px(4.0) as i32).max(0);
                 ctx.label(
                     canvas,
@@ -1478,8 +1482,8 @@ impl App {
                         close.w as f32 * 0.28,
                     );
                     let lw = ctx.px(1.5).max(1.0);
-                    canvas.draw_line(cx - s, cy - s, cx + s, cy + s, lw, theme::TEXT);
-                    canvas.draw_line(cx - s, cy + s, cx + s, cy - s, lw, theme::TEXT);
+                    canvas.draw_line(cx - s, cy - s, cx + s, cy + s, lw, theme::p().text);
+                    canvas.draw_line(cx - s, cy + s, cx + s, cy - s, lw, theme::p().text);
                 }
             }
         }
@@ -1498,10 +1502,10 @@ impl App {
 
         // Status bar (lite-xl StatusView).
         canvas.set_clip(layout.status);
-        canvas.fill_rect(layout.status, theme::BACKGROUND2);
+        canvas.fill_rect(layout.status, theme::p().background2);
         canvas.fill_rect(
             Rect::new(layout.status.x, layout.status.y, layout.status.w, 1),
-            theme::DIVIDER,
+            theme::p().divider,
         );
         let pad_x = ctx.px(theme::PADDING_X) as i32;
         let pad_y = ctx.px(theme::PADDING_Y) as i32;
@@ -1515,7 +1519,11 @@ impl App {
             items.push(n);
         }
         for (i, item) in items.iter().enumerate() {
-            let color = if i == 0 { theme::ACCENT } else { theme::TEXT };
+            let color = if i == 0 {
+                theme::p().accent
+            } else {
+                theme::p().text
+            };
             let w = ctx.text_width(item, FontKind::Ui) as i32;
             ctx.label(
                 canvas,
@@ -1536,7 +1544,7 @@ impl App {
                 &z,
                 layout.status.right() - pad_x - w,
                 y,
-                theme::TEXT,
+                theme::p().text,
                 w + 2,
                 FontKind::Ui,
             );

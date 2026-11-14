@@ -145,7 +145,7 @@ impl InputBar {
             &self.label,
             rect.x + pad_x,
             ty,
-            theme::TEXT,
+            theme::p().text,
             label_w,
             FontKind::Ui,
         );
@@ -158,7 +158,7 @@ impl InputBar {
         if field.w <= 0 {
             return;
         }
-        canvas.fill_rect(field, theme::BACKGROUND);
+        canvas.fill_rect(field, theme::p().background);
         let inner_pad = ctx.px(6.0);
         let text_w = (field.w as f32 - inner_pad * 2.0).max(1.0);
 
@@ -200,15 +200,15 @@ impl InputBar {
             let (x0, x1) = (x_of(a.col), x_of(z.col));
             canvas.fill_rect(
                 Rect::new((ox + x0) as i32, ty, (x1 - x0).max(1.0) as i32, lh),
-                theme::SELECTION,
+                theme::p().selection,
             );
         }
         ctx.fonts
-            .draw_buffer(canvas, &mut b, ox.round() as i32, ty, theme::ACCENT);
+            .draw_buffer(canvas, &mut b, ox.round() as i32, ty, theme::p().accent);
         if focused {
             canvas.fill_rect(
                 Rect::new((ox + caret_x) as i32, ty, ctx.px(2.0).max(1.0) as i32, lh),
-                theme::CARET,
+                theme::p().caret,
             );
         }
         canvas.set_clip(prev);

@@ -161,6 +161,6 @@ pub fn draw_vscrollbar(canvas: &mut Canvas, rect: Rect, scroll_y: f32, content_h
     let margin = ctx.px(2.0) as i32;
     canvas.fill_rect(
         Rect::new(rect.right() - sb_w - margin, thumb_y, sb_w, thumb_h),
-        theme::SCROLLBAR,
+        theme::p().scrollbar,
     );
 }

@@ -342,9 +342,9 @@ impl Palette {
         let frame = Rect::new(x, y, w, bar_h + rows_h + ctx.px(6.0) as i32);
         canvas.fill_rect(
             Rect::new(frame.x - 1, frame.y - 1, frame.w + 2, frame.h + 2),
-            theme::DIVIDER,
+            theme::p().divider,
         );
-        canvas.fill_rect(frame, theme::BACKGROUND2);
+        canvas.fill_rect(frame, theme::p().background2);
         self.bar
             .render(canvas, Rect::new(x, y, w, bar_h), ctx, true);
         let lh = ctx.ui_metrics().line_height as i32;
@@ -356,7 +356,7 @@ impl Palette {
                 &h,
                 x + pad,
                 y + bar_h + (row_h - lh) / 2,
-                theme::DIM,
+                theme::p().dim,
                 w - pad * 2,
                 FontKind::Ui,
             );
@@ -367,7 +367,7 @@ impl Palette {
         for (row, &k) in self.shown.iter().skip(start).take(MAX_ROWS).enumerate() {
             let r = Rect::new(x, y + bar_h + row as i32 * row_h, w, row_h);
             if start + row == self.selected {
-                canvas.fill_rect(r, theme::SELECTION);
+                canvas.fill_rect(r, theme::p().selection);
             }
             let item = &self.items[k];
             let dw = if item.detail.is_empty() {
@@ -381,7 +381,7 @@ impl Palette {
                 &item.label,
                 r.x + pad,
                 ty,
-                theme::ACCENT,
+                theme::p().accent,
                 w - pad * 2 - dw,
                 FontKind::Ui,
             );
@@ -391,7 +391,7 @@ impl Palette {
                     &item.detail,
                     r.right() - dw,
                     ty,
-                    theme::DIM,
+                    theme::p().dim,
                     dw,
                     FontKind::Ui,
                 );

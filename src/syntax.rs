@@ -40,63 +40,102 @@ fn scol(c: Color) -> SColor {
     }
 }
 
-/// A syntect theme built from lite-xl's default syntax colours.
+/// The syntect theme for the active palette (one per palette, built once).
 pub fn theme() -> &'static Theme {
-    static THEME: OnceLock<Theme> = OnceLock::new();
-    THEME.get_or_init(|| {
+    static DARK: OnceLock<Theme> = OnceLock::new();
+    static LIGHT: OnceLock<Theme> = OnceLock::new();
+    let cell = if theme::is_light() { &LIGHT } else { &DARK };
+    cell.get_or_init(|| build_theme(theme::p()))
+}
+
+/// A syntect theme built from a palette's syntax colours (lite-xl's scopes).
+fn build_theme(pal: &theme::Palette) -> Theme {
+    {
         let item = |scopes: &str, c: Color, style: Option<FontStyle>| ThemeItem {
             scope: ScopeSelectors::from_str(scopes).expect("valid scope selector"),
-            style: StyleModifier { foreground: Some(scol(c)), background: None, font_style: style },
+            style: StyleModifier {
+                foreground: Some(scol(c)),
+                background: None,
+                font_style: style,
+            },
         };
         let none = None;
         Theme {
             name: Some("lite-xl default".into()),
             author: None,
             settings: ThemeSettings {
-                foreground: Some(scol(theme::SYNTAX_NORMAL)),
-                background: Some(scol(theme::BACKGROUND)),
+                foreground: Some(scol(pal.syntax_normal)),
+                background: Some(scol(pal.background)),
                 ..ThemeSettings::default()
             },
             scopes: vec![
-                item("comment, punctuation.definition.comment", theme::SYNTAX_COMMENT, none),
-                item("string, punctuation.definition.string, constant.character.escape", theme::SYNTAX_STRING, none),
-                item("constant.numeric", theme::SYNTAX_NUMBER, none),
                 item(
-                    "constant.language, constant.character, constant.other, support.constant, variable.other.constant",
-                    theme::SYNTAX_LITERAL,
+                    "comment, punctuation.definition.comment",
+                    pal.syntax_comment,
                     none,
                 ),
-                item("keyword, keyword.control, storage, storage.type, storage.modifier", theme::SYNTAX_KEYWORD, none),
+                item(
+                    "string, punctuation.definition.string, constant.character.escape",
+                    pal.syntax_string,
+                    none,
+                ),
+                item("constant.numeric", pal.syntax_number, none),
+                item(
+                    "constant.language, constant.character, constant.other, support.constant, variable.other.constant",
+                    pal.syntax_literal,
+                    none,
+                ),
+                item(
+                    "keyword, keyword.control, storage, storage.type, storage.modifier",
+                    pal.syntax_keyword,
+                    none,
+                ),
                 item(
                     "support.type, entity.name.type, entity.name.class, \
                      entity.name.struct, entity.name.enum, entity.name.trait, entity.other.inherited-class, \
                      variable.language, support.class",
-                    theme::SYNTAX_KEYWORD2,
+                    pal.syntax_keyword2,
                     none,
                 ),
-                item("keyword.operator, punctuation.accessor", theme::SYNTAX_OPERATOR, none),
+                item(
+                    "keyword.operator, punctuation.accessor",
+                    pal.syntax_operator,
+                    none,
+                ),
                 item(
                     "entity.name.function, support.function, meta.function-call variable.function, \
                      variable.function, entity.name.macro, support.macro",
-                    theme::SYNTAX_FUNCTION,
+                    pal.syntax_function,
                     none,
                 ),
-                item("entity.name.tag", theme::SYNTAX_KEYWORD, none),
-                item("entity.other.attribute-name", theme::SYNTAX_FUNCTION, none),
-                item("meta.attribute, meta.annotation", theme::SYNTAX_KEYWORD2, none),
+                item("entity.name.tag", pal.syntax_keyword, none),
+                item("entity.other.attribute-name", pal.syntax_function, none),
+                item("meta.attribute, meta.annotation", pal.syntax_keyword2, none),
                 // Markdown / markup source
-                item("markup.heading, markup.heading punctuation", theme::SYNTAX_KEYWORD2, Some(FontStyle::BOLD)),
-                item("markup.bold", theme::SYNTAX_NORMAL, Some(FontStyle::BOLD)),
-                item("markup.italic", theme::SYNTAX_NORMAL, Some(FontStyle::ITALIC)),
-                item("markup.raw, markup.inline.raw", theme::SYNTAX_STRING, none),
-                item("markup.underline.link, meta.link, string.other.link", theme::SYNTAX_FUNCTION, none),
-                item("markup.list punctuation, punctuation.definition.list", theme::SYNTAX_NUMBER, none),
-                item("markup.quote", theme::SYNTAX_STRING, none),
-                item("markup.inserted", theme::GOOD, none),
-                item("markup.deleted, invalid", theme::ERROR, none),
+                item(
+                    "markup.heading, markup.heading punctuation",
+                    pal.syntax_keyword2,
+                    Some(FontStyle::BOLD),
+                ),
+                item("markup.bold", pal.syntax_normal, Some(FontStyle::BOLD)),
+                item("markup.italic", pal.syntax_normal, Some(FontStyle::ITALIC)),
+                item("markup.raw, markup.inline.raw", pal.syntax_string, none),
+                item(
+                    "markup.underline.link, meta.link, string.other.link",
+                    pal.syntax_function,
+                    none,
+                ),
+                item(
+                    "markup.list punctuation, punctuation.definition.list",
+                    pal.syntax_number,
+                    none,
+                ),
+                item("markup.quote", pal.syntax_string, none),
+                item("markup.inserted", pal.good, none),
+                item("markup.deleted, invalid", pal.error, none),
             ],
         }
-    })
+    }
 }
 
 /// Pick a grammar from the file name, then the first line (shebang etc.).
@@ -220,7 +259,7 @@ impl LineHighlighter {
                 return Vec::new();
             }
         };
-        let normal = theme::SYNTAX_NORMAL;
+        let normal = theme::p().syntax_normal;
         let mut spans = Vec::new();
         let mut pos = 0usize;
         for (style, piece) in HighlightIterator::new(&mut self.state, &ops, text, &self.highlighter)
@@ -311,9 +350,9 @@ mod tests {
                 .find(|s| s.start <= b && b < s.end)
                 .map(|s| s.color)
         };
-        assert_eq!(color_at(l1, 4), Some(theme::SYNTAX_KEYWORD), "let");
-        assert_eq!(color_at(l1, 13), Some(theme::SYNTAX_STRING), "string");
-        assert_eq!(color_at(l1, 19), Some(theme::SYNTAX_COMMENT), "comment");
+        assert_eq!(color_at(l1, 4), Some(theme::p().syntax_keyword), "let");
+        assert_eq!(color_at(l1, 13), Some(theme::p().syntax_string), "string");
+        assert_eq!(color_at(l1, 19), Some(theme::p().syntax_comment), "comment");
     }
 
     #[test]

@@ -538,7 +538,7 @@ impl MarkdownView {
 
     fn render_preview(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         self.sync_preview();
-        canvas.fill_rect(rect, theme::BACKGROUND);
+        canvas.fill_rect(rect, theme::p().background);
         self.ensure_layout(rect.w, ctx);
         self.clamp();
         let dx = rect.x as f32;
@@ -586,7 +586,7 @@ impl MarkdownView {
                             for (hx, hw) in run.highlight(start, end) {
                                 canvas.fill_rect(
                                     frect(tx + hx, ty + run.line_top, hw.max(2.0), run.line_height),
-                                    theme::SELECTION,
+                                    theme::p().selection,
                                 );
                             }
                         }
@@ -611,7 +611,7 @@ impl MarkdownView {
                                         b - a + pad * 2.0,
                                         run.line_height - 4.0,
                                     ),
-                                    theme::MD_CODE_BG,
+                                    theme::p().md_code_bg,
                                 );
                             }
                         };
@@ -627,7 +627,7 @@ impl MarkdownView {
                             if hover.is_some() && link_from_meta(g.metadata) == hover {
                                 canvas.fill_rect(
                                     frect(tx + g.x, top + 1.0, g.w, run.line_height - 2.0),
-                                    theme::MD_LINK.with_alpha(28),
+                                    theme::p().md_link.with_alpha(28),
                                 );
                             }
                         }
@@ -650,7 +650,7 @@ impl MarkdownView {
                     let r = frect(*x + dx, *y + dy, *size, *size);
                     let b = ctx.px(1.5).max(1.0) as i32;
                     if *checked {
-                        canvas.fill_rect(r, theme::MD_LINK);
+                        canvas.fill_rect(r, theme::p().md_link);
                         let (bx, by, s) = (*x + dx, *y + dy, *size);
                         let lw = (s * 0.14).max(1.5);
                         canvas.draw_line(
@@ -659,7 +659,7 @@ impl MarkdownView {
                             bx + s * 0.42,
                             by + s * 0.70,
                             lw,
-                            theme::BACKGROUND,
+                            theme::p().background,
                         );
                         canvas.draw_line(
                             bx + s * 0.42,
@@ -667,13 +667,13 @@ impl MarkdownView {
                             bx + s * 0.76,
                             by + s * 0.32,
                             lw,
-                            theme::BACKGROUND,
+                            theme::p().background,
                         );
                     } else {
-                        canvas.fill_rect(r, theme::MD_MUTED);
+                        canvas.fill_rect(r, theme::p().md_muted);
                         canvas.fill_rect(
                             Rect::new(r.x + b, r.y + b, r.w - 2 * b, r.h - 2 * b),
-                            theme::BACKGROUND,
+                            theme::p().background,
                         );
                     }
                 }
@@ -703,10 +703,10 @@ impl MarkdownView {
                         }
                         canvas.draw_rgba(r.x, r.y, key.1 as i32, key.2 as i32, &self.scaled[&key]);
                     } else {
-                        canvas.fill_rect(r, theme::MD_BORDER);
+                        canvas.fill_rect(r, theme::p().md_border);
                         canvas.fill_rect(
                             Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
-                            theme::MD_BLOCK_BG,
+                            theme::p().md_block_bg,
                         );
                         let what = if alt.is_empty() {
                             "image".to_string()
@@ -724,7 +724,7 @@ impl MarkdownView {
                             &label,
                             r.x + pad,
                             r.y + (r.h - lh) / 2,
-                            theme::MD_MUTED,
+                            theme::p().md_muted,
                             r.w - pad * 2,
                             FontKind::Ui,
                         );
@@ -758,7 +758,7 @@ impl View for MarkdownView {
                 canvas.set_clip(left);
                 self.editor.render(canvas, left, ctx);
                 canvas.set_clip(div);
-                canvas.fill_rect(div, theme::DIVIDER);
+                canvas.fill_rect(div, theme::p().divider);
                 canvas.set_clip(right);
                 self.last_rect = right;
                 // Large documents refresh once typing pauses (tick redraws).

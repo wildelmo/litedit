@@ -127,14 +127,14 @@ impl Nag {
 
     pub fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         let bg = if self.error {
-            theme::NAG_ERROR
+            theme::p().nag_error
         } else {
-            theme::NAG_BG
+            theme::p().nag_bg
         };
         canvas.fill_rect(rect, bg);
         canvas.fill_rect(
             Rect::new(rect.x, rect.bottom() - 1, rect.w, 1),
-            theme::DIVIDER,
+            theme::p().divider,
         );
         let pad_x = ctx.px(theme::PADDING_X) as i32;
         let lh = ctx.ui_metrics().line_height as i32;
@@ -161,7 +161,7 @@ impl Nag {
             &self.message,
             rect.x + pad_x,
             ty,
-            theme::NAG_TEXT,
+            theme::p().nag_text,
             msg_w,
             FontKind::Ui,
         );
@@ -170,12 +170,12 @@ impl Nag {
             canvas.fill_rect(
                 *r,
                 if selected {
-                    theme::NAG_TEXT
+                    theme::p().nag_text
                 } else {
-                    theme::NAG_BUTTON
+                    theme::p().nag_button
                 },
             );
-            let fg = if selected { bg } else { theme::NAG_TEXT };
+            let fg = if selected { bg } else { theme::p().nag_text };
             ctx.label(
                 canvas,
                 &self.options[i].0,

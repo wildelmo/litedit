@@ -915,8 +915,8 @@ impl CodeView {
 
     fn render_find(&mut self, canvas: &mut Canvas, bar: Rect, ctx: &mut Ctx) {
         let row_h = Self::bar_row_height(ctx);
-        canvas.fill_rect(bar, theme::BACKGROUND2);
-        canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::DIVIDER);
+        canvas.fill_rect(bar, theme::p().background2);
+        canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::p().divider);
         let focused = self.find_focus && ctx.focused;
         let buf = &self.doc.buf;
         let version = self.doc.version();
@@ -980,7 +980,11 @@ impl CodeView {
             &info,
             field1.right() + pad,
             ty,
-            if err { theme::ERROR } else { theme::TEXT },
+            if err {
+                theme::p().error
+            } else {
+                theme::p().text
+            },
             iw + 2,
             FontKind::Ui,
         );
@@ -989,7 +993,7 @@ impl CodeView {
             &toggles,
             row1.right() - tw - pad,
             ty,
-            theme::ACCENT,
+            theme::p().accent,
             tw + 2,
             FontKind::Mono,
         );
@@ -1008,7 +1012,7 @@ impl CodeView {
                 hint,
                 row2.right() + pad,
                 row2.y + (row2.h - lh) / 2,
-                theme::DIM,
+                theme::p().dim,
                 hw + 2,
                 FontKind::Ui,
             );
@@ -1016,7 +1020,7 @@ impl CodeView {
     }
 
     fn render_editor(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
-        canvas.fill_rect(rect, theme::BACKGROUND);
+        canvas.fill_rect(rect, theme::p().background);
         self.last_rect = rect;
         self.view_w = rect.w as f32;
         self.view_h = rect.h as f32;
@@ -1090,7 +1094,7 @@ impl CodeView {
             let row = Rect::new(rect.x, y, rect.w, lh as i32);
             let is_caret_line = caret_lines.contains(&i);
             if is_caret_line && !any_selection && ctx.focused {
-                canvas.fill_rect(row.intersect(&outer), theme::LINE_HIGHLIGHT);
+                canvas.fill_rect(row.intersect(&outer), theme::p().line_highlight);
             }
             // Line number on the first row of each line, right-aligned.
             if k == 0 {
@@ -1099,9 +1103,9 @@ impl CodeView {
                 let lw = (label.len() as f32 * char_w) as i32;
                 let lx = rect.x + gutter_w as i32 - pad_x as i32 - lw;
                 let num_color = if is_caret_line {
-                    theme::LINE_NUMBER2
+                    theme::p().line_number2
                 } else {
-                    theme::LINE_NUMBER
+                    theme::p().line_number
                 };
                 ctx.label(canvas, &label, lx, y, num_color, lw + 2, FontKind::Mono);
             }
@@ -1137,7 +1141,7 @@ impl CodeView {
                             (x1 - x0).round().max(2.0) as i32,
                             lh as i32,
                         ),
-                        theme::FIND_MATCH,
+                        theme::p().find_match,
                     );
                 }
             }
@@ -1166,7 +1170,7 @@ impl CodeView {
                         (x1 - x0).round().max(1.0) as i32,
                         lh as i32,
                     ),
-                    theme::SELECTION,
+                    theme::p().selection,
                 );
             }
             // Text (the whole line, shifted so this row's start is at the margin).
@@ -1175,7 +1179,7 @@ impl CodeView {
             self.line(i, ctx);
             if let Some(c) = self.cache.get_mut(&i) {
                 ctx.fonts
-                    .draw_buffer(canvas, &mut c.buffer, x, y, theme::SYNTAX_NORMAL);
+                    .draw_buffer(canvas, &mut c.buffer, x, y, theme::p().syntax_normal);
             }
             // Carets.
             canvas.set_clip(text_rect.intersect(&outer));
@@ -1185,7 +1189,7 @@ impl CodeView {
                     if s.head.line == i && row_of(&br, s.head.col) == k {
                         let cx = (ox + self.col_to_x(i, s.head.col, ctx) - row_x0).round() as i32;
                         let rr = Rect::new(cx, y, cw, lh as i32);
-                        canvas.fill_rect(rr, theme::CARET);
+                        canvas.fill_rect(rr, theme::p().caret);
                         if n == 0 {
                             self.caret_screen = Some(rr);
                         }
@@ -1507,7 +1511,7 @@ mod tests {
         let span = Span {
             start: 1,
             end: 3,
-            color: theme::SYNTAX_STRING,
+            color: theme::p().syntax_string,
             bold: false,
             italic: false,
         };

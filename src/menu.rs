@@ -100,21 +100,21 @@ impl Menu {
         let x = (self.x as i32).min(bounds.right() - w - 2).max(bounds.x);
         let y = (self.y as i32).min(bounds.bottom() - h - 2).max(bounds.y);
         let frame = Rect::new(x, y, w, h);
-        canvas.fill_rect(Rect::new(x - 1, y - 1, w + 2, h + 2), theme::DIVIDER);
-        canvas.fill_rect(frame, theme::BACKGROUND2);
+        canvas.fill_rect(Rect::new(x - 1, y - 1, w + 2, h + 2), theme::p().divider);
+        canvas.fill_rect(frame, theme::p().background2);
         let lh = ctx.ui_metrics().line_height as i32;
         self.rects.clear();
         for (i, (label, _)) in self.items.iter().enumerate() {
             let r = Rect::new(x, y + ctx.px(4.0) as i32 + i as i32 * row_h, w, row_h);
             if self.selected == Some(i) {
-                canvas.fill_rect(r, theme::SELECTION);
+                canvas.fill_rect(r, theme::p().selection);
             }
             ctx.label(
                 canvas,
                 label,
                 r.x + pad,
                 r.y + (row_h - lh) / 2,
-                theme::ACCENT,
+                theme::p().accent,
                 w - pad * 2,
                 FontKind::Ui,
             );
