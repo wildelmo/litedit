@@ -167,9 +167,15 @@ impl ApplicationHandler<UserEvent> for Runner {
             return;
         }
         let attrs = Window::default_attributes()
+            .with_window_icon(app_icon())
             .with_title(self.app.title())
             .with_inner_size(LogicalSize::new(1100.0, 750.0))
             .with_min_inner_size(LogicalSize::new(320.0, 200.0));
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_taskbar_icon(app_icon())
+        };
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => panic!("could not create window: {e}"),
@@ -400,4 +406,26 @@ fn pick_save(window: &Window, suggested: &std::path::Path) -> Option<PathBuf> {
 #[cfg(not(windows))]
 fn pick_save(_window: &Window, _suggested: &std::path::Path) -> Option<PathBuf> {
     None
+}
+
+/// The window / taskbar icon (the exe icon is embedded by build.rs).
+fn app_icon() -> Option<winit::window::Icon> {
+    let bytes: &[u8] = include_bytes!("../assets/icon-64.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    winit::window::Icon::from_rgba(buf, info.width, info.height).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn embedded_icon_decodes() {
+        assert!(super::app_icon().is_some());
+    }
 }

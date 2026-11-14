@@ -39,6 +39,18 @@ jobs:
           Write-Output $deps
           if ($deps -match "VCRUNTIME|MSVCP|api-ms-win-crt") { Write-Error "exe depends on the VC++ runtime"; exit 1 }
 
+      - name: Icon and version info embedded
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "target\release\litedit.exe").Path
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Output "ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) Description=$($vi.FileDescription)"
+          if ($vi.ProductName -ne "litedit") { Write-Error "version info missing"; exit 1 }
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
+          if ($null -eq $icon) { Write-Error "icon missing"; exit 1 }
+          Write-Output "icon: $($icon.Width)x$($icon.Height)"
+
       - name: Measure (size, startup, memory) and screenshots
         shell: pwsh
         run: |

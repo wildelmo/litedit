@@ -134,7 +134,7 @@ asks for each dirty tab.
 - [ ] S4.2 Settings file (fonts, sizes, ignore list)
 - [-] S4.3 Smooth scrolling — dropped (D-023); dirty-rect redraw not needed (bench: frames well under 16 ms)
 - [x] S4.4 Large-file performance pass (litedit --bench; numbers in every Windows CI summary)
-- [ ] S4.5 App icon, version info, file associations (optional)
+- [x] S4.5 App icon + version info (file associations: not done, D-006)
 - [x] S4.6 Text selection + copy in preview
 - [x] S4.7 Soft wrap in the editor (lite-xl linewrapping), on by default for
        markdown source and in side-by-side mode
@@ -145,6 +145,9 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S4.5 done: app icon (assets/, cyan→pink rounded square with a page)
+  embedded with version info via build.rs/winresource on Windows; window and
+  taskbar icon set at runtime; CI checks icon + ProductName in the exe.
 - 2026-11-14 — S4.6 done: select text in the markdown preview (drag, double-click
   a block, Ctrl+A) and copy it (Ctrl+C); list bullets excluded; selection survives
   relayouts that only change sizes. Windows bench: keystroke 5.5 ms avg (100k

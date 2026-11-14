@@ -33,3 +33,6 @@ opt-level = 2
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 rfd = { version = "0.18", default-features = false }
 arboard = { version = "3", default-features = false }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
