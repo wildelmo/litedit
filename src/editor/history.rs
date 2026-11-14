@@ -99,6 +99,9 @@ pub enum GroupKind {
 
 #[derive(Clone, Debug)]
 struct Group {
+    /// Unique id; the document is clean when the top group's id matches
+    /// the id recorded at save time.
+    id: u64,
     /// Inverse ops, in the order the edits were applied.
     inverse: Vec<Op>,
     sels_before: Vec<Sel>,
@@ -111,6 +114,7 @@ struct Group {
 pub struct History {
     undo: Vec<Group>,
     redo: Vec<Group>,
+    next_id: u64,
 }
 
 impl History {
@@ -136,7 +140,9 @@ impl History {
             last.time = now;
             return;
         }
+        self.next_id += 1;
         self.undo.push(Group {
+            id: self.next_id,
             inverse,
             sels_before,
             sels_after,
@@ -184,6 +190,11 @@ impl History {
             ..g
         });
         Some(sels)
+    }
+
+    /// Id of the state the document is in (0 = as loaded).
+    pub fn state_id(&self) -> u64 {
+        self.undo.last().map_or(0, |g| g.id)
     }
 
     pub fn can_undo(&self) -> bool {

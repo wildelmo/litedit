@@ -687,6 +687,11 @@ impl View for MarkdownView {
             .then(|| self.editor.caret_rect())
             .flatten()
     }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
+        self.editor.snapshot()
+    }
 }
 
 #[cfg(test)]

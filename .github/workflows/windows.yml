@@ -89,30 +89,70 @@ jobs:
           if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
           if (-not $alive) { Write-Error "window process exited early"; exit 1 }
 
-      - name: Real-window typing test (report-only)
+      - name: Real-window tests (report-only)
         continue-on-error: true
         shell: pwsh
         run: |
+          $exe = (Resolve-Path "target\release\litedit.exe").Path
+          $ws = New-Object -ComObject WScript.Shell
+          $rows = @()
+          $failed = $false
+          function Launch($file) {
+            $p = Start-Process -FilePath $exe -ArgumentList "`"$file`"" -PassThru
+            Start-Sleep -Seconds 3
+            [void]$ws.AppActivate($p.Id)
+            Start-Sleep -Milliseconds 600
+            return $p
+          }
+          function Title($p) { $p.Refresh(); return $p.MainWindowTitle }
+
+          # 1. Typing + Ctrl+S writes the file.
           $f = Join-Path $env:RUNNER_TEMP "typing.txt"
           [IO.File]::WriteAllText($f, "start")
-          $p = Start-Process -FilePath "target\release\litedit.exe" -ArgumentList "`"$f`"" -PassThru
-          Start-Sleep -Seconds 3
-          $ws = New-Object -ComObject WScript.Shell
-          $ok = $ws.AppActivate($p.Id)
-          Start-Sleep -Milliseconds 700
-          $ws.SendKeys("{END} typed")
-          Start-Sleep -Milliseconds 400
-          $ws.SendKeys("^s")
-          Start-Sleep -Seconds 1
+          $p = Launch $f
+          $ws.SendKeys("{END} typed"); Start-Sleep -Milliseconds 400
+          $dirtyTitle = Title $p
+          $ws.SendKeys("^s"); Start-Sleep -Seconds 1
           $content = [IO.File]::ReadAllText($f)
-          Write-Output "activated=$ok content=[$content]"
-          $ws.SendKeys("%{F4}")
-          Start-Sleep -Seconds 1
-          $exited = $p.HasExited
-          if (-not $exited) { Stop-Process -Id $p.Id -Force }
-          $result = if ($content -eq "start typed") { "PASS" } else { "FAIL ($content)" }
-          "| real-window typing + Ctrl+S | $result (closed by Alt+F4: $exited) |" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-          if ($content -ne "start typed") { exit 1 }
+          $ok = ($content -eq "start typed") -and ($dirtyTitle -like "*typing.txt*")
+          $rows += "| typing + Ctrl+S | $(if ($ok) {'PASS'} else {"FAIL ($content / $dirtyTitle)"}) |"
+          if (-not $ok) { $failed = $true }
+
+          # 2. Alt+F4 on a clean document exits immediately.
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $ok = $p.HasExited
+          $rows += "| Alt+F4 when saved exits | $(if ($ok) {'PASS'} else {'FAIL'}) |"
+          if (-not $ok) { $failed = $true; Stop-Process -Id $p.Id -Force }
+
+          # 3. Alt+F4 with unsaved edits asks first; 'd' (Don't save) then exits.
+          $p = Launch $f
+          $ws.SendKeys("{END}!"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $stillOpen = -not $p.HasExited
+          $ws.SendKeys("d"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $content = [IO.File]::ReadAllText($f)
+          $ok = $stillOpen -and $exited -and ($content -eq "start typed")
+          $rows += "| Alt+F4 when dirty prompts, Don't save exits | $(if ($ok) {'PASS'} else {"FAIL (open=$stillOpen exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+
+          # 4. Ctrl+O opens the native dialog; typing a path opens that file.
+          $g = Join-Path $env:RUNNER_TEMP "opened.md"
+          [IO.File]::WriteAllText($g, "# Opened via dialog")
+          $p = Launch $f
+          $ws.SendKeys("^o"); Start-Sleep -Seconds 2
+          $ws.SendKeys($g); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 2
+          $t = Title $p
+          $ok = $t -like "opened.md*"
+          $rows += "| Ctrl+O native dialog opens a file | $(if ($ok) {'PASS'} else {"FAIL (title: $t)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+          $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
+          Write-Output $table
+          $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          if ($failed) { exit 1 }
 
       - name: Print screenshots (base64, decoded by scripts/ci-shots.sh)
         if: always()

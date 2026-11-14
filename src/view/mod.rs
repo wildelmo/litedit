@@ -86,6 +86,12 @@ pub trait View {
     fn caret_rect(&self) -> Option<Rect> {
         None
     }
+
+    /// Test hook: exact text and every selection endpoint.
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

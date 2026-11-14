@@ -16,7 +16,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
 use crate::editor::buffer::{Eol, Pos};
 use crate::editor::doc::SaveError;
-use crate::editor::doc::{EditDoc, Move};
+use crate::editor::doc::{EditDoc, Move, snap_grapheme};
 use crate::input::{Cursor, Input, Key, MouseButton};
 use crate::syntax::{LineHighlighter, Span, find_syntax};
 use crate::text::display_char;
@@ -169,7 +169,8 @@ pub fn expand_tabs(line: &str, max: usize) -> String {
 
 struct CachedLine {
     source: String,
-    colored: bool,
+    /// The highlight spans this line was shaped with (None = plain).
+    spans: Option<Vec<Span>>,
     buffer: Buffer,
     dl: DisplayLine,
 }
@@ -283,8 +284,11 @@ impl CodeView {
     fn line(&mut self, i: usize, ctx: &mut Ctx) -> &CachedLine {
         let spans = self.highlighter.spans(i);
         let source = self.doc.buf.line(i);
+        // Rebuild when the text changed, or new highlighting differs from
+        // what was drawn. While a line's spans are being recomputed (after an
+        // edit above it), keep showing its previous colours — no flash.
         let stale = match self.cache.get(&i) {
-            Some(c) => c.source != source || (!c.colored && spans.is_some()),
+            Some(c) => c.source != source || (spans.is_some() && c.spans.as_deref() != spans),
             None => true,
         };
         if stale {
@@ -296,7 +300,7 @@ impl CodeView {
                 i,
                 CachedLine {
                     source: source.to_string(),
-                    colored: spans.is_some(),
+                    spans: spans.map(<[Span]>::to_vec),
                     buffer,
                     dl,
                 },
@@ -334,7 +338,8 @@ impl CodeView {
                 let frac = ((x - g.x) / g.w.max(0.01)).clamp(0.0, 1.0);
                 let d = g.start + (frac * span as f32).round() as usize;
                 let src = c.dl.to_src(d);
-                return self.doc.buf.clamp(Pos::new(i, src)).col;
+                let col = self.doc.buf.clamp(Pos::new(i, src)).col;
+                return snap_grapheme(self.doc.buf.line(i), col);
             }
         }
         if c.dl.text.ends_with('…') && c.source.chars().count() > MAX_DISPLAY_CHARS {
@@ -387,7 +392,8 @@ impl CodeView {
     /// Something changed the text: re-highlight from the first touched line.
     fn after_edit(&mut self, from_line: usize) {
         self.highlighter.invalidate_from(from_line);
-        self.cache.retain(|&k, _| k < from_line);
+        // Cached lines stay: they are re-shaped only if their text or their
+        // colours actually change.
         self.reveal_caret = true;
     }
 
@@ -837,6 +843,17 @@ impl View for CodeView {
     fn caret_rect(&self) -> Option<Rect> {
         self.caret_screen
     }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<(String, Vec<Pos>)> {
+        let pts = self
+            .doc
+            .sels
+            .iter()
+            .flat_map(|s| [s.anchor, s.head])
+            .collect();
+        Some((self.doc.buf.to_text(), pts))
+    }
 }
 
 #[cfg(test)]
@@ -870,6 +887,54 @@ mod tests {
         }
         assert_eq!(dl.to_disp(1), 1);
         assert_eq!(dl.to_disp(2), 4); // after the tab
+    }
+
+    /// Typing on one line must not make the lines below lose their colours
+    /// for a frame while highlighting catches up.
+    #[test]
+    fn edits_do_not_flash_uncoloured_lines() {
+        use crate::canvas::Canvas;
+        use crate::input::Request;
+        use crate::text::Fonts;
+        let dir = std::env::temp_dir().join(format!("litedit-flash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("f.rs");
+        let src: String = (0..50)
+            .map(|i| format!("let s{i} = \"str\"; // c\n"))
+            .collect();
+        std::fs::write(&p, &src).unwrap();
+        let mut fonts = Fonts::load();
+        let (mut reqs, mut cur, mut clip) = (
+            Vec::<Request>::new(),
+            Cursor::Default,
+            crate::clipboard::MemClipboard::default(),
+        );
+        let mut v = CodeView::new(Document::open(&p).unwrap());
+        let mut buf = vec![0u32; 800 * 600];
+        macro_rules! ctx {
+            () => {
+                Ctx {
+                    fonts: &mut fonts,
+                    scale: 1.0,
+                    zoom: 1.0,
+                    requests: &mut reqs,
+                    cursor: &mut cur,
+                    focused: true,
+                    clipboard: &mut clip,
+                }
+            };
+        }
+        while v.tick(&mut ctx!(), Duration::from_millis(50)).more {}
+        let rect = Rect::new(0, 0, 800, 600);
+        v.render(&mut Canvas::new(&mut buf, 800, 600), rect, &mut ctx!());
+        assert!(v.cache[&10].spans.as_ref().is_some_and(|s| !s.is_empty()));
+        v.handle(&Input::Text("x".into()), rect, &mut ctx!());
+        v.render(&mut Canvas::new(&mut buf, 800, 600), rect, &mut ctx!()); // no tick yet
+        assert!(
+            v.cache[&10].spans.as_ref().is_some_and(|s| !s.is_empty()),
+            "line 10 lost its colours"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

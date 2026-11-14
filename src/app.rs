@@ -232,6 +232,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
+        self.view.snapshot()
+    }
+
+    #[cfg(test)]
     pub fn nag_message(&self) -> Option<String> {
         self.nag.as_ref().map(|n| n.message.clone())
     }

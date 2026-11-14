@@ -13,6 +13,13 @@ the in-progress (not yet committed) text is not drawn inline. I can't verify
 IME behaviour in the build environment. **Question:** do you use an IME? If
 yes, tell me what you see and I'll finish inline composition.
 
+### D-019 AltGr typing is assumed, not yet verified on a real keyboard layout
+On German, French and other layouts, AltGr+key types characters like @, {
+and €. Windows reports AltGr as Ctrl+Alt; litedit treats Ctrl+Alt with
+typed text as typing (unit-tested), but this depends on how the window
+library reports it. **Question:** if you use such a layout, check that @ and
+{ type correctly.
+
 ## Decided — review when convenient
 
 ### D-017 Saving a file another program holds open

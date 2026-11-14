@@ -61,11 +61,38 @@ pub fn save_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
         }
     }
     let tmp = temp_path(&target);
-    let result = write_and_swap(&target, &tmp, bytes, existing.as_ref());
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+    match write_and_swap(&target, &tmp, bytes, existing.as_ref()) {
+        Ok(()) => Ok(()),
+        // The target is untouched: the temporary copy is not needed.
+        Err(Failure {
+            msg,
+            keep_temp: false,
+        }) => {
+            let _ = fs::remove_file(&tmp);
+            Err(msg)
+        }
+        // The target may be damaged or gone: never delete the only good copy.
+        Err(Failure {
+            msg,
+            keep_temp: true,
+        }) => Err(format!(
+            "{msg}. A copy of your text was kept at {}",
+            tmp.display()
+        )),
     }
-    result
+}
+
+struct Failure {
+    msg: String,
+    /// True when the temp file may be the only intact copy of the new text.
+    keep_temp: bool,
+}
+
+fn fail(msg: impl Into<String>) -> Failure {
+    Failure {
+        msg: msg.into(),
+        keep_temp: false,
+    }
 }
 
 fn write_and_swap(
@@ -73,27 +100,37 @@ fn write_and_swap(
     tmp: &Path,
     bytes: &[u8],
     existing: Option<&fs::Metadata>,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     {
         let mut f = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(tmp)
-            .map_err(|e| format!("cannot write in this folder: {e}"))?;
+            .map_err(|e| fail(format!("cannot write in this folder: {e}")))?;
         f.write_all(bytes)
-            .map_err(|e| format!("write failed: {e}"))?;
-        f.sync_all().map_err(|e| format!("write failed: {e}"))?;
+            .map_err(|e| fail(format!("write failed: {e}")))?;
+        f.sync_all()
+            .map_err(|e| fail(format!("write failed: {e}")))?;
     }
     if existing.is_none() {
-        return fs::rename(tmp, target).map_err(|e| format!("cannot create the file: {e}"));
+        return fs::rename(tmp, target).map_err(|e| fail(format!("cannot create the file: {e}")));
     }
     #[cfg(windows)]
     {
         if replace_file(target, tmp).is_ok() {
             return Ok(());
         }
-        // Held open by another program (or replace not supported here):
-        // overwrite in place, then drop the temp copy.
+        // ReplaceFileW can fail *after* moving the original away (errors
+        // 1176/1177). If the target is gone, put the new copy in its place.
+        if !target.exists() {
+            return fs::rename(tmp, target).map_err(|e| Failure {
+                msg: format!("the original file was moved away and the new copy could not be put in place: {e}"),
+                keep_temp: true,
+            });
+        }
+        // Target intact but could not be replaced (held open by another
+        // program): overwrite in place, keeping the temp copy until the new
+        // bytes are verified on disk.
         overwrite_in_place(target, bytes)?;
         let _ = fs::remove_file(tmp);
         Ok(())
@@ -103,20 +140,34 @@ fn write_and_swap(
         if let Some(m) = existing {
             let _ = fs::set_permissions(tmp, m.permissions());
         }
-        fs::rename(tmp, target).map_err(|e| format!("cannot replace the file: {e}"))
+        fs::rename(tmp, target).map_err(|e| fail(format!("cannot replace the file: {e}")))
     }
 }
 
+/// Overwrite the file's contents directly. Opening first (before any
+/// truncation) means a locked file is reported untouched; once truncated,
+/// any failure keeps the temp copy, and success is verified by reading back.
 #[cfg(windows)]
-fn overwrite_in_place(target: &Path, bytes: &[u8]) -> Result<(), String> {
+fn overwrite_in_place(target: &Path, bytes: &[u8]) -> Result<(), Failure> {
     let mut f = fs::OpenOptions::new()
         .write(true)
-        .truncate(true)
         .open(target)
-        .map_err(|e| format!("the file is in use or locked: {e}"))?;
-    f.write_all(bytes)
-        .map_err(|e| format!("write failed: {e}"))?;
-    f.sync_all().map_err(|e| format!("write failed: {e}"))
+        .map_err(|e| fail(format!("the file is in use or locked: {e}")))?;
+    let damaged = |e: std::io::Error| Failure {
+        msg: format!("write failed: {e}"),
+        keep_temp: true,
+    };
+    f.set_len(0).map_err(damaged)?;
+    f.write_all(bytes).map_err(damaged)?;
+    f.sync_all().map_err(damaged)?;
+    drop(f);
+    match fs::read(target) {
+        Ok(back) if back == bytes => Ok(()),
+        _ => Err(Failure {
+            msg: "the saved file could not be verified".into(),
+            keep_temp: true,
+        }),
+    }
 }
 
 #[cfg(windows)]

@@ -99,7 +99,9 @@ pub struct EditDoc {
     pub indent: Indent,
     /// Increments on every change (caches key off it).
     version: u64,
-    saved_version: u64,
+    /// History state at the last save (None = modified no matter what,
+    /// e.g. the file was deleted on disk).
+    saved_state: Option<u64>,
     /// Remembered column (in chars) for up/down movement.
     goal_col: Option<usize>,
 }
@@ -116,7 +118,7 @@ impl EditDoc {
             encoding: doc.encoding,
             indent,
             version: 0,
-            saved_version: 0,
+            saved_state: Some(0),
             goal_col: None,
         }
     }
@@ -129,13 +131,14 @@ impl EditDoc {
         self.version
     }
 
+    /// Unsaved changes? Undoing back to the saved text makes it clean again.
     pub fn is_dirty(&self) -> bool {
-        self.version != self.saved_version
+        self.saved_state != Some(self.hist.state_id())
     }
 
     pub fn mark_saved(&mut self) {
-        self.saved_version = self.version;
         self.hist.seal();
+        self.saved_state = Some(self.hist.state_id());
     }
 
     /// Save to the current path. Files that were not valid UTF-8 need
@@ -167,7 +170,7 @@ impl EditDoc {
 
     /// Mark as modified (e.g. the file was deleted on disk).
     pub fn force_dirty(&mut self) {
-        self.saved_version = u64::MAX;
+        self.saved_state = None;
     }
 
     pub fn primary(&self) -> Sel {
@@ -184,7 +187,7 @@ impl EditDoc {
             s.head = self.buf.clamp(s.head);
         }
         self.version += 1;
-        self.saved_version = self.version;
+        self.saved_state = Some(self.hist.state_id());
     }
 
     // ---- low level ----------------------------------------------------
@@ -549,6 +552,16 @@ impl EditDoc {
             .take_while(|(_, c)| is_w(*c) == kind)
             .last()
             .map_or(p.col, |(i, c)| p.col + i + c.len_utf8());
+        // Word edges must not cut a grapheme cluster.
+        let start = snap_grapheme(line, start);
+        let end = {
+            let s2 = snap_grapheme(line, end);
+            if s2 == end {
+                end
+            } else {
+                next_grapheme(line, s2)
+            }
+        };
         self.sels = vec![Sel {
             anchor: Pos::new(p.line, start),
             head: Pos::new(p.line, end),
@@ -712,6 +725,20 @@ impl EditDoc {
     }
 }
 
+/// Snap a byte column to the grapheme-cluster boundary at or before it, so
+/// a mouse click can never land inside an emoji sequence.
+pub fn snap_grapheme(line: &str, col: usize) -> usize {
+    let col = col.min(line.len());
+    let mut last = 0;
+    for (i, _) in line.grapheme_indices(true) {
+        if i > col {
+            break;
+        }
+        last = i;
+    }
+    if col == line.len() { col } else { last }
+}
+
 /// Grapheme boundary before `col` in `line` (or 0).
 fn prev_grapheme(line: &str, col: usize) -> usize {
     line[..col]
@@ -799,7 +826,8 @@ pub fn moved(buf: &Buffer, p: Pos, m: Move, goal: Option<usize>) -> (Pos, Option
                     i -= 1;
                 }
             }
-            (Pos::new(p.line, before.get(i).map_or(0, |(b, _)| *b)), None)
+            let col = before.get(i).map_or(0, |(b, _)| *b);
+            (Pos::new(p.line, snap_grapheme(line, col)), None)
         }
         Move::WordRight => {
             if p.col == line.len() {
@@ -822,10 +850,15 @@ pub fn moved(buf: &Buffer, p: Pos, m: Move, goal: Option<usize>) -> (Pos, Option
                     i += 1;
                 }
             }
-            (
-                Pos::new(p.line, after.get(i).map_or(line.len(), |(b, _)| *b)),
-                None,
-            )
+            let col = after.get(i).map_or(line.len(), |(b, _)| *b);
+            // Never stop inside a cluster (e.g. a space + combining accent).
+            let snapped = snap_grapheme(line, col);
+            let col = if snapped == col {
+                col
+            } else {
+                next_grapheme(line, snapped)
+            };
+            (Pos::new(p.line, col), None)
         }
         Move::Home => {
             let first = line.len() - line.trim_start_matches([' ', '\t']).len();
@@ -876,6 +909,25 @@ mod tests {
     }
 
     #[test]
+    fn undo_back_to_saved_text_is_clean() {
+        let mut d = doc("abc");
+        d.insert_text("x");
+        assert!(d.is_dirty());
+        d.undo();
+        assert!(!d.is_dirty(), "back to the loaded text");
+        d.redo();
+        assert!(d.is_dirty());
+        d.mark_saved();
+        assert!(!d.is_dirty());
+        d.undo();
+        assert!(d.is_dirty(), "differs from the saved text");
+        d.redo();
+        assert!(!d.is_dirty());
+        d.force_dirty();
+        assert!(d.is_dirty());
+    }
+
+    #[test]
     fn selection_is_replaced_by_typing() {
         let mut d = doc("hello world");
         d.set_caret(Pos::new(0, 6), false);
@@ -903,6 +955,15 @@ mod tests {
         assert_eq!(d.primary().head.col, 1 + family.len());
         d.backspace(false);
         assert_eq!(d.buf.to_text(), "ab");
+    }
+
+    #[test]
+    fn snapping_to_graphemes() {
+        let s = "a👨\u{200d}👩b";
+        assert_eq!(snap_grapheme(s, 0), 0);
+        assert_eq!(snap_grapheme(s, 3), 1); // inside the family emoji
+        assert_eq!(snap_grapheme(s, s.len()), s.len());
+        assert_eq!(snap_grapheme(s, s.len() - 1), s.len() - 1); // before 'b'
     }
 
     #[test]

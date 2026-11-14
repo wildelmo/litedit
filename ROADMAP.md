@@ -143,6 +143,13 @@ asks for each dirty tab.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Hardening (advisor review): save never deletes the only good copy
+  (ReplaceFileW partial failures, verified in-place overwrite); app-level fuzz
+  (random keys/typing/clicks/drags through App, render each step, grapheme
+  invariants, undo-all byte-exact) → fixed word moves / double-click splitting
+  clusters; lines keep their colours while re-highlighting (no flash); undoing
+  back to the saved text clears the modified marker; real-window CI tests for
+  Alt+F4 (clean/dirty) and the Ctrl+O dialog. AltGr open item D-019.
 - 2026-11-14 — Epic 2 complete. S2.7: markdown owns the editor; Ctrl+E edits the
   source and the preview re-parses from it; save/dirty/prompts work for .md;
   link clicks on a dirty doc ask first. S2.8: IME commit → text, candidate

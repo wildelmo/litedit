@@ -736,3 +736,188 @@ fn markdown_edit_updates_preview_saves_and_link_click_is_guarded() {
     assert!(app.title().starts_with("other.md"), "{}", app.title());
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
+
+/// App-level fuzz: random typing, keys, clicks and drags through the real
+/// input path. After every step: render, carets on grapheme boundaries.
+/// Finally undo everything and compare the exact original bytes.
+#[test]
+fn fuzz_editor_through_the_app() {
+    use crate::editor::doc::snap_grapheme;
+    let keys = [
+        "left",
+        "right",
+        "up",
+        "down",
+        "home",
+        "end",
+        "ctrl+left",
+        "ctrl+right",
+        "shift+left",
+        "shift+right",
+        "shift+down",
+        "shift+end",
+        "backspace",
+        "delete",
+        "ctrl+backspace",
+        "ctrl+delete",
+        "enter",
+        "tab",
+        "shift+tab",
+        "ctrl+z",
+        "ctrl+y",
+        "ctrl+a",
+        "ctrl+c",
+        "ctrl+x",
+        "ctrl+v",
+        "ctrl+shift+d",
+        "ctrl+shift+k",
+        "pageup",
+        "pagedown",
+        "ctrl+home",
+        "ctrl+end",
+        "ctrl+l",
+        "ctrl+]",
+        "ctrl+[",
+        "ctrl+e",
+    ];
+    let pieces = [
+        "a",
+        "é",
+        "👨\u{200d}👩\u{200d}👧",
+        "\t",
+        " ",
+        "日本",
+        "x\ny",
+        "\u{301}",
+        "{",
+        "}",
+    ];
+    let starts = [
+        ("f.txt", "hello\r\nworld 👋🏽 tab\there\r\n\r\nend"),
+        (
+            "f.md",
+            "# Title\n\n- item **bold**\n- 👨\u{200d}👩\u{200d}👧 family\n\n```rust\nfn x() {}\n```\n",
+        ),
+        ("f.rs", "fn main() {\n\tlet s = \"é\";\n}\n"),
+    ];
+    for seed in 0..9u64 {
+        let (name, start) = starts[seed as usize % starts.len()];
+        let p = temp_file(&format!("fz{seed}-{name}"), start);
+        let mut app = new_app();
+        app.open(&p);
+        key(&mut app, "ctrl+\\"); // hide the tree so clicks land in the editor
+        if name.ends_with(".md") {
+            key(&mut app, "ctrl+e"); // edit the source
+        }
+        let mut x = seed.wrapping_mul(0x9E3779B97F4A7C15) | 1;
+        let mut rnd = |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x % n as u64) as usize
+        };
+        let movement = [
+            "left",
+            "right",
+            "up",
+            "down",
+            "home",
+            "end",
+            "ctrl+left",
+            "ctrl+right",
+            "pageup",
+            "pagedown",
+            "ctrl+home",
+            "ctrl+end",
+        ];
+        for _ in 0..220 {
+            // Typing a base char before a combining mark legitimately leaves the
+            // caret inside the new cluster (as in other editors); movement and
+            // clicks must always land on a grapheme boundary.
+            let mut moved = false;
+            let mut last = String::new();
+            match rnd(10) {
+                0..=2 => {
+                    app.handle(Input::Text(pieces[rnd(pieces.len())].to_string()));
+                }
+                3..=7 => {
+                    let k = keys[rnd(keys.len())];
+                    last = k.to_string();
+                    moved = movement.contains(&k);
+                    key(&mut app, k);
+                }
+                8 => {
+                    moved = true;
+                    last = "click".into();
+                    let (cx, cy) = (rnd(500) as f32, rnd(300) as f32);
+                    let clicks = 1 + rnd(3) as u32;
+                    app.handle(Input::MouseMove { x: cx, y: cy });
+                    app.handle(Input::MouseDown {
+                        x: cx,
+                        y: cy,
+                        button: crate::input::MouseButton::Left,
+                        clicks,
+                    });
+                    let (dx, dy) = (rnd(500) as f32, rnd(300) as f32);
+                    app.handle(Input::MouseMove { x: dx, y: dy });
+                    app.handle(Input::MouseUp {
+                        x: dx,
+                        y: dy,
+                        button: crate::input::MouseButton::Left,
+                    });
+                }
+                _ => {
+                    app.handle(Input::Wheel {
+                        dx: 0.0,
+                        dy: rnd(7) as f32 - 3.0,
+                        unit: crate::input::WheelUnit::Lines,
+                    });
+                }
+            }
+            render_hash(&mut app, 500, 300);
+            if let Some((text, pts)) = app.snapshot() {
+                let lines: Vec<&str> = crate::editor::buffer::Chunk::parse(&text)
+                    .lines
+                    .iter()
+                    .map(|_| "")
+                    .collect();
+                let chunk = crate::editor::buffer::Chunk::parse(&text);
+                for p in pts {
+                    assert!(p.line < lines.len(), "seed {seed}: caret line out of range");
+                    let l = &chunk.lines[p.line];
+                    assert!(
+                        l.is_char_boundary(p.col),
+                        "seed {seed}: caret inside a char"
+                    );
+                    if moved {
+                        assert_eq!(
+                            snap_grapheme(l, p.col),
+                            p.col,
+                            "seed {seed}: caret inside a grapheme in {l:?} after {last}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(app.nag_message().is_none());
+        // Undo everything: the exact original bytes come back.
+        if name.ends_with(".md") && app.status_text().starts_with("Markdown preview") {
+            key(&mut app, "ctrl+e");
+        }
+        for _ in 0..3000 {
+            key(&mut app, "ctrl+z");
+        }
+        let snap = app.snapshot().unwrap_or_else(|| {
+            panic!(
+                "seed {seed}: no editor; title {:?} status {:?}",
+                app.title(),
+                app.status_text()
+            )
+        });
+        assert_eq!(
+            snap.0, start,
+            "seed {seed}: undo-all must restore the original"
+        );
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+}
