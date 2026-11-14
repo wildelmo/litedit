@@ -51,7 +51,12 @@ impl Document {
         let bytes = std::fs::read(path)?;
         let (text, encoding) = decode(&bytes);
         let (text, line_ending) = normalize_newlines(text);
-        Ok(Self { path: path.to_path_buf(), text, line_ending, encoding })
+        Ok(Self {
+            path: path.to_path_buf(),
+            text,
+            line_ending,
+            encoding,
+        })
     }
 
     pub fn file_name(&self) -> String {
@@ -64,7 +69,10 @@ impl Document {
 
 pub fn decode(bytes: &[u8]) -> (String, Encoding) {
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
-        return (String::from_utf8_lossy(rest).into_owned(), Encoding::Utf8Bom);
+        return (
+            String::from_utf8_lossy(rest).into_owned(),
+            Encoding::Utf8Bom,
+        );
     }
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         return (decode_utf16(rest, u16::from_le_bytes), Encoding::Utf16Le);
@@ -74,13 +82,18 @@ pub fn decode(bytes: &[u8]) -> (String, Encoding) {
     }
     match std::str::from_utf8(bytes) {
         Ok(s) => (s.to_owned(), Encoding::Utf8),
-        Err(_) => (String::from_utf8_lossy(bytes).into_owned(), Encoding::Utf8Lossy),
+        Err(_) => (
+            String::from_utf8_lossy(bytes).into_owned(),
+            Encoding::Utf8Lossy,
+        ),
     }
 }
 
 fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> String {
     let units = bytes.chunks_exact(2).map(|c| f([c[0], c[1]]));
-    char::decode_utf16(units).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)).collect()
+    char::decode_utf16(units)
+        .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
 }
 
 /// Convert all line endings to `\n`; report the dominant original style.

@@ -1,17 +1,31 @@
-//! The real window: winit events → App, App::render → softbuffer.
+//! The real window. winit events are translated into [`Input`]; the app's
+//! [`Request`]s are carried out here. Nothing else in the app touches winit.
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
-use winit::window::{Window, WindowId};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
+use winit::window::{CursorIcon, Window, WindowId};
 
 use crate::app::App;
 use crate::canvas::Canvas;
+use crate::input::{Cursor, Input, Key, Mods, MouseButton, Request, WheelUnit};
+
+/// Events sent to the UI thread from other threads (file watcher, etc.).
+#[derive(Debug)]
+pub enum UserEvent {
+    FsChanged(Vec<PathBuf>),
+}
+
+const DOUBLE_CLICK: Duration = Duration::from_millis(450);
+/// Per-iteration budget for deferred work, so input stays responsive.
+const TICK_BUDGET: Duration = Duration::from_millis(8);
 
 struct Gfx {
     window: Rc<Window>,
@@ -21,104 +35,272 @@ struct Gfx {
 struct Runner {
     app: App,
     gfx: Option<Gfx>,
+    #[allow(dead_code)]
+    proxy: EventLoopProxy<UserEvent>,
+    mods: ModifiersState,
+    mouse: (f32, f32),
+    last_click: Option<(Instant, (f32, f32), u32)>,
+    title: String,
+    cursor: Cursor,
 }
 
-impl ApplicationHandler for Runner {
+impl Runner {
+    fn after_input(&mut self, event_loop: &ActiveEventLoop, redraw: bool) {
+        let Some(gfx) = self.gfx.as_ref() else { return };
+        for req in self.app.take_requests() {
+            match req {
+                Request::Quit => event_loop.exit(),
+                // Implemented in later stories (dialogs: S1.11, links: S1.7).
+                Request::OpenFileDialog
+                | Request::OpenFolderDialog
+                | Request::OpenUrl(_)
+                | Request::RevealInExplorer(_) => {}
+            }
+        }
+        let title = self.app.title();
+        if title != self.title {
+            gfx.window.set_title(&title);
+            self.title = title;
+        }
+        let cursor = self.app.cursor();
+        if cursor != self.cursor {
+            gfx.window.set_cursor(match cursor {
+                Cursor::Default => CursorIcon::Default,
+                Cursor::Pointer => CursorIcon::Pointer,
+                Cursor::Text => CursorIcon::Text,
+                Cursor::ResizeHorizontal => CursorIcon::EwResize,
+            });
+            self.cursor = cursor;
+        }
+        if redraw {
+            gfx.window.request_redraw();
+        }
+    }
+
+    fn mods(&self) -> Mods {
+        Mods {
+            ctrl: self.mods.control_key(),
+            shift: self.mods.shift_key(),
+            alt: self.mods.alt_key(),
+        }
+    }
+}
+
+fn map_key(k: &WKey) -> Option<Key> {
+    Some(match k {
+        WKey::Named(n) => match n {
+            NamedKey::ArrowUp => Key::Up,
+            NamedKey::ArrowDown => Key::Down,
+            NamedKey::ArrowLeft => Key::Left,
+            NamedKey::ArrowRight => Key::Right,
+            NamedKey::PageUp => Key::PageUp,
+            NamedKey::PageDown => Key::PageDown,
+            NamedKey::Home => Key::Home,
+            NamedKey::End => Key::End,
+            NamedKey::Enter => Key::Enter,
+            NamedKey::Escape => Key::Escape,
+            NamedKey::Tab => Key::Tab,
+            NamedKey::Backspace => Key::Backspace,
+            NamedKey::Delete => Key::Delete,
+            NamedKey::Insert => Key::Insert,
+            NamedKey::Space => Key::Char(' '),
+            NamedKey::F1 => Key::F(1),
+            NamedKey::F2 => Key::F(2),
+            NamedKey::F3 => Key::F(3),
+            NamedKey::F4 => Key::F(4),
+            NamedKey::F5 => Key::F(5),
+            NamedKey::F6 => Key::F(6),
+            NamedKey::F7 => Key::F(7),
+            NamedKey::F8 => Key::F(8),
+            NamedKey::F9 => Key::F(9),
+            NamedKey::F10 => Key::F(10),
+            NamedKey::F11 => Key::F(11),
+            NamedKey::F12 => Key::F(12),
+            _ => return None,
+        },
+        WKey::Character(s) => Key::Char(s.chars().next()?.to_lowercase().next()?),
+        _ => return None,
+    })
+}
+
+impl ApplicationHandler<UserEvent> for Runner {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.gfx.is_some() {
             return;
         }
         let attrs = Window::default_attributes()
             .with_title(self.app.title())
-            .with_inner_size(LogicalSize::new(1100.0, 750.0));
+            .with_inner_size(LogicalSize::new(1100.0, 750.0))
+            .with_min_inner_size(LogicalSize::new(320.0, 200.0));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Rc::new(w),
             Err(e) => panic!("could not create window: {e}"),
         };
         let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
-        let surface = softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
-        self.app.set_scale(window.scale_factor() as f32);
+        let surface =
+            softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
+        self.app.handle(Input::Scale(window.scale_factor() as f32));
+        let size = window.inner_size();
+        self.app.handle(Input::Resize(size.width, size.height));
         window.request_redraw();
         self.gfx = Some(Gfx { window, surface });
     }
 
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let redraw = match event {
+            UserEvent::FsChanged(paths) => self.app.handle(Input::FsChanged(paths)),
+        };
+        self.after_input(event_loop, redraw);
+    }
+
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        let Some(gfx) = self.gfx.as_mut() else { return };
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(_) => gfx.window.request_redraw(),
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.app.set_scale(scale_factor as f32);
-                gfx.window.request_redraw();
-            }
-            WindowEvent::DroppedFile(path) => {
-                self.app.open(&path);
-                gfx.window.set_title(&self.app.title());
-                gfx.window.request_redraw();
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                match delta {
-                    MouseScrollDelta::LineDelta(_, y) => self.app.scroll_lines(-y * 3.0),
-                    MouseScrollDelta::PixelDelta(p) => self.app.scroll_pixels(-p.y as f32),
-                }
-                gfx.window.request_redraw();
-            }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let handled = match event.logical_key {
-                    Key::Named(NamedKey::PageDown) => {
-                        self.app.scroll_pages(1.0);
-                        true
-                    }
-                    Key::Named(NamedKey::PageUp) => {
-                        self.app.scroll_pages(-1.0);
-                        true
-                    }
-                    Key::Named(NamedKey::ArrowDown) => {
-                        self.app.scroll_lines(1.0);
-                        true
-                    }
-                    Key::Named(NamedKey::ArrowUp) => {
-                        self.app.scroll_lines(-1.0);
-                        true
-                    }
-                    Key::Named(NamedKey::Home) => {
-                        self.app.scroll_to_start();
-                        true
-                    }
-                    Key::Named(NamedKey::End) => {
-                        self.app.scroll_to_end();
-                        true
-                    }
-                    _ => false,
-                };
-                if handled {
-                    gfx.window.request_redraw();
-                }
+        let input = match event {
+            WindowEvent::CloseRequested => {
+                event_loop.exit();
+                return;
             }
             WindowEvent::RedrawRequested => {
-                let size = gfx.window.inner_size();
-                let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
-                    return; // minimised
+                self.redraw();
+                return;
+            }
+            WindowEvent::Resized(s) => Input::Resize(s.width, s.height),
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                Input::Scale(scale_factor as f32)
+            }
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                return;
+            }
+            WindowEvent::DroppedFile(p) => Input::Drop(p),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.mouse = (position.x as f32, position.y as f32);
+                Input::MouseMove {
+                    x: self.mouse.0,
+                    y: self.mouse.1,
+                }
+            }
+            WindowEvent::CursorLeft { .. } => Input::MouseLeave,
+            WindowEvent::MouseInput { state, button, .. } => {
+                let button = match button {
+                    winit::event::MouseButton::Left => MouseButton::Left,
+                    winit::event::MouseButton::Right => MouseButton::Right,
+                    winit::event::MouseButton::Middle => MouseButton::Middle,
+                    _ => return,
                 };
-                if gfx.surface.resize(w, h).is_err() {
+                let (x, y) = self.mouse;
+                if state == ElementState::Pressed {
+                    let now = Instant::now();
+                    let clicks = match self.last_click {
+                        Some((t, (lx, ly), n))
+                            if now - t < DOUBLE_CLICK
+                                && (lx - x).abs() < 5.0
+                                && (ly - y).abs() < 5.0 =>
+                        {
+                            n % 3 + 1
+                        }
+                        _ => 1,
+                    };
+                    self.last_click = Some((now, (x, y), clicks));
+                    Input::MouseDown {
+                        x,
+                        y,
+                        button,
+                        clicks,
+                    }
+                } else {
+                    Input::MouseUp { x, y, button }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (mut dx, mut dy, unit) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (-x, -y, WheelUnit::Lines),
+                    MouseScrollDelta::PixelDelta(p) => {
+                        (-p.x as f32, -p.y as f32, WheelUnit::Pixels)
+                    }
+                };
+                if self.mods.shift_key() && dx == 0.0 {
+                    std::mem::swap(&mut dx, &mut dy);
+                }
+                Input::Wheel { dx, dy, unit }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                if event.state != ElementState::Pressed {
                     return;
                 }
-                let Ok(mut buffer) = gfx.surface.buffer_mut() else { return };
-                {
-                    let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
-                    self.app.render(&mut canvas);
+                let mods = self.mods();
+                let mut redraw = false;
+                if let Some(key) = map_key(&event.logical_key) {
+                    redraw |= self.app.handle(Input::Key { key, mods });
                 }
-                let _ = buffer.present();
+                if !mods.ctrl
+                    && !mods.alt
+                    && let Some(t) = event
+                        .text
+                        .as_ref()
+                        .filter(|t| t.chars().all(|c| !c.is_control()))
+                {
+                    redraw |= self.app.handle(Input::Text(t.to_string()));
+                }
+                self.after_input(event_loop, redraw);
+                return;
             }
-            _ => {}
+            _ => return,
+        };
+        let redraw = self.app.handle(input);
+        self.after_input(event_loop, redraw);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.app.has_pending_work() {
+            self.app.tick(TICK_BUDGET);
+            if let Some(g) = &self.gfx {
+                g.window.request_redraw();
+            }
         }
+        event_loop.set_control_flow(if self.app.has_pending_work() {
+            ControlFlow::Poll
+        } else {
+            ControlFlow::Wait
+        });
+    }
+}
+
+impl Runner {
+    fn redraw(&mut self) {
+        let Some(gfx) = self.gfx.as_mut() else { return };
+        let size = gfx.window.inner_size();
+        let (Some(w), Some(h)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else {
+            return; // minimised
+        };
+        if gfx.surface.resize(w, h).is_err() {
+            return;
+        }
+        let Ok(mut buffer) = gfx.surface.buffer_mut() else {
+            return;
+        };
+        {
+            let mut canvas = Canvas::new(&mut buffer, size.width, size.height);
+            self.app.render(&mut canvas);
+        }
+        let _ = buffer.present();
     }
 }
 
 pub fn run(app: App) {
-    let event_loop = EventLoop::new().expect("event loop");
-    // Redraw only on events — no busy loop, near-zero idle CPU.
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .expect("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
-    let mut runner = Runner { app, gfx: None };
+    let proxy = event_loop.create_proxy();
+    let mut runner = Runner {
+        app,
+        gfx: None,
+        proxy,
+        mods: ModifiersState::empty(),
+        mouse: (0.0, 0.0),
+        last_click: None,
+        title: String::new(),
+        cursor: Cursor::Default,
+    };
     event_loop.run_app(&mut runner).expect("event loop run");
 }

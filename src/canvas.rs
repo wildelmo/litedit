@@ -97,7 +97,12 @@ impl<'a> Canvas<'a> {
     pub fn new(buf: &'a mut [u32], width: u32, height: u32) -> Self {
         let (w, h) = (width as i32, height as i32);
         assert!(buf.len() >= (width as usize) * (height as usize));
-        Self { buf, width: w, height: h, clip: Rect::new(0, 0, w, h) }
+        Self {
+            buf,
+            width: w,
+            height: h,
+            clip: Rect::new(0, 0, w, h),
+        }
     }
 
     pub fn width(&self) -> i32 {

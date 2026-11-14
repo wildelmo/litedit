@@ -1,0 +1,26 @@
+# Windows CI smoke test: drives the app like a user and captures screenshots.
+size 1280 800
+open tests/fixtures/sample.rs
+expect title sample.rs
+shot out/code.png
+key pagedown
+wheel 3
+key ctrl+plus
+shot out/code-zoomed.png
+key ctrl+0
+open tests/fixtures/sample.md
+shot out/markdown.png
+key ctrl+o
+expect request OpenFileDialog
+key ctrl+shift+o
+expect request OpenFolderDialog
+scale 1.5
+size 1920 1200
+open tests/fixtures/sample.md
+shot out/markdown-150.png
+open tests/fixtures/crlf.txt
+expect status CRLF
+open tests/fixtures/invalid-utf8.txt
+expect status invalid bytes replaced
+open tests/fixtures/does-not-exist.txt
+shot out/error.png

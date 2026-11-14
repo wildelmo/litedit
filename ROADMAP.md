@@ -34,11 +34,19 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
        log exe size, startup time, peak memory
 - [x] S0.5 Windows hardening: static CRT, panic hook → log file, no `\\?\` paths,
        CRLF / BOM / non-UTF-8 tolerant file loading
-- [~] S0.6 User runs the CI exe on their Windows machine and gives feedback
-       (DPI, fonts, feel) — **gate before Epic 1**
+- [-] S0.6 User runs the CI exe — dropped: owner can't test (see D-002);
+       CI screenshots + scripted input tests are the gate instead
 
 ## Epic 1 — Viewer (useful daily for reading)
 
+- [x] S1.0 Test infrastructure: app-level input events (winit only translates),
+       `--script` mode (events + screenshots), Windows CI prints screenshots
+       as base64 so they can be inspected, EventLoopProxy wake-ups,
+       time-budgeted background work, view abstraction
+- [ ] S1.14 Hostile-file guards: reject UNC/`file://host` paths for images and
+        links, safe link launching (no `cmd /c start`), cap long-line shaping
+        and highlighting, cap markdown nesting depth, never-panic fuzz test over
+        fixtures (every prefix, tiny sizes)
 - [ ] S1.1 Markdown parse (pulldown-cmark, GFM: tables, tasks, strikethrough)
 - [ ] S1.2 Preview layout: headings, paragraphs, bold/italic/code/strike, links
 - [ ] S1.3 Preview: lists (nested, numbered, tasks), block quotes, rules
@@ -91,6 +99,9 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` dropped
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — S1.0 done: Input enum, View trait, per-line cached CodeView,
+  `--script` mode with assertions, CI smoke script + base64 screenshots
+  (`scripts/ci-shots.sh`), budgeted tick + EventLoopProxy. 22 tests.
 - 2026-11-14 — Windows CI green. Windows numbers: exe 2.43 MB, startup 178 ms
   (fonts 152 ms), window working set 21.4 MB (6.7 MB private). Static CRT and
   pure-Rust checks pass. Waiting on user feedback (S0.6).

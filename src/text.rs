@@ -34,8 +34,13 @@ const WINDOWS_FONT_FILES: &[&str] = &[
 ];
 
 const SANS_PREFERENCE: &[&str] = &["Segoe UI", "Inter", "DejaVu Sans", "Noto Sans"];
-const MONO_PREFERENCE: &[&str] =
-    &["Cascadia Mono", "Consolas", "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans Mono"];
+const MONO_PREFERENCE: &[&str] = &[
+    "Cascadia Mono",
+    "Consolas",
+    "JetBrains Mono",
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+];
 
 pub struct Fonts {
     pub system: FontSystem,
@@ -75,18 +80,36 @@ impl Fonts {
         db.set_monospace_family(mono.clone());
 
         let system = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
-        Self { system, cache: SwashCache::new(), sans, mono, load_ms: start.elapsed().as_millis() }
+        Self {
+            system,
+            cache: SwashCache::new(),
+            sans,
+            mono,
+            load_ms: start.elapsed().as_millis(),
+        }
     }
 
     /// Draw every visible glyph of `buffer` with its top-left at (x, y).
-    pub fn draw_buffer(&mut self, canvas: &mut Canvas, buffer: &mut Buffer, x: i32, y: i32, color: Color) {
+    pub fn draw_buffer(
+        &mut self,
+        canvas: &mut Canvas,
+        buffer: &mut Buffer,
+        x: i32,
+        y: i32,
+        color: Color,
+    ) {
         buffer.shape_until_scroll(&mut self.system, false);
         let default = cosmic_text::Color::rgba(color.r, color.g, color.b, color.a);
         for run in buffer.layout_runs() {
             for glyph in run.glyphs {
                 let phys = glyph.physical((x as f32, y as f32 + run.line_y), 1.0);
                 let gc = glyph.color_opt.unwrap_or(default);
-                let tint = Color { r: gc.r(), g: gc.g(), b: gc.b(), a: gc.a() };
+                let tint = Color {
+                    r: gc.r(),
+                    g: gc.g(),
+                    b: gc.b(),
+                    a: gc.a(),
+                };
                 let Some(img) = self.cache.get_image(&mut self.system, phys.cache_key) else {
                     continue;
                 };
@@ -105,9 +128,11 @@ impl Fonts {
 
 fn pick_family(db: &fontdb::Database, prefs: &[&str]) -> String {
     for want in prefs {
-        let found = db
-            .faces()
-            .any(|f| f.families.iter().any(|(name, _)| name.eq_ignore_ascii_case(want)));
+        let found = db.faces().any(|f| {
+            f.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(want))
+        });
         if found {
             return (*want).to_string();
         }

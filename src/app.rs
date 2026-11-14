@@ -1,272 +1,277 @@
-//! Application state and rendering. Platform-independent: the window and the
-//! headless screenshot mode both call [`App::render`].
+//! Application state, layout and input dispatch. Platform-independent: the
+//! window, `--script` mode and tests all drive [`App`] through [`Input`].
 
 use std::path::{Path, PathBuf};
-
-use cosmic_text::{Attrs, Buffer, Family, Metrics, Scroll, Shaping, Wrap};
+use std::time::{Duration, Instant};
 
 use crate::canvas::{Canvas, Rect};
 use crate::doc::Document;
+use crate::input::{Cursor, Input, Key, Request};
 use crate::text::Fonts;
 use crate::theme;
+use crate::ui::{Ctx, FontKind};
+use crate::view::View;
+use crate::view::code::CodeView;
+use crate::view::message::MessageView;
+
+pub const MIN_ZOOM: f32 = 0.5;
+pub const MAX_ZOOM: f32 = 3.0;
 
 pub struct App {
     pub fonts: Fonts,
-    pub scale: f32,
-    doc: Option<Document>,
-    error: Option<String>,
-    /// Full file text, laid out without wrapping (code-view style).
-    body: Buffer,
-    body_dirty: bool,
-    line_count: usize,
-    /// Vertical scroll position in physical pixels.
-    scroll_px: f32,
-    /// Size of the text area at the last render, for clamping.
-    view_h: f32,
+    scale: f32,
+    zoom: f32,
+    size: (u32, u32),
+    view: Box<dyn View>,
+    requests: Vec<Request>,
+    cursor: Cursor,
+    /// Set when a view may have deferred work; cleared when `tick` finishes it.
+    pending: bool,
+}
+
+struct Layout {
+    main: Rect,
+    status: Rect,
 }
 
 impl App {
     pub fn new(fonts: Fonts, scale: f32) -> Self {
-        let body = Buffer::new_empty(Metrics::new(1.0, 1.0));
-        let mut app = Self {
+        Self {
             fonts,
             scale,
-            doc: None,
-            error: None,
-            body,
-            body_dirty: true,
-            line_count: 0,
-            scroll_px: 0.0,
-            view_h: 0.0,
-        };
-        app.apply_metrics();
-        app
+            zoom: 1.0,
+            size: (1, 1),
+            view: Box::new(MessageView::welcome()),
+            requests: Vec::new(),
+            cursor: Cursor::Default,
+            pending: false,
+        }
     }
 
     pub fn open(&mut self, path: &Path) {
-        match Document::open(path) {
-            Ok(doc) => {
-                self.line_count = doc.text.lines().count().max(1);
-                self.doc = Some(doc);
-                self.error = None;
-            }
-            Err(e) => {
-                self.doc = None;
-                self.error = Some(format!("Could not open {}: {e}", path.display()));
-            }
+        if path.is_dir() {
+            // File tree arrives in S1.10.
+            self.view = Box::new(MessageView::error(
+                "Folder",
+                format!("Opening folders is not supported yet: {}", path.display()),
+            ));
+            return;
         }
-        self.scroll_px = 0.0;
-        self.body_dirty = true;
+        self.view = match Document::open(path) {
+            Ok(doc) => Box::new(CodeView::new(doc)),
+            Err(e) => Box::new(MessageView::error(
+                "Error",
+                format!("Could not open {}: {e}", path.display()),
+            )),
+        };
+        self.pending = true;
     }
 
     pub fn title(&self) -> String {
-        match &self.doc {
-            Some(d) => format!("{} - litedit", d.file_name()),
-            None => "litedit".to_string(),
+        let t = self.view.title();
+        if t.is_empty() {
+            "litedit".into()
+        } else {
+            format!("{t} - litedit")
         }
     }
 
-    pub fn set_scale(&mut self, scale: f32) {
-        if (scale - self.scale).abs() > f32::EPSILON {
-            self.scale = scale;
-            self.apply_metrics();
+    pub fn cursor(&self) -> Cursor {
+        self.cursor
+    }
+
+    pub fn take_requests(&mut self) -> Vec<Request> {
+        std::mem::take(&mut self.requests)
+    }
+
+    pub fn has_pending_work(&self) -> bool {
+        self.pending
+    }
+
+    pub fn status_text(&self) -> String {
+        self.view.status().join("   ")
+    }
+
+    fn ui_line_height(&self) -> f32 {
+        let s = (theme::FONT_SIZE * self.scale * self.zoom).round().max(4.0);
+        (s * theme::LINE_HEIGHT).round()
+    }
+
+    fn layout(&self) -> Layout {
+        let (w, h) = (self.size.0 as i32, self.size.1 as i32);
+        let pad_y = (theme::PADDING_Y * self.scale).round() as i32;
+        let status_h = self.ui_line_height() as i32 + pad_y * 2;
+        let status = Rect::new(0, (h - status_h).max(0), w, status_h.min(h));
+        let main = Rect::new(0, 0, w, (h - status_h).max(0));
+        Layout { main, status }
+    }
+
+    /// Handle one input event. Returns true if the window should redraw.
+    pub fn handle(&mut self, input: Input) -> bool {
+        match &input {
+            Input::Resize(w, h) => {
+                self.size = ((*w).max(1), (*h).max(1));
+                self.pending = true;
+                return true;
+            }
+            Input::Scale(s) => {
+                if (s - self.scale).abs() > f32::EPSILON {
+                    self.scale = *s;
+                    self.view.metrics_changed();
+                    self.pending = true;
+                }
+                return true;
+            }
+            Input::Drop(p) => {
+                let p = p.clone();
+                self.open(&p);
+                return true;
+            }
+            Input::Key { key, mods } if mods.ctrl => {
+                let handled = match key {
+                    Key::Char('o') if mods.shift => {
+                        self.requests.push(Request::OpenFolderDialog);
+                        true
+                    }
+                    Key::Char('o') => {
+                        self.requests.push(Request::OpenFileDialog);
+                        true
+                    }
+                    Key::Char('=') | Key::Char('+') => self.set_zoom(self.zoom * 1.1),
+                    Key::Char('-') => self.set_zoom(self.zoom / 1.1),
+                    Key::Char('0') => self.set_zoom(1.0),
+                    _ => false,
+                };
+                if handled {
+                    return true;
+                }
+            }
+            Input::FsChanged(paths) => {
+                let mine = self.view.path().map(Path::to_path_buf);
+                if let Some(p) = mine
+                    && paths.iter().any(|c| c == &p)
+                {
+                    let mut ctx = Ctx {
+                        fonts: &mut self.fonts,
+                        scale: self.scale,
+                        zoom: self.zoom,
+                        requests: &mut self.requests,
+                        cursor: &mut self.cursor,
+                    };
+                    if self.view.reload(&mut ctx) {
+                        self.pending = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+            _ => {}
         }
+        let rect = self.layout().main;
+        let mut ctx = Ctx {
+            fonts: &mut self.fonts,
+            scale: self.scale,
+            zoom: self.zoom,
+            requests: &mut self.requests,
+            cursor: &mut self.cursor,
+        };
+        let redraw = self.view.handle(&input, rect, &mut ctx);
+        if redraw {
+            self.pending = true;
+        }
+        redraw
     }
 
-    fn px(&self, v: f32) -> f32 {
-        (v * self.scale).round()
+    fn set_zoom(&mut self, z: f32) -> bool {
+        let z = z.clamp(MIN_ZOOM, MAX_ZOOM);
+        let z = if (z - 1.0).abs() < 0.03 { 1.0 } else { z };
+        if (z - self.zoom).abs() > f32::EPSILON {
+            self.zoom = z;
+            self.view.metrics_changed();
+            self.pending = true;
+        }
+        true
     }
 
-    fn code_metrics(&self) -> Metrics {
-        let size = self.px(theme::CODE_FONT_SIZE);
-        Metrics::new(size, (size * theme::LINE_HEIGHT).round())
+    /// Run deferred work for at most `budget`. Returns true if more remains.
+    pub fn tick(&mut self, budget: Duration) -> bool {
+        let mut ctx = Ctx {
+            fonts: &mut self.fonts,
+            scale: self.scale,
+            zoom: self.zoom,
+            requests: &mut self.requests,
+            cursor: &mut self.cursor,
+        };
+        self.pending = self.view.tick(&mut ctx, budget);
+        self.pending
     }
 
-    fn apply_metrics(&mut self) {
-        let m = self.code_metrics();
-        self.body.set_metrics(m);
-        self.body_dirty = true;
-    }
-
-    /// Scroll by a number of lines (positive = down).
-    pub fn scroll_lines(&mut self, lines: f32) {
-        let lh = self.code_metrics().line_height;
-        self.scroll_px += lines * lh;
-        self.clamp_scroll();
-    }
-
-    /// Scroll by physical pixels (touchpads).
-    pub fn scroll_pixels(&mut self, px: f32) {
-        self.scroll_px += px;
-        self.clamp_scroll();
-    }
-
-    pub fn scroll_pages(&mut self, pages: f32) {
-        self.scroll_px += pages * (self.view_h * 0.9);
-        self.clamp_scroll();
-    }
-
-    pub fn scroll_to_start(&mut self) {
-        self.scroll_px = 0.0;
-    }
-
-    pub fn scroll_to_end(&mut self) {
-        self.scroll_px = f32::MAX;
-        self.clamp_scroll();
-    }
-
-    fn content_height(&self) -> f32 {
-        self.line_count as f32 * self.code_metrics().line_height
-    }
-
-    fn clamp_scroll(&mut self) {
-        let max = (self.content_height() - self.view_h * 0.5).max(0.0);
-        self.scroll_px = self.scroll_px.clamp(0.0, max);
-    }
-
-    fn rebuild_body(&mut self) {
-        let mono = self.fonts.mono.clone();
-        let attrs = Attrs::new().family(Family::Name(&mono));
-        let text = self.doc.as_ref().map(|d| d.text.as_str()).unwrap_or("");
-        self.body.set_wrap(Wrap::None);
-        self.body.set_text(text, &attrs, Shaping::Advanced, None);
-        self.body_dirty = false;
+    /// Finish all deferred work (scripts and screenshots), bounded by `limit`.
+    pub fn settle(&mut self, limit: Duration) {
+        let start = Instant::now();
+        while self.tick(Duration::from_millis(50)) && start.elapsed() < limit {}
     }
 
     pub fn render(&mut self, canvas: &mut Canvas) {
-        let (w, h) = (canvas.width(), canvas.height());
+        if (canvas.width() as u32, canvas.height() as u32) != self.size {
+            self.size = (canvas.width().max(1) as u32, canvas.height().max(1) as u32);
+        }
+        let layout = self.layout();
         canvas.set_clip(canvas.bounds());
         canvas.fill_rect(canvas.bounds(), theme::BACKGROUND);
 
-        let pad_x = self.px(theme::PADDING_X) as i32;
-        let pad_y = self.px(theme::PADDING_Y) as i32;
-        let ui_size = self.px(theme::FONT_SIZE);
-        let ui_metrics = Metrics::new(ui_size, (ui_size * theme::LINE_HEIGHT).round());
-        let bar_h = ui_metrics.line_height as i32 + pad_y * 2;
-
-        // Title bar
-        let title_rect = Rect::new(0, 0, w, bar_h);
-        canvas.fill_rect(title_rect, theme::BACKGROUND2);
-        canvas.fill_rect(Rect::new(0, bar_h - 1, w, 1), theme::DIVIDER);
-        let title = match (&self.doc, &self.error) {
-            (Some(d), _) => d.path.display().to_string(),
-            (None, Some(_)) => "Error".to_string(),
-            (None, None) => "litedit — open a file: litedit <path>".to_string(),
+        let mut ctx = Ctx {
+            fonts: &mut self.fonts,
+            scale: self.scale,
+            zoom: self.zoom,
+            requests: &mut self.requests,
+            cursor: &mut self.cursor,
         };
-        self.draw_label(canvas, &title, pad_x, pad_y, ui_metrics, theme::ACCENT, w - pad_x * 2);
 
-        // Status bar
-        let status_y = h - bar_h;
-        canvas.fill_rect(Rect::new(0, status_y, w, bar_h), theme::BACKGROUND2);
-        let status = match &self.doc {
-            Some(d) => format!(
-                "{} lines   {:?}   {:?}   font {} / {}",
-                self.line_count, d.line_ending, d.encoding, self.fonts.mono, self.fonts.sans
-            ),
-            None => String::new(),
-        };
-        self.draw_label(canvas, &status, pad_x, status_y + pad_y, ui_metrics, theme::TEXT, w - pad_x * 2);
+        canvas.set_clip(layout.main);
+        self.view.render(canvas, layout.main, &mut ctx);
 
-        // Document area
-        let area = Rect::new(0, bar_h, w, (status_y - bar_h).max(0));
-        self.view_h = area.h as f32;
-        self.clamp_scroll();
-        canvas.set_clip(area);
-
-        if let Some(err) = self.error.clone() {
-            self.draw_label(canvas, &err, pad_x, area.y + pad_y, ui_metrics, theme::ERROR, w - pad_x * 2);
-            canvas.set_clip(canvas.bounds());
-            return;
+        // Status bar (lite-xl StatusView).
+        canvas.set_clip(layout.status);
+        canvas.fill_rect(layout.status, theme::BACKGROUND2);
+        let pad_x = ctx.px(theme::PADDING_X) as i32;
+        let pad_y = ctx.px(theme::PADDING_Y) as i32;
+        let mut x = layout.status.x + pad_x;
+        let y = layout.status.y + pad_y;
+        let items = self.view.status();
+        for (i, item) in items.iter().enumerate() {
+            let color = if i == 0 { theme::ACCENT } else { theme::TEXT };
+            let w = ctx.text_width(item, FontKind::Ui) as i32;
+            ctx.label(
+                canvas,
+                item,
+                x,
+                y,
+                color,
+                layout.status.right() - x,
+                FontKind::Ui,
+            );
+            x += w + pad_x * 2;
         }
-        if self.doc.is_none() {
-            canvas.set_clip(canvas.bounds());
-            return;
-        }
-        if self.body_dirty {
-            self.rebuild_body();
-        }
-
-        let m = self.code_metrics();
-        let lh = m.line_height;
-        let gutter_digits = self.line_count.to_string().len().max(3);
-        let digit_w = self.measure_mono_digit(m);
-        let gutter_w = (gutter_digits as f32 * digit_w).ceil() as i32 + pad_x * 2;
-
-        let first_line = (self.scroll_px / lh).floor() as usize;
-        let offset = self.scroll_px - first_line as f32 * lh;
-        let text_x = area.x + gutter_w;
-        let text_w = (area.w - gutter_w).max(1);
-
-        self.body.set_size(Some(text_w as f32), Some(area.h as f32 + lh));
-        self.body.set_scroll(Scroll::new(first_line, offset, 0.0));
-        let top = area.y + pad_y;
-
-        // Line numbers
-        let visible = (area.h as f32 / lh).ceil() as usize + 1;
-        for i in 0..visible {
-            let n = first_line + i;
-            if n >= self.line_count {
-                break;
-            }
-            let y = top + (i as f32 * lh - offset) as i32;
-            let label = (n + 1).to_string();
-            let lw = (label.len() as f32 * digit_w) as i32;
-            self.draw_label(canvas, &label, area.x + gutter_w - pad_x - lw, y, m, theme::LINE_NUMBER, gutter_w);
-        }
-
-        // Text
-        let text_clip = Rect::new(text_x, area.y, text_w, area.h);
-        canvas.set_clip(text_clip);
-        let mut body = std::mem::replace(&mut self.body, Buffer::new_empty(m));
-        self.fonts.draw_buffer(canvas, &mut body, text_x, top, theme::SYNTAX_NORMAL);
-        self.body = body;
-
-        // Scrollbar
-        canvas.set_clip(area);
-        let content_h = self.content_height().max(1.0);
-        if content_h > area.h as f32 {
-            let sb_w = self.px(theme::SCROLLBAR_SIZE) as i32;
-            let thumb_h = ((area.h as f32 / content_h) * area.h as f32).max(self.px(20.0)) as i32;
-            let max_scroll = (content_h - area.h as f32 * 0.5).max(1.0);
-            let thumb_y = area.y + ((self.scroll_px / max_scroll) * (area.h - thumb_h) as f32) as i32;
-            canvas.fill_rect(Rect::new(area.right() - sb_w - 2, thumb_y, sb_w, thumb_h), theme::SCROLLBAR);
+        if (self.zoom - 1.0).abs() > f32::EPSILON {
+            let z = format!("{:.0}%", self.zoom * 100.0);
+            let w = ctx.text_width(&z, FontKind::Ui) as i32;
+            ctx.label(
+                canvas,
+                &z,
+                layout.status.right() - pad_x - w,
+                y,
+                theme::TEXT,
+                w + 2,
+                FontKind::Ui,
+            );
         }
         canvas.set_clip(canvas.bounds());
     }
-
-    fn measure_mono_digit(&mut self, m: Metrics) -> f32 {
-        let mono = self.fonts.mono.clone();
-        let mut b = Buffer::new(&mut self.fonts.system, m);
-        let attrs = Attrs::new().family(Family::Name(&mono));
-        b.set_text("0000000000", &attrs, Shaping::Advanced, None);
-        b.shape_until_scroll(&mut self.fonts.system, false);
-        b.layout_runs().next().map(|r| r.line_w / 10.0).unwrap_or(m.font_size * 0.6)
-    }
-
-    /// Draw a single line of UI text (sans font), clipped to `max_w`.
-    fn draw_label(
-        &mut self,
-        canvas: &mut Canvas,
-        text: &str,
-        x: i32,
-        y: i32,
-        m: Metrics,
-        color: crate::canvas::Color,
-        max_w: i32,
-    ) {
-        let mut b = Buffer::new(&mut self.fonts.system, m);
-        b.set_wrap(Wrap::None);
-        b.set_size(Some(max_w as f32), Some(m.line_height));
-        b.set_text(text, &Attrs::new(), Shaping::Advanced, None);
-        let prev = canvas.clip();
-        canvas.set_clip(Rect::new(x, y, max_w, m.line_height as i32).intersect(&prev));
-        self.fonts.draw_buffer(canvas, &mut b, x, y, color);
-        canvas.set_clip(prev);
-    }
 }
 
-/// Resolve the path given on the command line without `canonicalize`
-/// (which yields `\\?\C:\...` paths on Windows).
+/// Resolve a command-line path without `canonicalize` (which yields
+/// `\\?\C:\...` on Windows).
 pub fn resolve_arg_path(arg: &str) -> PathBuf {
     let p = PathBuf::from(arg);
     if p.is_absolute() {

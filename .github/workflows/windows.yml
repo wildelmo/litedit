@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: Swatinem/rust-cache@v2
 
@@ -46,14 +46,15 @@ jobs:
           New-Item -ItemType Directory -Force out | Out-Null
           $sizeMB = [math]::Round((Get-Item $exe).Length / 1MB, 2)
 
-          # Headless render through the same code path as the window.
-          $t = Measure-Command {
-            Start-Process -FilePath $exe -Wait -NoNewWindow -ArgumentList @(
-              "--screenshot", "out\shot-100.png", "--stats", "out\stats-100.txt", "--size", "1280x800", "src\canvas.rs")
-          }
+          # Scripted smoke test: drives the app through the same input path as
+          # the window, with assertions, and writes screenshots to out/.
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $sp = Start-Process -FilePath $exe -Wait -NoNewWindow -PassThru -ArgumentList @("--script", "ci\smoke.script")
+          $sw.Stop()
+          if ($sp.ExitCode -ne 0) { Write-Error "smoke script failed ($($sp.ExitCode))"; exit 1 }
           Start-Process -FilePath $exe -Wait -NoNewWindow -ArgumentList @(
-            "--screenshot", "out\shot-150.png", "--stats", "out\stats-150.txt", "--size", "1920x1200", "--scale", "1.5", "README.md")
-          $stats = Get-Content out\stats-100.txt -Raw
+            "--screenshot", "out\startup.png", "--stats", "out\stats.txt", "--size", "1280x800", "src\canvas.rs")
+          $stats = Get-Content out\stats.txt -Raw
 
           # Real window: open a file, let it settle, read memory.
           $p = Start-Process -FilePath $exe -ArgumentList "ROADMAP.md" -PassThru
@@ -71,7 +72,7 @@ jobs:
           | metric | value |
           |---|---|
           | exe size | $sizeMB MB |
-          | screenshot run wall time | $([math]::Round($t.TotalMilliseconds)) ms |
+          | smoke script wall time | $($sw.ElapsedMilliseconds) ms |
           | window: working set after 4s | $ws MB |
           | window: peak working set | $peak MB |
           | window: private bytes | $priv MB |
@@ -88,7 +89,20 @@ jobs:
           if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
           if (-not $alive) { Write-Error "window process exited early"; exit 1 }
 
-      - uses: actions/upload-artifact@v4
+      - name: Print screenshots (base64, decoded by scripts/ci-shots.sh)
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem out\*.png | ForEach-Object {
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+            Write-Output "BEGIN_PNG $($_.Name)"
+            for ($i = 0; $i -lt $b64.Length; $i += 4000) {
+              Write-Output $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))
+            }
+            Write-Output "END_PNG"
+          }
+
+      - uses: actions/upload-artifact@v5
         with:
           name: litedit-windows
           path: |
