@@ -7,7 +7,8 @@ An ultralight, memory-safe text editor for Windows, written in Rust.
 - File tree on the left.
 - One small `.exe`: no installer, no browser engine, no plugins, no network.
 
-Designed after [lite-xl](https://github.com/lite-xl/lite-xl) — see `NOTICE`.
+Designed after [lite-xl](https://github.com/lite-xl/lite-xl) — see `NOTICE`, and
+[docs/LITE-XL-COMPARISON.md](docs/LITE-XL-COMPARISON.md) for what is the same and what differs.
 
 > **Version 1.0.0.** Markdown preview (default) and editing, side-by-side
 > live preview, tabs, find/replace, find in folder, command palette, quick

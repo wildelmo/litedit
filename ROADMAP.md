@@ -184,7 +184,7 @@ fixed first (S5.0).
        new line below/above, Ctrl+J join lines, Ctrl+Shift+Up/Down add caret,
        upper/lower case, trim trailing whitespace (+ `trim_trailing_whitespace`
        setting, never markdown), convert indentation, LF/CRLF, F11 full screen
-- [ ] S5.6 Full lite-xl command audit → one table of remaining differences
+- [x] S5.6 Full lite-xl command audit → docs/LITE-XL-COMPARISON.md
 
 ---
 
