@@ -59,6 +59,11 @@ impl Menu {
         }
     }
 
+    #[cfg(test)]
+    pub fn labels(&self) -> Vec<String> {
+        self.items.iter().map(|(l, _)| l.clone()).collect()
+    }
+
     /// Where the item with this label was drawn (tests).
     #[cfg(test)]
     pub fn item_rect(&self, label: &str) -> Option<Rect> {

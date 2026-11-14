@@ -28,6 +28,20 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-028 Files with NUL bytes don't open as text
+A NUL byte in the first 8 KB (and no UTF-16 byte-order mark) means an image,
+program or archive; opening it as text shows garbage and saving would damage
+it, so litedit shows a message instead. Rare text files with NULs (some logs,
+UTF-16 without a BOM) are refused too. Tell me if you hit one; an
+"open anyway" option is possible.
+
+### D-029 Disk-change checks trust size + modified time first
+Before saving, litedit checks whether another program changed the file. If
+the size and modification time are exactly as when litedit last read or
+wrote it, the file isn't re-read (saving a large file stays instant);
+otherwise its text is compared. NTFS times are precise to 100 ns, so a
+same-size change slipping through is practically impossible.
+
 ### D-027 Split view: two sides, Ctrl+Alt+arrows, not saved in the session
 VS Code uses Ctrl+\ to split, but in litedit Ctrl+\ already shows/hides the
 file tree (lite-xl's habit), so moving a tab across is Ctrl+Alt+Right/Left

@@ -455,6 +455,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn menu_labels(&self) -> Vec<String> {
+        self.menu.as_ref().map(|m| m.labels()).unwrap_or_default()
+    }
+
+    #[cfg(test)]
     pub fn is_split_for_test(&self) -> bool {
         self.is_split()
     }
@@ -1066,27 +1071,32 @@ impl App {
                 }
                 return;
             }
+            // These act on one side of a split: the clicked tab's side.
             MenuAction::CloseOthers(id) => {
-                let list = ids(self, &|_, t| t != *id);
+                let g = self.tab_index(*id).map_or(0, |i| self.tabs[i].group);
+                let list = ids(self, &|i, t| t != *id && self.tabs[i].group == g);
                 self.perform(Pending::CloseTabs(list));
                 return;
             }
             MenuAction::CloseToRight(id) => {
                 let at = self.tab_index(*id).unwrap_or(usize::MAX);
-                let list = ids(self, &|i, _| i > at);
+                let g = self.tabs.get(at).map_or(0, |t| t.group);
+                let list = ids(self, &|i, _| i > at && self.tabs[i].group == g);
                 self.perform(Pending::CloseTabs(list));
                 return;
             }
             MenuAction::CloseSaved => {
+                let g = self.focused_group();
                 let clean: Vec<u64> = (0..self.tabs.len())
-                    .filter(|&i| !self.tab_view(i).is_dirty())
+                    .filter(|&i| self.tabs[i].group == g && !self.tab_view(i).is_dirty())
                     .map(|i| self.tabs[i].id)
                     .collect();
                 self.perform(Pending::CloseTabs(clean));
                 return;
             }
             MenuAction::CloseAll => {
-                let list = ids(self, &|_, _| true);
+                let g = self.focused_group();
+                let list = ids(self, &|i, _| self.tabs[i].group == g);
                 self.perform(Pending::CloseTabs(list));
                 return;
             }
@@ -1997,6 +2007,9 @@ impl App {
         }
         match input {
             Input::CloseRequested => {
+                // A fresh quit: earlier "Don't save" answers don't carry over
+                // from a quit that was interrupted (e.g. by a save question).
+                self.quit_skip.clear();
                 self.guard(Pending::Quit);
                 return true;
             }
@@ -2533,8 +2546,37 @@ impl App {
     /// Run deferred work for at most `budget`.
     pub fn tick(&mut self, budget: Duration) -> Tick {
         self.sync_nag_owner();
+        // The other side of a split keeps working too (highlighting, image
+        // loads, search results), with part of the budget.
+        let other = if self.is_split() {
+            self.shown_tab(1 - self.focused_group())
+        } else {
+            None
+        };
+        let main_budget = if other.is_some() {
+            budget * 2 / 3
+        } else {
+            budget
+        };
         let mut ctx = ctx!(self);
-        let t = self.view.tick(&mut ctx, budget);
+        let mut t = self.view.tick(&mut ctx, main_budget);
+        if let Some(i) = other
+            && let Some(v) = self.tabs[i].view.as_mut()
+        {
+            let mut ctx = Ctx {
+                fonts: &mut self.fonts,
+                scale: self.scale,
+                zoom: self.zoom,
+                requests: &mut self.requests,
+                cursor: &mut self.cursor,
+                focused: false,
+                clipboard: &mut *self.clipboard,
+                mods: self.mods,
+            };
+            let o = v.tick(&mut ctx, budget - main_budget);
+            t.more |= o.more;
+            t.redraw |= o.redraw;
+        }
         self.pending = t.more;
         t
     }

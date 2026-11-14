@@ -139,70 +139,35 @@ fn build_theme(pal: &theme::Palette) -> Theme {
 }
 
 /// Line-comment syntax for Ctrl+/: (start, end for block-style languages).
+/// Matched on exact grammar names (lower-case), so "Plain Text" can never
+/// pick up "tex".
 pub fn comment_tokens(syntax_name: &str) -> Option<(&'static str, Option<&'static str>)> {
     let n = syntax_name.to_ascii_lowercase();
     let line = |t: &'static str| Some((t, None));
-    let has = |k: &str| n.contains(k);
-    if has("html") || has("xml") || has("markdown") || has("svg") || n == "vue" {
-        return Some(("<!--", Some("-->")));
+    match n.as_str() {
+        "plain text" | "csv" | "tsv" | "diff" | "log" | "" => None,
+        "html" | "html (rails)" | "html (jinja2)" | "xml" | "markdown" | "multimarkdown"
+        | "svg" | "vue" | "svelte" | "xhtml" | "asp" | "html (tcl)" => Some(("<!--", Some("-->"))),
+        "css" | "scss" | "sass" | "less" => Some(("/*", Some("*/"))),
+        "ocaml" => Some(("(*", Some("*)"))),
+        "python" | "ruby" | "perl" | "makefile" | "dockerfile" | "powershell" | "r" | "cmake"
+        | "nim" | "julia" | "elixir" | "nix" | "graphql" | "crystal" | "tcl" | "fish" | "yaml"
+        | "toml" | "git commit" | "git ignore" | "git config" | "git attributes" | "ssh config"
+        | "hosts" | "fstab" | "requirements.txt" | "terraform" | "hcl" | "nginx"
+        | "apache conf" | "awk" | "sed" | "coffeescript" | "gnuplot" | "cabal" | "zsh" => line("#"),
+        "lua" | "sql" | "haskell" | "elm" | "ada" | "vhdl" | "purescript" | "agda" => line("--"),
+        "lisp" | "common lisp" | "clojure" | "scheme" | "racket" | "ini" | "properties"
+        | "assembly (x86_64)" | "arm assembly" | "nasm" | "autohotkey" => line(";"),
+        "batch file" => line("REM"),
+        "viml" | "vim script" => line("\""),
+        "latex" | "tex" | "bibtex" | "erlang" | "matlab" | "octave" | "prolog" => line("%"),
+        "fortran" | "fortran (modern)" => line("!"),
+        _ if n.contains("shell") || n.contains("bash") => line("#"),
+        // C family and most others (Rust, C, C++, C#, Java, JavaScript,
+        // TypeScript, Go, Swift, Kotlin, Dart, PHP, Zig, JSON with
+        // comments, …).
+        _ => line("//"),
     }
-    if n == "css" || has("scss") || has("less") {
-        return Some(("/*", Some("*/")));
-    }
-    if has("python")
-        || has("shell")
-        || has("bash")
-        || has("yaml")
-        || has("toml")
-        || has("ruby")
-        || has("perl")
-        || has("makefile")
-        || has("dockerfile")
-        || has("powershell")
-        || has("r ")
-        || n == "r"
-        || has("cmake")
-        || has("nim")
-        || has("julia")
-        || has("elixir")
-        || has("nix")
-        || has("graphql")
-        || has("git")
-        || has("ssh")
-        || has("crystal")
-        || has("tcl")
-        || n == "fish"
-    {
-        return line("#");
-    }
-    if n == "lua" || has("sql") || has("haskell") || has("elm") || has("ada") {
-        return line("--");
-    }
-    if has("lisp")
-        || has("clojure")
-        || has("scheme")
-        || has("racket")
-        || has("ini")
-        || has("assembly")
-        || has("asm")
-    {
-        return line(";");
-    }
-    if has("batch") {
-        return line("REM");
-    }
-    if has("vim") {
-        return line("\"");
-    }
-    if has("latex") || has("tex") || has("erlang") || has("matlab") {
-        return line("%");
-    }
-    if n == "plain text" || n.is_empty() {
-        return None;
-    }
-    // C family and most others (Rust, C, C++, C#, Java, JavaScript,
-    // TypeScript, Go, Swift, Kotlin, Dart, PHP, JSON with comments, …).
-    line("//")
 }
 
 /// Pick a grammar from the file name, then the first line (shebang etc.).
@@ -383,6 +348,27 @@ impl LineHighlighter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn comment_tokens_by_exact_name() {
+        assert_eq!(comment_tokens("Plain Text"), None);
+        assert_eq!(comment_tokens("Rust"), Some(("//", None)));
+        assert_eq!(comment_tokens("Python"), Some(("#", None)));
+        assert_eq!(
+            comment_tokens("Bourne Again Shell (bash)"),
+            Some(("#", None))
+        );
+        assert_eq!(comment_tokens("LaTeX"), Some(("%", None)));
+        assert_eq!(comment_tokens("Markdown"), Some(("<!--", Some("-->"))));
+        assert_eq!(comment_tokens("INI"), Some((";", None)));
+        assert_eq!(comment_tokens("Lua"), Some(("--", None)));
+        // Every grammar the editor ships gets an answer without panicking.
+        for syn in syntax_set().syntaxes() {
+            let _ = comment_tokens(&syn.name);
+        }
+        let txt = find_syntax(std::path::Path::new("notes.txt"), "");
+        assert_eq!(comment_tokens(&txt.name), None, "{}", txt.name);
+    }
 
     fn lines(s: &str) -> Vec<String> {
         s.lines().map(str::to_owned).collect()

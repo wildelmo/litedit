@@ -475,7 +475,13 @@ impl CodeView {
         self.update_rows(ctx);
         let lh = ctx.code_metrics().line_height;
         let pad_y = ctx.px(theme::PADDING_Y);
-        let head = self.doc.primary().head;
+        // The newest selection (Ctrl+D adds them at the end) is the one to
+        // show; with one selection it's the primary.
+        let head = self
+            .doc
+            .sels
+            .last()
+            .map_or(self.doc.primary().head, |s| s.head);
         let (row, row_x) = self.pos_xy(head, ctx);
         let y = row as f32 * lh + pad_y;
         let margin = lh;
@@ -1419,6 +1425,9 @@ impl View for CodeView {
     }
 
     fn disk_state(&self) -> DiskState {
+        if self.doc.disk_unchanged_fast() {
+            return DiskState::Same;
+        }
         match Document::open(self.doc.path()) {
             // Our own save, a touch, or nothing new: not a conflict.
             Ok(d) if self.doc.disk_matches(&d.text) => DiskState::Same,

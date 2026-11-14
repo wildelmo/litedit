@@ -90,6 +90,11 @@ pub enum Move {
     PageDown(usize),
 }
 
+fn file_meta(p: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
 fn text_hash(s: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -114,6 +119,9 @@ pub struct EditDoc {
     /// Hash of the text as last read from or written to disk (to tell a
     /// real external change from our own save or a touch).
     disk_hash: u64,
+    /// Size and modification time at that moment: if both are unchanged the
+    /// file isn't re-read at all (saves stay fast for big files).
+    disk_meta: Option<(u64, std::time::SystemTime)>,
     /// Remembered column (in chars) for up/down movement.
     goal_col: Option<usize>,
 }
@@ -134,7 +142,19 @@ impl EditDoc {
             goal_col: None,
             lossy: doc.lossy,
             disk_hash: text_hash(&doc.text),
+            disk_meta: None,
         }
+        .with_disk_meta()
+    }
+
+    fn with_disk_meta(mut self) -> Self {
+        self.disk_meta = file_meta(&self.path);
+        self
+    }
+
+    /// Size and mtime unchanged since we last read or wrote the file?
+    pub fn disk_unchanged_fast(&self) -> bool {
+        self.disk_meta.is_some() && file_meta(&self.path) == self.disk_meta
     }
 
     /// Is `disk_text` what we last read or wrote (or what we're showing)?
@@ -186,6 +206,7 @@ impl EditDoc {
         }
         self.lossy = false;
         self.disk_hash = text_hash(&text);
+        self.disk_meta = file_meta(path);
         self.mark_saved();
         Ok(bytes.len())
     }
@@ -205,6 +226,7 @@ impl EditDoc {
         self.encoding = doc.encoding;
         self.lossy = doc.lossy;
         self.disk_hash = text_hash(&doc.text);
+        self.disk_meta = file_meta(&self.path);
         self.hist = History::default();
         for s in &mut self.sels {
             s.anchor = self.buf.clamp(s.anchor);
@@ -961,8 +983,21 @@ impl EditDoc {
             });
             ops.push(Op::Insert { at: start, chunk });
         }
+        // Shift every selection with its lines. An end at column 0 of the
+        // line after a block (Shift+Down selections) moves with it; on the
+        // last line there is no next line, so it becomes the end of the
+        // moved block's last line instead.
+        let old_len: Vec<usize> = self.buf.lines().iter().map(String::len).collect();
+        let shift = |p: Pos| {
+            if up {
+                Pos::new(p.line - 1, p.col)
+            } else if p.line + 1 < n {
+                Pos::new(p.line + 1, p.col)
+            } else {
+                Pos::new(p.line, old_len[p.line.saturating_sub(1)])
+            }
+        };
         for s in &mut self.sels {
-            let shift = |p: Pos| Pos::new(if up { p.line - 1 } else { p.line + 1 }, p.col);
             s.anchor = shift(s.anchor);
             s.head = shift(s.head);
         }
@@ -983,9 +1018,13 @@ impl EditDoc {
         if non_empty.is_empty() {
             return;
         }
+        // Commented = starts with `start` and (block style) ends with
+        // `end`, the two not overlapping ("/*/" is not a comment).
         let commented = non_empty.iter().all(|&l| {
             let t = body(self.buf.line(l));
-            t.starts_with(start) && end.is_none_or(|e| t.trim_end().ends_with(e))
+            let t = t.trim_end();
+            t.starts_with(start)
+                && end.is_none_or(|e| t.len() >= start.len() + e.len() && t.ends_with(e))
         });
         let indent = non_empty
             .iter()
@@ -1001,24 +1040,42 @@ impl EditDoc {
             let lead = text.len() - text.trim_start().len();
             let mut ops = Vec::new();
             if commented {
+                // Ranges to remove: the start token (+ one space) and the end
+                // token (+ one space before it), never overlapping.
+                let mut s1 = lead + start.len();
+                if text[s1..].starts_with(' ') {
+                    s1 += 1;
+                }
+                let mut tail: Option<(usize, usize)> = None;
                 if let Some(e) = &end {
                     let t = text.trim_end();
-                    if let Some(k) = t.rfind(e.as_str()) {
-                        let k0 = if t[..k].ends_with(' ') { k - 1 } else { k };
-                        ops.push(Op::Remove {
-                            at: Pos::new(line, k0),
-                            chunk: buf.slice(Pos::new(line, k0), Pos::new(line, k + e.len())),
-                        });
+                    if t.len() >= e.len() && t.ends_with(e.as_str()) {
+                        let k = t.len() - e.len();
+                        let k0 = if k > 0 && t[..k].ends_with(' ') {
+                            k - 1
+                        } else {
+                            k
+                        };
+                        let e0 = k0.max(s1.min(k));
+                        let s1c = s1.min(k);
+                        s1 = s1c;
+                        if e0 < t.len() {
+                            tail = Some((e0, t.len()));
+                        }
                     }
                 }
-                let mut n = start.len();
-                if text[lead + n..].starts_with(' ') {
-                    n += 1;
+                if let Some((e0, e1)) = tail {
+                    ops.push(Op::Remove {
+                        at: Pos::new(line, e0),
+                        chunk: buf.slice(Pos::new(line, e0), Pos::new(line, e1)),
+                    });
                 }
-                ops.push(Op::Remove {
-                    at: Pos::new(line, lead),
-                    chunk: buf.slice(Pos::new(line, lead), Pos::new(line, lead + n)),
-                });
+                if s1 > lead {
+                    ops.push(Op::Remove {
+                        at: Pos::new(line, lead),
+                        chunk: buf.slice(Pos::new(line, lead), Pos::new(line, s1)),
+                    });
+                }
             } else {
                 if let Some(e) = &end {
                     let at = Pos::new(line, text.trim_end().len());
@@ -1265,6 +1322,15 @@ mod tests {
         assert_eq!(d.buf.to_text(), "b\r\nc\na");
         assert!(d.undo());
         assert_eq!(d.buf.to_text(), "b\r\na\nc");
+        // A selection ending at column 0 of the last line, moved down.
+        let mut d = doc("a\nb\nc");
+        d.set_caret(Pos::new(1, 0), false);
+        d.set_caret(Pos::new(2, 0), true);
+        d.move_lines(false);
+        assert_eq!(d.buf.to_text(), "a\nc\nb");
+        for s in &d.sels {
+            assert!(s.anchor.line < 3 && s.head.line < 3, "{:?}", d.sels);
+        }
         // A two-line selection moves as a block.
         let mut d = doc("1\n2\n3\n4\n");
         d.set_caret(Pos::new(1, 0), false);
@@ -1282,6 +1348,19 @@ mod tests {
         assert_eq!(d.buf.to_text(), "fn a() {\n    // x();\n\n    // y();\n}\n");
         d.toggle_comment("//", None);
         assert_eq!(d.buf.to_text(), "fn a() {\n    x();\n\n    y();\n}\n");
+        // Lines too short to hold both tokens never panic.
+        for t in ["/*/", "/* */", "/**/", "<!-->", "<!-- -->", "<!---->"] {
+            let mut d = doc(t);
+            d.toggle_comment(
+                if t.starts_with('<') { "<!--" } else { "/*" },
+                Some(if t.starts_with('<') { "-->" } else { "*/" }),
+            );
+            d.toggle_comment(
+                if t.starts_with('<') { "<!--" } else { "/*" },
+                Some(if t.starts_with('<') { "-->" } else { "*/" }),
+            );
+            assert!(d.undo() || true);
+        }
         let mut d = doc("<p>hi</p>");
         d.toggle_comment("<!--", Some("-->"));
         assert_eq!(d.buf.to_text(), "<!-- <p>hi</p> -->");

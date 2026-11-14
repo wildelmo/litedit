@@ -177,6 +177,16 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-14 — Fixes from the final review of Epic 5: the unfocused split
+  side now ticks (highlighting, images, search results; pixel test,
+  mutation-checked); Ctrl+/ token table matches exact grammar names (Plain
+  Text no longer gets `%`); uncommenting lines shorter than both tokens can't
+  panic; Alt+Down with a selection ending at column 0 of the last line kept a
+  caret past the end (found by the extended editing fuzz, now with Ctrl+D /
+  Ctrl+Shift+L / Alt+Up/Down / Ctrl+/ / Esc / Ctrl+click / Shift+click); a
+  new quit forgets an interrupted quit's "Don't save" answers; Close Others /
+  to the Right / Saved / All act on one side of a split; Ctrl+D scrolls to the
+  new selection; disk checks use size + mtime first (D-029); D-028 recorded.
 - 2026-11-14 — S5.3 split view: flat tab list with a group tag per tab,
   focused group's view in App.view (all save/close/quit paths unchanged), the
   other side drawn from its slot; per-side tab bars, scroll and reveal; clicks

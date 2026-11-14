@@ -839,6 +839,14 @@ fn fuzz_editor_through_the_app() {
         "ctrl+]",
         "ctrl+[",
         "ctrl+e",
+        // Multi-caret and line commands (S5.4).
+        "ctrl+d",
+        "ctrl+d",
+        "ctrl+shift+l",
+        "alt+up",
+        "alt+down",
+        "ctrl+/",
+        "escape",
     ];
     let pieces = [
         "a",
@@ -890,6 +898,7 @@ fn fuzz_editor_through_the_app() {
             "ctrl+home",
             "ctrl+end",
         ];
+        let mut history: Vec<String> = Vec::new();
         for _ in 0..220 {
             // Typing a base char before a combining mark legitimately leaves the
             // caret inside the new cluster (as in other editors); movement and
@@ -911,6 +920,19 @@ fn fuzz_editor_through_the_app() {
                     last = "click".into();
                     let (cx, cy) = (rnd(500) as f32, 40.0 + rnd(260) as f32); // below the tab bar
                     let clicks = 1 + rnd(3) as u32;
+                    // Sometimes Ctrl+click (adds a caret) or Shift+click.
+                    let held = match rnd(4) {
+                        0 => crate::input::Mods {
+                            ctrl: true,
+                            ..Default::default()
+                        },
+                        1 => crate::input::Mods {
+                            shift: true,
+                            ..Default::default()
+                        },
+                        _ => crate::input::Mods::default(),
+                    };
+                    app.handle(Input::Modifiers(held));
                     app.handle(Input::MouseMove { x: cx, y: cy });
                     app.handle(Input::MouseDown {
                         x: cx,
@@ -925,6 +947,7 @@ fn fuzz_editor_through_the_app() {
                         y: dy,
                         button: crate::input::MouseButton::Left,
                     });
+                    app.handle(Input::Modifiers(crate::input::Mods::default()));
                 }
                 _ => {
                     app.handle(Input::Wheel {
@@ -934,6 +957,11 @@ fn fuzz_editor_through_the_app() {
                     });
                 }
             }
+            history.push(if last.is_empty() {
+                "text/wheel".into()
+            } else {
+                last.clone()
+            });
             render_hash(&mut app, 500, 300);
             let preview = app.status_text().starts_with("Markdown preview");
             if let Some((text, pts)) = app.snapshot().filter(|_| !preview) {
@@ -944,7 +972,11 @@ fn fuzz_editor_through_the_app() {
                     .collect();
                 let chunk = crate::editor::buffer::Chunk::parse(&text);
                 for p in pts {
-                    assert!(p.line < lines.len(), "seed {seed}: caret line out of range");
+                    assert!(
+                        p.line < lines.len(),
+                        "seed {seed}: caret line out of range after {:?}",
+                        &history[history.len().saturating_sub(6)..]
+                    );
                     let l = &chunk.lines[p.line];
                     assert!(
                         l.is_char_boundary(p.col),
@@ -2888,5 +2920,108 @@ fn quitting_with_unsaved_tabs_on_both_sides_asks_for_each() {
             .unwrap()
             .starts_with("left-edit")
     );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn split_layout_theme_switch_matches_fresh_and_the_other_side_keeps_working() {
+    let build = |app: &mut App| {
+        app.open(&fixture("sample.rs"));
+        app.open(&fixture("sample.md"));
+        key(app, "ctrl+alt+right"); // sample.md right, sample.rs unfocused on the left
+    };
+    theme::set_light(false);
+    let mut a = new_app();
+    build(&mut a);
+    let dark = settled_hash(&mut a);
+    a.set_light(true);
+    let switched = settled_hash(&mut a);
+    let mut b = new_app();
+    build(&mut b);
+    assert_eq!(switched, settled_hash(&mut b), "unfocused side re-coloured");
+    a.set_light(false);
+    assert_eq!(settled_hash(&mut a), dark);
+    // The unfocused (left) side really has syntax colours: keyword-coloured
+    // pixels in its area.
+    let (w, h) = (1000u32, 700u32);
+    let mut buf = vec![0u32; (w * h) as usize];
+    a.render(&mut Canvas::new(&mut buf, w, h));
+    let kw = theme::p().syntax_keyword;
+    let kw = ((kw.r as u32) << 16) | ((kw.g as u32) << 8) | kw.b as u32;
+    let (bar, _) = a.tab_layout().unwrap();
+    let (x0, x1) = if bar.x > 600 { (270, 600) } else { (650, 990) };
+    let n = (60..400)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(y * w + x) as usize] & 0xffffff == kw)
+        .count();
+    assert!(n > 20, "only {n} keyword pixels on the unfocused side");
+}
+
+#[test]
+fn close_others_in_a_split_stays_on_its_side() {
+    use crate::input::MouseButton;
+    let (d, files) = many_files("splitclose", 4);
+    let mut app = new_app();
+    for f in &files {
+        app.open(f);
+    }
+    key(&mut app, "ctrl+alt+right"); // f03 alone on the right
+    key(&mut app, "ctrl+1");
+    let (bar, rects) = app.tab_layout().unwrap();
+    // A tab that is fully visible (the bar may be scrolled).
+    let r = *rects
+        .iter()
+        .find(|r| r.x >= bar.x && r.right() <= bar.right())
+        .unwrap();
+    let keep = app.title();
+    mouse(
+        &mut app,
+        r.x as f32 + 10.0,
+        r.y as f32 + 10.0,
+        MouseButton::Right,
+    );
+    assert!(
+        app.menu_labels().contains(&"Close Others".to_string()),
+        "{:?}",
+        app.menu_labels()
+    );
+    run_menu_item(&mut app, "Close Others");
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(
+        names.contains(&"f03.txt".to_string()),
+        "the right side's tab survives: {names:?}"
+    );
+    let _ = keep;
+    assert!(app.is_split_for_test());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_interrupted_quit_forgets_its_dont_save_answers() {
+    let (d, files) = many_files("quitskip", 2);
+    let mut app = new_app();
+    app.open(&files[0]);
+    app.handle(Input::Text("A ".into()));
+    app.open(&files[1]);
+    app.handle(Input::Text("B ".into()));
+    app.handle(Input::CloseRequested);
+    let first = app.nag_message().unwrap();
+    key(&mut app, "d"); // Don't save this one
+    assert!(app.nag_message().is_some(), "asked about the other");
+    key(&mut app, "escape"); // Cancel: no quit
+    assert!(!app.take_requests().contains(&Request::Quit));
+    // A new quit asks about both again.
+    app.handle(Input::CloseRequested);
+    let mut asked = Vec::new();
+    while let Some(m) = app.nag_message() {
+        asked.push(m);
+        key(&mut app, "d");
+        if asked.len() > 4 {
+            break;
+        }
+    }
+    assert!(asked.contains(&first), "{asked:?}");
+    assert_eq!(asked.len(), 2, "{asked:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
