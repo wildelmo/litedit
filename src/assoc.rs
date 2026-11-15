@@ -150,23 +150,31 @@ pub fn unregister() -> Result<(), String> {
     use windows_sys::Win32::System::Registry::{
         HKEY_CURRENT_USER, RegDeleteKeyValueW, RegDeleteTreeW,
     };
+    // "Not found" (2: already removed, or never added) is fine.
+    const NOT_FOUND: u32 = 2;
     let (keys, values) = removals();
+    let mut failed: Option<String> = None;
     for key in keys {
         let k = wide(&key);
-        // SAFETY: valid NUL-terminated string. "Not found" is fine.
-        unsafe {
-            RegDeleteTreeW(HKEY_CURRENT_USER, k.as_ptr());
+        // SAFETY: valid NUL-terminated string.
+        let rc = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, k.as_ptr()) };
+        if rc != 0 && rc != NOT_FOUND {
+            failed.get_or_insert(format!("could not remove {key} (error {rc})"));
         }
     }
     for (key, name) in values {
         let (k, n) = (wide(&key), wide(&name));
-        // SAFETY: valid NUL-terminated strings. "Not found" is fine.
-        unsafe {
-            RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr());
+        // SAFETY: valid NUL-terminated strings.
+        let rc = unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr()) };
+        if rc != 0 && rc != NOT_FOUND {
+            failed.get_or_insert(format!("could not remove {key} (error {rc})"));
         }
     }
     notify_shell();
-    Ok(())
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Tell Explorer the "Open with" lists changed.

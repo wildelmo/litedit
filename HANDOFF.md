@@ -12,12 +12,16 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 
 ## What is on `main` and verified
 
-- Version 1.1.0 (unreleased, no tag). Everything through Epic 6 is on `main`.
-- Last fully green Windows CI run: commit `9395405` (all real-window tests
-  pass, including one-window hand-over and the "Open with" registry test;
-  exe 6.76 MB; one window 19 MB private; 12 viewed markdown tabs ≈ 22 MB).
-- Linux: 393 tests pass. The Windows target type-checks from Linux with
+- Version 1.1.0 (unreleased, no tag). Everything through Epic 7 is on `main`.
+- Windows CI (all real-window tests, one-window hand-over, "Open with"
+  registry test) is green; numbers from the run on `c9001e3`: exe 6.89 MB,
+  one window 21.6 MB private, 10 tabs 22.4 MB private, first render 89 ms.
+- Linux: 394 tests pass. The Windows target type-checks from Linux with
   `cargo check --target x86_64-pc-windows-msvc`.
+- Only checked from Linux, not on a real Windows desktop: skipping
+  junctions in tree copies (tests are unix symlinks), case-insensitive
+  matching of open tabs to tree entries, how long recycling thousands of
+  entries takes.
 
 ## Nothing is in flight
 

@@ -81,3 +81,43 @@ key ctrl+f
 text fn
 shot out/light-code.png
 theme dark
+# Picture tab.
+open tests/fixtures/img/banner.png
+shot out/image.png
+expect status 360 × 120 px
+# Read-only lock: typing changes nothing, so closing asks nothing.
+open tests/fixtures/crlf.txt
+key ctrl+shift+p
+text toggle read-only
+key enter
+expect status Read-only
+text zzz
+key ctrl+w
+expect no-nag
+# Back / Forward.
+open tests/fixtures/sample.rs
+open tests/fixtures/crlf.txt
+key alt+left
+expect title sample.rs
+key alt+right
+expect title crlf.txt
+# Compare with the clipboard (the file's own text: identical).
+key ctrl+a
+key ctrl+c
+key ctrl+shift+p
+text compare with clipboard
+key enter
+expect title Clipboard
+expect status No changes
+# Tree: duplicate a file (never overwrites), then delete both with one question.
+open out/edited.txt
+saveas out/zz-one.txt
+open out
+key ctrl+shift+e
+key end
+key ctrl+d
+settle
+expect status Duplicated
+open out/zz-one - Copy.txt
+expect title zz-one - Copy.txt
+expect status CRLF

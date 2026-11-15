@@ -220,6 +220,14 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — Epic 7 wrap-up: Windows smoke script now drives the picture
+  tab, read-only lock, Back / Forward, Compare with Clipboard and tree
+  Duplicate in the release exe; a 3000-entry tree delete is timed through
+  the real flow (ask 46 ms, delete 53 ms, debug build, stand-in bin); the
+  six S7.0 regression tests were run against the pre-fix code (all fail
+  there); kept colours measured at ~90 KB per hidden 2000-line tab;
+  "Remove from Open with" reports registry errors. Windows numbers after
+  Epic 7: exe 6.89 MB, one window 21.6 MB private. 394 tests.
 - 2026-11-15 — Epic 7 independent review, part 2 (tree file operations,
   image viewer): no way found to lose edits or overwrite a file; image
   decoding survived 12,000 damaged files. Fixed: a folder with a workspace

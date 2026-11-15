@@ -1491,3 +1491,43 @@ fn a_quit_that_is_called_off_does_not_stop_a_running_copy() {
     assert_eq!(std::fs::read(p("docs/big.bin")).unwrap(), big);
     cleanup(&ws);
 }
+
+#[test]
+fn deleting_a_whole_big_folder_selection_does_not_freeze() {
+    let (mut app, ws, bin) = setup("bigdelete");
+    std::fs::create_dir_all(ws.join("many")).unwrap();
+    for i in 0..3000 {
+        std::fs::write(ws.join(format!("many/f{i:04}.txt")), "x").unwrap();
+    }
+    app.handle(Input::FsChanged(vec![ws.join("many")]));
+    click_tree(&mut app, &ws.join("many"), 1); // open the folder
+    render_hash(&mut app, 800, 600);
+    key(&mut app, "down");
+    let t = std::time::Instant::now();
+    for _ in 0..2999 {
+        key(&mut app, "shift+down");
+    }
+    let selecting = t.elapsed();
+    assert!(
+        selecting < Duration::from_secs(20),
+        "selecting took {selecting:?}"
+    );
+    let t = std::time::Instant::now();
+    key(&mut app, "delete");
+    let asked = t.elapsed();
+    let m = app.nag_message().unwrap_or_default();
+    assert!(
+        m.starts_with("Move 3,000 items") || m.starts_with("Move 3000 items"),
+        "{m}"
+    );
+    let t = std::time::Instant::now();
+    key(&mut app, "enter");
+    let done = t.elapsed();
+    assert_eq!(std::fs::read_dir(ws.join("many")).unwrap().count(), 0);
+    assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 3000);
+    assert!(
+        asked < Duration::from_secs(3) && done < Duration::from_secs(15),
+        "asking took {asked:?}, deleting {done:?}"
+    );
+    cleanup(&ws);
+}

@@ -30,8 +30,8 @@ see.
 ## Decided — review when convenient
 ### D-034 Hidden tabs keep the colours of their first 2000 lines
 The rule is that a tab you aren't looking at holds nothing it can rebuild.
-One exception: syntax colours for up to 2000 lines stay (a few hundred KB
-at most), so switching back to an ordinary file doesn't flash uncoloured
+One exception: syntax colours for up to 2000 lines stay (measured: about
+90 KB per fully read 2000-line tab), so switching back to an ordinary file doesn't flash uncoloured
 text. Longer files drop all colours when hidden and recolour as you read.
 
 ### D-033 Read-only lock: what it blocks and what it doesn't
@@ -49,6 +49,9 @@ when it is very large (entry and size caps) — use Explorer for those.
 Duplicate (Ctrl+D) doesn't ask, since it can't overwrite. If litedit is
 killed mid-copy one partly written file can remain; a normal exit or a
 failure removes it.
+Deleting many entries asks Windows to recycle them one at a time; a
+selection of thousands may take a while (not measurable from the build
+machine's tests, which use a stand-in for the Recycle Bin).
 
 ### D-031 Pictures: fit view keeps a reduced copy; 100% decodes everything
 A picture tab keeps at most 2400 pixels on the long side while fitted to the
