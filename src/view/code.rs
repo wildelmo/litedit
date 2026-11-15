@@ -759,6 +759,32 @@ impl CodeView {
     }
 
     /// Open the find bar (Ctrl+F / Ctrl+H), prefilled from the selection.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    /// The text was edited from outside (the markdown preview): refresh
+    /// highlighting from `line`.
+    pub fn text_changed(&mut self, line: usize) {
+        self.after_edit(line.saturating_sub(1));
+    }
+
+    /// Undo / redo from outside (the markdown preview).
+    pub fn undo_redo(&mut self, redo: bool) -> bool {
+        if self.read_only {
+            return false;
+        }
+        let done = if redo {
+            self.doc.redo()
+        } else {
+            self.doc.undo()
+        };
+        if done {
+            self.after_edit(0);
+        }
+        done
+    }
+
     pub fn open_find(&mut self, with_replace: bool) {
         let sel = self.doc.selected_text();
         let prefill = if !sel.is_empty() && !sel.contains('\n') {

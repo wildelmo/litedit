@@ -97,6 +97,12 @@ pub trait View {
         false
     }
 
+    /// Test hook: window coordinates of the centre of each task checkbox.
+    #[cfg(test)]
+    fn checkboxes(&self) -> Vec<(f32, f32)> {
+        Vec::new()
+    }
+
     /// Test hook: vertical scroll offset in pixels.
     #[cfg(test)]
     fn scroll_y(&self) -> f32 {

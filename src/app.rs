@@ -466,6 +466,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn preview_checkboxes(&self) -> Vec<(f32, f32)> {
+        self.view.checkboxes()
+    }
+
+    #[cfg(test)]
     pub fn view_scroll_y(&self) -> f32 {
         self.view.scroll_y()
     }

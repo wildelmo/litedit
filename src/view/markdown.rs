@@ -407,6 +407,70 @@ impl MarkdownView {
     }
 
     /// Link index under a window-space point, if any.
+    /// The task marker offset of the checkbox under the mouse (with a few
+    /// pixels of slack around the box).
+    fn checkbox_at(&self, px: f32, py: f32) -> Option<usize> {
+        let (_, l) = self.layout.as_ref()?;
+        let dx = self.last_rect.x as f32;
+        let dy = self.last_rect.y as f32 - self.scroll.y;
+        let (x, y) = (px - dx, py - dy);
+        l.elements.iter().find_map(|el| match el {
+            Element::Checkbox {
+                x: bx,
+                y: by,
+                size,
+                offset: Some(off),
+                ..
+            } if x >= bx - 4.0 && x < bx + size + 4.0 && y >= by - 4.0 && y < by + size + 4.0 => {
+                Some(*off)
+            }
+            _ => None,
+        })
+    }
+
+    /// Tick or untick the task whose marker is at byte `offset` of the
+    /// preview text. The preview text is the buffer with line endings and
+    /// unsafe characters replaced one for one, so the marker is found by
+    /// line and character position, and the edit only happens if the buffer
+    /// really has `[ ]` / `[x]` there. One undo step.
+    fn toggle_task(&mut self, offset: usize) -> bool {
+        if self.preview_stale() || self.editor.is_read_only() {
+            return false;
+        }
+        let text = &self.md_text;
+        if offset > text.len() || !text.is_char_boundary(offset) {
+            return false;
+        }
+        let line = text.as_bytes()[..offset]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
+        let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+        let chars_before = text[line_start..offset].chars().count();
+        let buf = &self.editor.doc.buf;
+        if line >= buf.line_count() {
+            return false;
+        }
+        let src = buf.line(line);
+        let Some((col, _)) = src.char_indices().nth(chars_before) else {
+            return false;
+        };
+        let new = match src.get(col..col + 3) {
+            Some("[ ]") => "x",
+            Some("[x]") | Some("[X]") => " ",
+            _ => return false,
+        };
+        use crate::editor::buffer::Pos;
+        self.editor.doc.replace_ranges(vec![(
+            Pos::new(line, col + 1),
+            Pos::new(line, col + 2),
+            new.to_string(),
+        )]);
+        self.editor.text_changed(line);
+        self.sync_preview();
+        true
+    }
+
     fn link_at(&self, px: f32, py: f32) -> Option<usize> {
         let (_, l) = self.layout.as_ref()?;
         let dx = self.last_rect.x as f32;
@@ -659,6 +723,7 @@ impl MarkdownView {
                     y,
                     size,
                     checked,
+                    ..
                 } => {
                     let r = frect(*x + dx, *y + dy, *size, *size);
                     let b = ctx.px(1.5).max(1.0) as i32;
@@ -937,6 +1002,24 @@ impl View for MarkdownView {
     }
 
     #[cfg(test)]
+    fn checkboxes(&self) -> Vec<(f32, f32)> {
+        let Some((_, l)) = &self.layout else {
+            return Vec::new();
+        };
+        let dx = self.last_rect.x as f32;
+        let dy = self.last_rect.y as f32 - self.scroll.y;
+        l.elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Checkbox { x, y, size, .. } => {
+                    Some((x + dx + size / 2.0, y + dy + size / 2.0))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     fn has_caches(&self) -> bool {
         self.layout.is_some()
             || !self.scaled.is_empty()
@@ -1059,6 +1142,18 @@ impl MarkdownView {
                 self.select_all();
                 return true;
             }
+            // Undo / redo work in the preview too (a ticked checkbox can be
+            // taken back without switching to the source).
+            Input::Key {
+                key: k @ (Key::Char('z') | Key::Char('y')),
+                mods,
+            } if mods.ctrl && !mods.alt => {
+                let redo = *k == Key::Char('y') || mods.shift;
+                if self.editor.undo_redo(redo) {
+                    self.sync_preview();
+                }
+                return true;
+            }
             Input::Key {
                 key: Key::Char('c'),
                 mods,
@@ -1101,7 +1196,7 @@ impl MarkdownView {
                 let link = self.link_at(*x, *y);
                 let changed = link != self.hover_link;
                 self.hover_link = link;
-                *ctx.cursor = if link.is_some() {
+                *ctx.cursor = if link.is_some() || self.checkbox_at(*x, *y).is_some() {
                     MouseCursor::Pointer
                 } else {
                     MouseCursor::Default
@@ -1122,6 +1217,10 @@ impl MarkdownView {
             } => {
                 if let Some(idx) = self.link_at(*x, *y) {
                     self.activate_link(idx, ctx);
+                    return true;
+                }
+                if let Some(off) = self.checkbox_at(*x, *y) {
+                    self.toggle_task(off);
                     return true;
                 }
                 // Start a text selection (double-click: the whole block).

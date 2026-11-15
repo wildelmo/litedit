@@ -96,6 +96,9 @@ pub struct Block {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ListItem {
     pub task: Option<bool>,
+    /// Source byte offset of the task marker (`[ ]` / `[x]`), for ticking
+    /// it from the preview.
+    pub task_offset: Option<usize>,
     pub blocks: Vec<Block>,
 }
 
@@ -314,6 +317,7 @@ impl Builder {
                 // Content directly in a list (should not happen) → new item.
                 items.push(ListItem {
                     task: None,
+                    task_offset: None,
                     blocks: vec![block],
                 });
             }
@@ -686,6 +690,7 @@ impl Builder {
             Event::TaskListMarker(done) => {
                 if let Some(Container::Item(item)) = self.stack.last_mut() {
                     item.task = Some(done);
+                    item.task_offset = Some(offset);
                 }
             }
             Event::Rule => {

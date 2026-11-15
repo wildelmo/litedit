@@ -81,6 +81,8 @@ pub enum Element {
         y: f32,
         size: f32,
         checked: bool,
+        /// Source byte offset of its `[ ]` marker.
+        offset: Option<usize>,
     },
     /// An image (or its placeholder when it cannot be shown).
     Image {
@@ -675,6 +677,7 @@ fn layout_list(
                 y: y + ((m.line_height - size) / 2.0).round(),
                 size,
                 checked: done,
+                offset: item.task_offset,
             });
         } else {
             let marker = match start {

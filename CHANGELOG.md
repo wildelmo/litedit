@@ -2,6 +2,8 @@
 
 ## 1.1.0 — unreleased
 
+- Task lists: click a checkbox in the markdown preview to tick or untick
+  it; Ctrl+Z / Ctrl+Y work in the preview.
 - Go to heading (Ctrl+Shift+G): a searchable outline of the markdown
   document; jumps in the preview or the source.
 - Much less memory with many tabs: tabs you aren't looking at free their

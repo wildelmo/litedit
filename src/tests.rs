@@ -3401,3 +3401,54 @@ fn go_to_heading_scrolls_the_preview_and_moves_the_caret_in_the_source() {
     );
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn clicking_a_task_checkbox_in_the_preview_ticks_it_in_the_file() {
+    use crate::input::MouseButton;
+    let d = tmp_dir("tasks");
+    let f = d.join("todo.md");
+    // CRLF, a control character before the list (sanitized in the preview),
+    // a nested item, a quoted item and an empty item.
+    let text = "# T\u{1}odo \u{e9}\r\n\r\n- [ ] first\r\n- [x] second\r\n  - [ ] nested\r\n- [ ]\r\n\r\n> - [ ] quoted\r\n";
+    std::fs::write(&f, text).unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    key(&mut app, "ctrl+\\"); // hide the tree: simpler coordinates
+    render_hash(&mut app, 800, 600);
+    let boxes = app.preview_checkboxes();
+    assert_eq!(boxes.len(), 5, "{boxes:?}");
+    // Tick the first, untick the second, tick the nested and the quoted.
+    for i in [0, 1, 2, 4] {
+        let (x, y) = app.preview_checkboxes()[i];
+        mouse(&mut app, x, y, MouseButton::Left);
+        render_hash(&mut app, 800, 600);
+    }
+    assert!(app.title().starts_with("● todo.md"), "{}", app.title());
+    key(&mut app, "ctrl+s");
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "# T\u{1}odo \u{e9}\r\n\r\n- [x] first\r\n- [ ] second\r\n  - [x] nested\r\n- [ ]\r\n\r\n> - [x] quoted\r\n"
+    );
+    // Undo and redo work without leaving the preview.
+    key(&mut app, "ctrl+z");
+    assert!(app.view_text().contains("> - [ ] quoted"));
+    key(&mut app, "ctrl+y");
+    assert!(app.view_text().contains("> - [x] quoted"));
+    assert!(app.status_text().starts_with("Markdown preview"));
+    // An item with no text can be ticked too.
+    render_hash(&mut app, 800, 600);
+    let (x, y) = app.preview_checkboxes()[3];
+    mouse(&mut app, x, y, MouseButton::Left);
+    assert!(
+        app.view_text().contains("- [x]\r\n\r\n>"),
+        "{:?}",
+        app.view_text()
+    );
+    // Clicking beside a box does nothing.
+    let before = app.view_text();
+    render_hash(&mut app, 800, 600);
+    let (x, y) = app.preview_checkboxes()[0];
+    mouse(&mut app, x + 200.0, y + 300.0, MouseButton::Left);
+    assert_eq!(app.view_text(), before);
+    let _ = std::fs::remove_dir_all(&d);
+}

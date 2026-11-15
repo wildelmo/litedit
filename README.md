@@ -45,6 +45,7 @@ or drag a file or folder onto the window.
 | `Ctrl+Shift+G` | Markdown: go to heading (outline list) |
 | `Ctrl+Shift+V` | Markdown: side-by-side live preview |
 | `Ctrl+E` | Markdown: switch preview ↔ editing |
+| Click a task checkbox in the preview | Tick / untick it (`Ctrl+Z` undoes; `Ctrl+S` saves) |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
 | Right-click a file → Select for Compare, then Compare with Selected | Side-by-side comparison (`F7` / `Shift+F7` next / previous change); tab menu or palette: Compare with Saved |
