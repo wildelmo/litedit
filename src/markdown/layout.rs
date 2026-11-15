@@ -115,6 +115,8 @@ pub struct Layout {
     pub anchors: Vec<(String, f32)>,
     /// (source byte offset, y) for every block, in document order.
     pub offsets: Vec<(usize, f32)>,
+    /// Some text is not shown (very long code blocks are shortened).
+    pub truncated: bool,
 }
 
 /// What layout knows about an image source.
@@ -269,6 +271,7 @@ struct Out {
     elements: Vec<Element>,
     anchors: Vec<(String, f32)>,
     offsets: Vec<(usize, f32)>,
+    truncated: bool,
 }
 
 pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
@@ -283,6 +286,7 @@ pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
         elements: Vec::new(),
         anchors: Vec::new(),
         offsets: Vec::new(),
+        truncated: false,
     };
     let y = layout_blocks(
         &doc.blocks,
@@ -299,6 +303,7 @@ pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
         height: y + pad_y,
         anchors: out.anchors,
         offsets: out.offsets,
+        truncated: out.truncated,
     }
 }
 
@@ -507,6 +512,7 @@ fn layout_block(
                 cy += h;
             }
             if hidden > 0 {
+                out.truncated = true;
                 let a = Attrs::new()
                     .family(Family::Name(&sans))
                     .color(ccol(theme::p().md_muted))

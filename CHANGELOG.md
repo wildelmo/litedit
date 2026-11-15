@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Find in the markdown preview: Ctrl+F now searches the rendered page
+  (matches highlighted, F3 / Shift+F3, count) instead of switching to the
+  raw text. Ctrl+H (replace) still opens the source.
 - Task lists: click a checkbox in the markdown preview to tick or untick
   it; Ctrl+Z / Ctrl+Y work in the preview.
 - Go to heading (Ctrl+Shift+G): a searchable outline of the markdown

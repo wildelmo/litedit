@@ -1089,15 +1089,87 @@ fn find_and_replace_through_the_app() {
 }
 
 #[test]
-fn find_in_markdown_preview_switches_to_source() {
-    let p = temp_file("f.md", "# Hello\n\nworld\n");
+fn find_in_markdown_preview_stays_in_the_preview() {
+    let mut text = String::from("# Needle hunt\n\nA needle here and a NEEDLE there.\n\n");
+    for i in 0..60 {
+        text.push_str(&format!("filler paragraph {i}\n\n"));
+    }
+    text.push_str(
+        "- list needle\n\n```\ncode needle\n```\n\n| a | b |\n|---|---|\n| needle | x |\n",
+    );
+    let p = temp_file("f.md", &text);
     let mut app = new_app();
     app.open(&p);
+    let plain = settled_hash(&mut app);
     press(&mut app, "ctrl+f");
-    assert!(app.status_text().starts_with("Markdown source"));
-    type_text(&mut app, "world");
     assert!(
-        app.status_text().contains("Ln 3, Col 6"),
+        app.status_text().starts_with("Markdown preview"),
+        "{}",
+        app.status_text()
+    );
+    type_text(&mut app, "needle");
+    let found = settled_hash(&mut app);
+    assert_ne!(plain, found, "matches are highlighted");
+    // Heading, two in the paragraph, list, code block, table = 6.
+    assert!(
+        app.status_text().contains("Find: 1 of 6"),
+        "{}",
+        app.status_text()
+    );
+    assert_eq!(app.view_scroll_y(), 0.0);
+    press(&mut app, "enter");
+    press(&mut app, "enter");
+    press(&mut app, "f3");
+    settled_hash(&mut app);
+    assert!(
+        app.status_text().contains("Find: 4 of 6"),
+        "{}",
+        app.status_text()
+    );
+    assert!(app.view_scroll_y() > 300.0, "scrolled to the list match");
+    press(&mut app, "shift+f3");
+    settled_hash(&mut app);
+    assert!(app.status_text().contains("Find: 3 of 6"));
+    assert!(
+        app.view_scroll_y() < 50.0,
+        "back near the top: {}",
+        app.view_scroll_y()
+    );
+    // Case-sensitive: the heading's "Needle" and "NEEDLE" drop out.
+    press(&mut app, "alt+c");
+    settled_hash(&mut app);
+    assert!(app.status_text().contains("of 4"), "{}", app.status_text());
+    // The count survives a resize (new layout) and a tab switch.
+    app.handle(Input::Resize(700, 500));
+    render_hash(&mut app, 700, 500);
+    assert!(app.status_text().contains("of 4"), "{}", app.status_text());
+    // Typing then Enter straight away (no draw in between) still steps.
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "filler");
+    press(&mut app, "enter");
+    assert!(
+        app.status_text().contains("Find: 2 of 60"),
+        "{}",
+        app.status_text()
+    );
+    // Nothing found.
+    press(&mut app, "ctrl+a");
+    type_text(&mut app, "zzzz");
+    render_hash(&mut app, 700, 500);
+    assert!(
+        app.status_text().contains("Find: no matches"),
+        "{}",
+        app.status_text()
+    );
+    // Esc closes the bar; the document was never touched.
+    press(&mut app, "escape");
+    render_hash(&mut app, 700, 500);
+    assert!(!app.status_text().contains("Find:"));
+    assert!(!app.title().starts_with("●"));
+    // Replace still goes to the source.
+    press(&mut app, "ctrl+h");
+    assert!(
+        app.status_text().starts_with("Markdown source"),
         "{}",
         app.status_text()
     );

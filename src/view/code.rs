@@ -758,7 +758,6 @@ impl CodeView {
         )
     }
 
-    /// Open the find bar (Ctrl+F / Ctrl+H), prefilled from the selection.
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -785,6 +784,12 @@ impl CodeView {
         done
     }
 
+    /// Height of one find-bar row (shared with the markdown preview).
+    pub fn find_bar_height(ctx: &Ctx) -> i32 {
+        Self::bar_row_height(ctx)
+    }
+
+    /// Open the find bar (Ctrl+F / Ctrl+H), prefilled from the selection.
     pub fn open_find(&mut self, with_replace: bool) {
         let sel = self.doc.selected_text();
         let prefill = if !sel.is_empty() && !sel.contains('\n') {

@@ -46,6 +46,27 @@ enum Mode {
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(180);
 const LIVE_DEBOUNCE_MIN_BYTES: usize = 30_000;
 
+/// Most matches listed by find in the preview.
+const MAX_PREVIEW_MATCHES: usize = 20_000;
+
+/// Find in the rendered preview (Ctrl+F in preview mode): matches are
+/// ranges inside the layout's text elements, recomputed whenever the
+/// pattern or the layout changes.
+struct PreviewFind {
+    f: crate::find::Finder,
+    /// (element index, start, end), in document order.
+    matches: Vec<(usize, Cursor, Cursor)>,
+    current: Option<usize>,
+    /// What `matches` was computed for: pattern, case, regex, layout number.
+    key: Option<(String, bool, bool, u64)>,
+    /// Scroll the current match into view at the next draw.
+    reveal: bool,
+    /// Typing goes to the bar (false after a click on the page).
+    focused: bool,
+    /// The match list hit its limit or the time budget.
+    capped: bool,
+}
+
 pub struct MarkdownView {
     /// The source editor; the single owner of the document text.
     editor: CodeView,
@@ -77,6 +98,13 @@ pub struct MarkdownView {
     notice: Option<String>,
     /// Scroll the preview to this source line once the layout exists.
     pending_scroll_line: Option<usize>,
+    /// Find bar of the preview.
+    pfind: Option<PreviewFind>,
+    /// Counts layouts built (find results belong to one layout).
+    layout_gen: u64,
+    /// Element count of the last layout of the current text (survives the
+    /// layout being dropped while the tab is hidden).
+    last_shape: Option<usize>,
 }
 
 impl MarkdownView {
@@ -107,6 +135,9 @@ impl MarkdownView {
             selecting: false,
             notice: None,
             pending_scroll_line: None,
+            pfind: None,
+            layout_gen: 0,
+            last_shape: None,
         };
         v.request_images();
         v
@@ -364,6 +395,7 @@ impl MarkdownView {
         self.md = parse(&self.md_text);
         self.md_version = self.editor.doc.version();
         self.layout = None;
+        self.last_shape = None;
         self.scaled.clear();
         self.request_images();
     }
@@ -383,13 +415,12 @@ impl MarkdownView {
             let l = layout(&self.md, &mut lctx, width as f32);
             // Keep a selection across relayouts that only change sizes (image
             // loaded, window resized): same elements, same order.
-            let same_shape = self
-                .layout
-                .as_ref()
-                .is_some_and(|(_, old)| old.elements.len() == l.elements.len());
+            let same_shape = self.last_shape == Some(l.elements.len());
             if !same_shape {
                 self.sel = None;
             }
+            self.last_shape = Some(l.elements.len());
+            self.layout_gen += 1;
             self.layout = Some((key, l));
         }
         &self.layout.as_ref().expect("just laid out").1
@@ -407,6 +438,283 @@ impl MarkdownView {
     }
 
     /// Link index under a window-space point, if any.
+    // ---- find in the preview ---------------------------------------------
+
+    /// Page area and find bar (when open) of the preview in `rect`.
+    fn preview_rects(&self, rect: Rect, ctx: &Ctx) -> (Rect, Option<Rect>) {
+        if self.pfind.is_none() || self.mode != Mode::Preview {
+            return (rect, None);
+        }
+        let h = CodeView::find_bar_height(ctx).min(rect.h);
+        (
+            Rect::new(rect.x, rect.y, rect.w, rect.h - h),
+            Some(Rect::new(rect.x, rect.bottom() - h, rect.w, h)),
+        )
+    }
+
+    fn open_preview_find(&mut self) {
+        let initial = {
+            let t = self.selected_text();
+            if t.contains('\n') || t.chars().count() > 200 {
+                String::new()
+            } else {
+                t
+            }
+        };
+        match self.pfind.as_mut() {
+            Some(p) => {
+                p.focused = true;
+                if !initial.is_empty() {
+                    p.f.find.set_text(&initial);
+                }
+            }
+            None => {
+                self.pfind = Some(PreviewFind {
+                    f: crate::find::Finder::new(&initial, false),
+                    matches: Vec::new(),
+                    current: None,
+                    key: None,
+                    reveal: true,
+                    focused: true,
+                    capped: false,
+                });
+            }
+        }
+    }
+
+    /// Recompute the match list if the pattern or the layout changed.
+    fn refresh_preview_find(&mut self) {
+        let gen_now = self.layout_gen;
+        let scroll_y = self.scroll.y;
+        let (Some(p), Some((_, l))) = (self.pfind.as_mut(), self.layout.as_ref()) else {
+            return;
+        };
+        let key = (
+            p.f.pattern().to_string(),
+            p.f.case_sensitive,
+            p.f.regex,
+            gen_now,
+        );
+        if p.key.as_ref() == Some(&key) {
+            return;
+        }
+        let pattern_changed = p
+            .key
+            .as_ref()
+            .is_none_or(|k| (&k.0, k.1, k.2) != (&key.0, key.1, key.2));
+        p.key = Some(key);
+        p.matches.clear();
+        p.capped = false;
+        let deadline = std::time::Instant::now() + crate::find::SEARCH_BUDGET;
+        let mut first_visible = None;
+        'all: for (ei, el) in l.elements.iter().enumerate() {
+            let Element::Text {
+                buffer,
+                sel: true,
+                y,
+                h,
+                ..
+            } = el
+            else {
+                continue;
+            };
+            if ei % 64 == 63 && std::time::Instant::now() > deadline {
+                p.capped = true;
+                break;
+            }
+            for (li, line) in buffer.lines.iter().enumerate() {
+                for (a, b) in p.f.line_matches(line.text()) {
+                    if first_visible.is_none() && y + h >= scroll_y {
+                        first_visible = Some(p.matches.len());
+                    }
+                    p.matches.push((ei, Cursor::new(li, a), Cursor::new(li, b)));
+                    if p.matches.len() >= MAX_PREVIEW_MATCHES {
+                        p.capped = true;
+                        break 'all;
+                    }
+                }
+            }
+        }
+        if p.matches.is_empty() {
+            p.current = None;
+        } else if pattern_changed {
+            // Start from what is on screen (or the first match).
+            p.current = Some(first_visible.unwrap_or(0));
+            p.reveal = true;
+        } else {
+            p.current = Some(p.current.unwrap_or(0).min(p.matches.len() - 1));
+        }
+    }
+
+    fn preview_find_step(&mut self, back: bool) {
+        if let Some(p) = self.pfind.as_mut() {
+            let n = p.matches.len();
+            if n > 0 {
+                let c = p.current.unwrap_or(0);
+                p.current = Some(if back { (c + n - 1) % n } else { (c + 1) % n });
+                p.reveal = true;
+            }
+        }
+    }
+
+    /// Bring the current match into view (a third of the way down).
+    fn reveal_preview_match(&mut self, view_h: f32) {
+        let Some(p) = self.pfind.as_mut() else { return };
+        if !std::mem::take(&mut p.reveal) {
+            return;
+        }
+        let (Some(ci), Some((_, l))) = (p.current, self.layout.as_ref()) else {
+            return;
+        };
+        let Some(&(ei, a, b)) = p.matches.get(ci) else {
+            return;
+        };
+        let Some(Element::Text { buffer, y, .. }) = l.elements.get(ei) else {
+            return;
+        };
+        let top = buffer
+            .layout_runs()
+            .find(|r| r.highlight(a, b).next().is_some())
+            .map_or(*y, |r| *y + r.line_top);
+        if top < self.scroll.y + 8.0 || top > self.scroll.y + view_h - 48.0 {
+            self.scroll.y = (top - view_h / 3.0).max(0.0);
+        }
+    }
+
+    fn render_preview_find(&mut self, canvas: &mut Canvas, bar: Rect, ctx: &mut Ctx) {
+        let truncated = self.layout.as_ref().is_some_and(|(_, l)| l.truncated);
+        let Some(p) = self.pfind.as_mut() else { return };
+        canvas.fill_rect(bar, theme::p().background2);
+        canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::p().divider);
+        let mut info = match p.f.error() {
+            Some(e) => e,
+            None if p.f.pattern().is_empty() => String::new(),
+            None if p.matches.is_empty() => "no matches".into(),
+            None => format!(
+                "{} of {}{}",
+                p.current.map_or(0, |c| c + 1),
+                p.matches.len(),
+                if p.capped { "+" } else { "" }
+            ),
+        };
+        if truncated {
+            info.push_str(" · long code blocks are shortened here (Ctrl+E searches everything)");
+        }
+        let pad = ctx.px(theme::PADDING_X) as i32;
+        let lh = ctx.ui_metrics().line_height as i32;
+        let toggles = format!(
+            "{}  {}",
+            if p.f.case_sensitive { "[Aa]" } else { " Aa " },
+            if p.f.regex { "[.*]" } else { " .* " }
+        );
+        let tw = ctx.text_width(&toggles, FontKind::Mono) as i32;
+        let iw = (ctx.text_width(&info, FontKind::Ui) as i32).min(bar.w / 2);
+        let field = Rect::new(
+            bar.x,
+            bar.y,
+            (bar.w - tw - iw - pad * 3).max(ctx.px(120.0) as i32),
+            bar.h,
+        );
+        let focused = p.focused && ctx.focused;
+        p.f.find.render(canvas, field, ctx, focused);
+        let ty = bar.y + (bar.h - lh) / 2;
+        let err = info.starts_with("invalid pattern") || info.starts_with("no matches");
+        ctx.label(
+            canvas,
+            &info,
+            field.right() + pad,
+            ty,
+            if err {
+                theme::p().error
+            } else {
+                theme::p().text
+            },
+            iw + 2,
+            FontKind::Ui,
+        );
+        ctx.label(
+            canvas,
+            &toggles,
+            bar.right() - tw - pad,
+            ty,
+            theme::p().accent,
+            tw + 2,
+            FontKind::Mono,
+        );
+    }
+
+    /// Keys and clicks for the preview's find bar. Some(redraw) if handled.
+    fn handle_preview_find(
+        &mut self,
+        input: &Input,
+        bar: Option<Rect>,
+        ctx: &mut Ctx,
+    ) -> Option<bool> {
+        let p = self.pfind.as_mut()?;
+        let in_bar = |x: f32, y: f32| {
+            bar.is_some_and(|b| {
+                x >= b.x as f32 && x < b.right() as f32 && y >= b.y as f32 && y < b.bottom() as f32
+            })
+        };
+        match input {
+            Input::MouseDown { x, y, .. } => {
+                p.focused = in_bar(*x, *y);
+                if p.focused {
+                    p.f.find.handle(input, ctx);
+                    return Some(true);
+                }
+                None
+            }
+            Input::MouseMove { x, y } if in_bar(*x, *y) => {
+                *ctx.cursor = MouseCursor::Text;
+                Some(false)
+            }
+            Input::Key {
+                key: Key::F(3),
+                mods,
+            } => {
+                self.preview_find_step(mods.shift);
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Escape, ..
+            } => {
+                self.pfind = None;
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Char('c'),
+                mods,
+            } if mods.alt && !mods.ctrl => {
+                p.f.case_sensitive = !p.f.case_sensitive;
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Char('r'),
+                mods,
+            } if mods.alt && !mods.ctrl => {
+                p.f.regex = !p.f.regex;
+                Some(true)
+            }
+            Input::Key { .. } | Input::Text(_) if p.focused => {
+                use crate::inputbar::BarEvent;
+                match p.f.find.handle(input, ctx) {
+                    BarEvent::Submit { back } => {
+                        self.preview_find_step(back);
+                        Some(true)
+                    }
+                    BarEvent::Cancel => {
+                        self.pfind = None;
+                        Some(true)
+                    }
+                    BarEvent::Ignored => None,
+                    _ => Some(true),
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// The task marker offset of the checkbox under the mouse (with a few
     /// pixels of slack around the box).
     fn checkbox_at(&self, px: f32, py: f32) -> Option<usize> {
@@ -617,6 +925,8 @@ impl MarkdownView {
         if let Some(line) = self.pending_scroll_line.take() {
             self.scroll_to_source_line(line);
         }
+        self.refresh_preview_find();
+        self.reveal_preview_match(rect.h as f32);
         self.clamp();
         let dx = rect.x as f32;
         let dy = rect.y as f32 - self.scroll.y;
@@ -624,6 +934,9 @@ impl MarkdownView {
         let view_bottom = self.scroll.y + rect.h as f32;
         let hover = self.hover_link;
         let selection = self.sel_range();
+        let found: &[(usize, Cursor, Cursor)] =
+            self.pfind.as_ref().map_or(&[], |p| p.matches.as_slice());
+        let found_current = self.pfind.as_ref().and_then(|p| p.current);
         let Some((_, layout)) = self.layout.as_mut() else {
             return;
         };
@@ -646,6 +959,32 @@ impl MarkdownView {
                     ..
                 } => {
                     let (tx, ty) = (*x + dx, *y + dy);
+                    // Find matches in this element (the current one stronger).
+                    if !found.is_empty() {
+                        let from = found.partition_point(|m| m.0 < ei);
+                        for (k, (_, a, b)) in
+                            found[from..].iter().take_while(|m| m.0 == ei).enumerate()
+                        {
+                            let current = found_current == Some(from + k);
+                            for run in buffer.layout_runs() {
+                                for (hx, hw) in run.highlight(*a, *b) {
+                                    canvas.fill_rect(
+                                        frect(
+                                            tx + hx,
+                                            ty + run.line_top,
+                                            hw.max(2.0),
+                                            run.line_height,
+                                        ),
+                                        if current {
+                                            theme::p().caret.with_alpha(110)
+                                        } else {
+                                            theme::p().find_match
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
                     // Selection highlight.
                     if let Some((lo, hi)) = selection
                         && ei >= lo.0
@@ -829,7 +1168,16 @@ impl View for MarkdownView {
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         self.last_rect = rect;
         match self.mode {
-            Mode::Preview => self.render_preview(canvas, rect, ctx),
+            Mode::Preview => {
+                let (page, bar) = self.preview_rects(rect, ctx);
+                self.last_rect = page;
+                canvas.set_clip(page);
+                self.render_preview(canvas, page, ctx);
+                if let Some(bar) = bar {
+                    canvas.set_clip(bar);
+                    self.render_preview_find(canvas, bar, ctx);
+                }
+            }
             Mode::Source => self.editor.render(canvas, rect, ctx),
             Mode::Split => {
                 let (left, div, right) = Self::split_rects(rect, ctx);
@@ -902,18 +1250,44 @@ impl View for MarkdownView {
             self.last_rect = right;
             return self.handle_preview(input, right, ctx);
         }
-        // Find / replace work on the source: switch to editing first.
-        if self.mode == Mode::Preview
-            && let Input::Key { key, mods } = input
-            && ((mods.ctrl && matches!(key, Key::Char('f') | Key::Char('h')))
-                || matches!(key, Key::F(3)))
-        {
-            self.toggle_mode(ctx);
+        if self.mode == Mode::Preview {
+            // Ctrl+F searches the rendered page (the preview stays).
+            if let Input::Key {
+                key: Key::Char('f'),
+                mods,
+            } = input
+                && mods.ctrl
+                && !mods.shift
+                && !mods.alt
+            {
+                self.open_preview_find();
+                return true;
+            }
+            // Replace works on the source: switch to editing first (so does
+            // F3 when the preview has no find bar).
+            if let Input::Key { key, mods } = input
+                && ((mods.ctrl && matches!(key, Key::Char('h')))
+                    || (matches!(key, Key::F(3)) && self.pfind.is_none()))
+            {
+                self.pfind = None;
+                self.toggle_mode(ctx);
+            }
         }
         if self.mode == Mode::Source {
             return self.editor.handle(input, rect, ctx);
         }
-        self.handle_preview(input, rect, ctx)
+        let (page, bar) = self.preview_rects(rect, ctx);
+        self.last_rect = page;
+        // Keys act on an up-to-date match list even before the next draw.
+        if self.pfind.is_some() && matches!(input, Input::Key { .. }) {
+            self.sync_preview();
+            self.ensure_layout(page.w.max(1), ctx);
+            self.refresh_preview_find();
+        }
+        if let Some(r) = self.handle_preview_find(input, bar, ctx) {
+            return r;
+        }
+        self.handle_preview(input, page, ctx)
     }
 
     fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
@@ -942,7 +1316,22 @@ impl View for MarkdownView {
 
     fn status(&self) -> Vec<String> {
         let mut v = match self.mode {
-            Mode::Preview => vec!["Markdown preview".to_string(), "Ctrl+E: edit".to_string()],
+            Mode::Preview => {
+                let mut v = vec!["Markdown preview".to_string(), "Ctrl+E: edit".to_string()];
+                if let Some(p) = &self.pfind
+                    && !p.f.pattern().is_empty()
+                {
+                    v.push(match (p.current, p.matches.len()) {
+                        (_, 0) => "Find: no matches".to_string(),
+                        (c, n) => format!(
+                            "Find: {} of {n}{}",
+                            c.map_or(0, |c| c + 1),
+                            if p.capped { "+" } else { "" }
+                        ),
+                    });
+                }
+                v
+            }
             Mode::Split => {
                 let mut s = self.editor.status();
                 s.insert(0, "Markdown side by side".into());

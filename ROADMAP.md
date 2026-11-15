@@ -193,7 +193,8 @@ fixed first (S5.0).
 - [x] S6.2 Go to heading (Ctrl+Shift+G): list of the document's headings
 - [x] S6.3 Click a task checkbox in the preview to tick / untick it (Ctrl+Z / Ctrl+Y
        work in the preview)
-- [ ] S6.4 Find in the preview (Ctrl+F stays in the preview)
+- [x] S6.4 Find in the preview (Ctrl+F stays in the preview; F3 / Shift+F3,
+       Alt+C / Alt+R, count in the bar and status; Ctrl+H still goes to the source)
 - [ ] S6.5 Peek tab: single click in the tree reuses one temporary tab
 - [ ] S6.6 One window: a second launch opens its files in the running window
 - [ ] S6.7 "Open with" registration for markdown (explicit command)
@@ -204,6 +205,11 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.4 find in preview: PreviewFind (Finder + match list of
+  element ranges, recomputed per pattern and per layout, time-budgeted and
+  capped), highlights via LayoutRun::highlight, current match revealed;
+  truncated code blocks say so in the bar. Preview selection now also
+  survives a hidden tab's layout being dropped (last_shape).
 - 2026-11-15 — S6.3 task checkboxes: parser keeps each marker's offset;
   click maps it to the buffer by line + character count and edits only if the
   bytes are `[ ]`/`[x]` (one undo step); undo/redo forwarded in preview mode.

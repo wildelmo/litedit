@@ -39,7 +39,7 @@ or drag a file or folder onto the window.
 | `Ctrl+Shift+P` | Command palette (every command, with its shortcut) |
 | `Ctrl+Tab`, `Ctrl+PgUp/PgDn`, `Alt+1..9` | Switch tabs |
 | `Ctrl+W` | Close tab (asks if there are unsaved changes) |
-| `Ctrl+F` / `Ctrl+H` | Find / replace (`F3`, `Alt+C` case, `Alt+R` regex, `Ctrl+Enter` replace all) |
+| `Ctrl+F` / `Ctrl+H` | Find / replace (`F3`, `Alt+C` case, `Alt+R` regex, `Ctrl+Enter` replace all). In the markdown preview `Ctrl+F` searches the rendered page |
 | `Ctrl+Shift+F` | Find in folder |
 | `Ctrl+G` | Go to line |
 | `Ctrl+Shift+G` | Markdown: go to heading (outline list) |
