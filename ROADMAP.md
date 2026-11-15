@@ -202,6 +202,18 @@ fixed first (S5.0).
 - [x] S6.7 "Open with" registration for markdown (explicit command with a
        confirmation; current user only; a remove command; D-006 updated)
 
+## Epic 7 — Reader first, second batch (built by sub-agents, integrated on main)
+
+- [ ] S7.0 Fix confirmed findings from the independent review of Epic 6
+- [ ] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
+       while loading; read-only lock for code files
+- [ ] S7.2 Image files open in a viewer tab
+- [ ] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
+- [ ] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
+       jump to a change in the file, compare with the clipboard
+- [ ] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
+       the status bar
+
 ---
 
 ## Progress log

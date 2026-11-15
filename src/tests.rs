@@ -383,7 +383,7 @@ fn dragging_the_divider_resizes_the_tree() {
     assert_ne!(before, render_hash(&mut app, 800, 600));
 }
 
-fn temp_file(name: &str, text: &str) -> PathBuf {
+pub fn temp_file(name: &str, text: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("litedit-ed-{}-{}", name, std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -392,7 +392,7 @@ fn temp_file(name: &str, text: &str) -> PathBuf {
     p
 }
 
-fn type_text(app: &mut App, s: &str) {
+pub fn type_text(app: &mut App, s: &str) {
     for c in s.chars() {
         app.handle(Input::Text(c.to_string()));
     }
@@ -526,7 +526,7 @@ fn copy_cut_paste_through_the_app() {
     std::fs::remove_dir_all(p.parent().unwrap()).ok();
 }
 
-fn press(app: &mut App, combo: &str) {
+pub fn press(app: &mut App, combo: &str) {
     key(app, combo);
 }
 
@@ -1767,7 +1767,7 @@ fn print_scene_hashes() {
 }
 
 /// Render after `steps`, settling first.
-fn settled_hash(app: &mut App) -> u64 {
+pub fn settled_hash(app: &mut App) -> u64 {
     app.settle(Duration::from_secs(5));
     // Drawing can start background work (images decoded again).
     render_hash(app, 1000, 700);
@@ -1828,14 +1828,14 @@ fn theme_switch_matches_a_fresh_render_both_ways() {
     theme::set_light(false);
 }
 
-fn settings_dir(tag: &str) -> PathBuf {
+pub fn settings_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("litedit-settings-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
 }
 
-fn run_command(app: &mut App, label: &str) {
+pub fn run_command(app: &mut App, label: &str) {
     key(app, "ctrl+shift+p");
     app.handle(Input::Text(label.into()));
     key(app, "enter");
@@ -1993,7 +1993,7 @@ fn missing_font_is_reported() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-fn drag(app: &mut App, from: (f32, f32), to: (f32, f32)) {
+pub fn drag(app: &mut App, from: (f32, f32), to: (f32, f32)) {
     app.handle(Input::MouseDown {
         x: from.0,
         y: from.1,
@@ -2012,7 +2012,7 @@ fn drag(app: &mut App, from: (f32, f32), to: (f32, f32)) {
 
 /// A folder with docs/, notes/b.md and a.txt; rows at y ≈ 19 (root), 46
 /// (docs), 73 (notes), 100 (b.md once notes is open) / a.txt.
-fn drag_fixture(tag: &str) -> PathBuf {
+pub fn drag_fixture(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("litedit-drag-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("docs")).unwrap();
@@ -2142,7 +2142,7 @@ fn tree_keys_f2_renames_and_delete_asks_first() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn many_files(tag: &str, n: usize) -> (PathBuf, Vec<PathBuf>) {
+pub fn many_files(tag: &str, n: usize) -> (PathBuf, Vec<PathBuf>) {
     let d = std::env::temp_dir().join(format!("litedit-tabs-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -2156,7 +2156,7 @@ fn many_files(tag: &str, n: usize) -> (PathBuf, Vec<PathBuf>) {
     (d, files)
 }
 
-fn mouse(app: &mut App, x: f32, y: f32, button: crate::input::MouseButton) {
+pub fn mouse(app: &mut App, x: f32, y: f32, button: crate::input::MouseButton) {
     app.handle(Input::MouseDown {
         x,
         y,
@@ -2293,7 +2293,7 @@ fn close_others_asks_for_each_unsaved_tab_and_cancel_stops() {
 }
 
 /// Click a right-click menu item by label (the menu is open).
-fn run_menu_item(app: &mut App, label: &str) {
+pub fn run_menu_item(app: &mut App, label: &str) {
     render_hash(app, 800, 600);
     let pos = app
         .menu_item_pos(label)
@@ -2445,7 +2445,7 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn compare_dir(tag: &str) -> PathBuf {
+pub fn compare_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("litedit-cmp-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -2565,7 +2565,7 @@ fn compare_view_theme_switch_matches_fresh() {
     assert_eq!(settled_hash(&mut a), dark);
 }
 
-fn tmp_dir(tag: &str) -> PathBuf {
+pub fn tmp_dir(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("litedit-s50-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
@@ -2660,7 +2660,7 @@ fn own_saves_and_touches_are_not_disk_conflicts() {
 }
 
 /// Pick a question-bar button by label.
-fn run_nag_option(app: &mut App, label: &str) {
+pub fn run_nag_option(app: &mut App, label: &str) {
     let opts = app.nag_options();
     let i = opts
         .iter()
@@ -3113,7 +3113,7 @@ fn an_interrupted_quit_forgets_its_dont_save_answers() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn two_projects(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
+pub fn two_projects(tag: &str) -> (PathBuf, PathBuf, PathBuf) {
     let root = tmp_dir(tag);
     let (a, b, store) = (root.join("alpha"), root.join("beta"), root.join("store"));
     std::fs::create_dir_all(a.join("src")).unwrap();
@@ -3535,7 +3535,7 @@ fn clicking_a_task_checkbox_in_the_preview_ticks_it_in_the_file() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-fn click_tree(app: &mut App, p: &Path, clicks: u32) {
+pub fn click_tree(app: &mut App, p: &Path, clicks: u32) {
     render_hash(app, 800, 600);
     let y = app
         .tree_row_y(p)
