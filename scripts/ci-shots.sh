@@ -11,12 +11,13 @@ import sys, base64, binascii, os, re
 display_out = sys.argv[1]; out = os.path.realpath(display_out)
 name = None; buf = []; encoded_size = 0
 max_encoded_size = 16 * 1024 * 1024
-safe_name = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,123}\.png").fullmatch
+safe_name = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,123}\.png", re.IGNORECASE).fullmatch
+device_name = re.compile(r"(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?", re.IGNORECASE).fullmatch
 for line in sys.stdin:
     line = line.strip()
     if line.startswith("BEGIN_PNG "):
         candidate = line.split(" ", 1)[1]
-        if not safe_name(candidate):
+        if not safe_name(candidate) or device_name(candidate):
             raise SystemExit("unsafe PNG marker name")
         name, buf, encoded_size = candidate, [], 0
     elif line == "END_PNG" and name:

@@ -234,6 +234,12 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S8.1 follow-up, at the owner's request: screenshot names in
+  `scripts/ci-shots.sh` may now contain dots and end in `.png` in any case
+  (`markdown-1.5.png`, `x.PNG`); Windows device names (`con.png`,
+  `nul.v2.png`) are refused. Still one plain file name: no separators, no
+  colon, must start with a letter or digit. Checked with a stub `gh` over
+  fake logs (19 good names written, 18 hostile ones refused).
 - 2026-11-15 — S8.5 Markdown preview size budget (sub-agent branch, reviewed
   and merged). Files over 1 MiB, 100,000 lines or 30,000 blocks open in
   source view with "This file is too large to preview; showing the source".
