@@ -43,6 +43,8 @@ mod tests_compare;
 mod tests_image;
 #[cfg(test)]
 mod tests_nav;
+#[cfg(test)]
+mod tests_tree;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

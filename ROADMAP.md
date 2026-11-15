@@ -211,7 +211,7 @@ fixed first (S5.0).
 - [x] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
 - [x] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
        jump to a change in the file, compare with the clipboard
-- [ ] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
+- [x] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
        the status bar
 
 ---
@@ -220,6 +220,18 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.5 Tree multi-select + copy (sub-agent branch, reviewed and
+  merged): Ctrl / Shift+click, Shift+Up/Down, Ctrl+A; Delete and drag-move
+  act on the selection with one question (count + first names), never on a
+  workspace folder, a folder and its contents count once, any open file
+  with unsaved edits refuses the whole batch (checked when asking and
+  again when answered), name clashes are skipped and reported. Copy /
+  Paste / Duplicate (Ctrl+C / V / D with the tree focused, tree menu):
+  `fsops::CopyJob` — `create_new` only ("name - Copy.ext"), links skipped,
+  never into itself, caps on entries / bytes / depth 64, runs in slices
+  with progress in the status bar, removes a half-written file on failure
+  or exit. Status bar shows the selected file's size and age. Code in
+  `src/app/treeops.rs`. 357 tests.
 - 2026-11-15 — S7.2 Image viewer (sub-agent branch, reviewed and merged):
   `src/view/image.rs` — png / jpg / gif (first frame) / webp / bmp open in a
   viewer tab: fit (never enlarges) or 100% (`0` / `1`, double-click), pan by

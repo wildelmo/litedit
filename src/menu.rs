@@ -37,6 +37,12 @@ pub enum MenuAction {
     /// Workspace folders.
     AddFolder,
     RemoveFolder(PathBuf),
+    // Tree: copy / paste / duplicate, and delete for several entries.
+    CopyEntries(Vec<PathBuf>),
+    /// Paste the copied entries into this folder.
+    PasteInto(PathBuf),
+    Duplicate(Vec<PathBuf>),
+    DeleteMany(Vec<PathBuf>),
 }
 
 pub struct Menu {

@@ -87,6 +87,8 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
 | Drag in the tree | Move a file or folder into another folder (asks first) |
 | `F2` / `Delete` in the tree | Rename / delete (Recycle Bin, asks first) |
+| `Ctrl+click` / `Shift+click` / `Ctrl+A` in the tree | Select several entries; `Delete` or a drag then acts on all of them (one question) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` in the tree | Copy, paste, duplicate files and folders (never overwrites) |
 | `Ctrl +` / `Ctrl -` / `Ctrl 0`, `Ctrl+wheel` | Zoom in / out / reset |
 | `Ctrl+,` | Settings (theme, font sizes, fonts, wrap, ignored folders) |
 | Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |

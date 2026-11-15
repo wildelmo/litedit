@@ -19,6 +19,7 @@ in litedit · ➕ litedit only
 | — | ➕ Save / Open Workspace file | VS Code-style `.litedit-workspace` |
 | Tree: new file / folder, rename, delete | ✅ (+ F2, Delete keys) | litedit deletes to the Recycle Bin; lite-xl deletes permanently |
 | — | ➕ Drag to move in the tree | Asks first, never overwrites |
+| — | ➕ Multi-select in the tree; copy / paste / duplicate | One confirmation; copies never overwrite |
 | — | ➕ Show in Explorer, Copy path, Find in folder from the tree | |
 | Auto-reload changed files | ✅ | litedit asks if you have unsaved edits (Keep / Compare / Reload) |
 | Toolbar above the tree (icons: new, open, find…) | ❌ | Everything is in the command palette / menus |

@@ -30,6 +30,8 @@ use crate::view::search::SearchView;
 use crate::view::{DiskState, Tick, View, ViewPos};
 use crate::workspace::{self, Workspace};
 
+mod treeops;
+
 pub const MIN_ZOOM: f32 = 0.5;
 pub const MAX_ZOOM: f32 = 3.0;
 /// Logical width limits of the tree panel.
@@ -131,6 +133,8 @@ pub struct App {
     nav_closed: Option<(u64, Loc)>,
     /// Where the reader was in files closed during this run.
     file_pos: Remembered,
+    /// Tree copy / paste state and the active file's size and date.
+    ops: treeops::TreeOps,
 }
 
 struct TabSlot {
@@ -240,6 +244,7 @@ impl App {
             nav_tab: (1, false),
             nav_closed: None,
             file_pos: Remembered::default(),
+            ops: Default::default(),
             mods: crate::input::Mods::default(),
         }
     }
@@ -336,6 +341,7 @@ impl App {
 
     /// After saving `p`: if it is the settings file, apply it.
     fn after_save(&mut self, p: &Path) {
+        self.file_details_changed(&[p.to_path_buf()]);
         if self.is_settings_file(p) {
             let (s, problems) = Settings::load(p);
             self.apply_settings(&s, &problems);
@@ -899,7 +905,10 @@ impl App {
                         let name = self.view_name();
                         self.nag = Some(Nag::unsaved(&name, Pending::Quit));
                     }
-                    None => self.requests.push(Request::Quit),
+                    None => {
+                        self.cancel_copy();
+                        self.requests.push(Request::Quit)
+                    }
                 }
             }
         }
@@ -1127,6 +1136,8 @@ impl App {
                 }
                 self.after_fs_change(&path);
             }
+            NagAction::RecycleMany(paths) => self.recycle_many(paths),
+            NagAction::MoveMany(paths, dir) => self.move_many(paths, dir),
             // Cancel (or an error acknowledged) aborts any quit in progress.
             NagAction::KeepMine | NagAction::Dismiss => self.quit_skip.clear(),
         }
@@ -1338,9 +1349,13 @@ impl App {
         } else {
             path.parent().map(Path::to_path_buf).unwrap_or(root)
         };
+        // One of several selected entries: a menu for all of them.
+        if self.selection_menu(x, y, &path, &dir) {
+            return;
+        }
         let mut items = vec![
             ("New file…", MenuAction::NewFile(dir.clone())),
-            ("New folder…", MenuAction::NewFolder(dir)),
+            ("New folder…", MenuAction::NewFolder(dir.clone())),
         ];
         if is_root {
             items.push(("Add Folder to Workspace…", MenuAction::AddFolder));
@@ -1348,6 +1363,13 @@ impl App {
         if !is_root {
             items.push(("Rename…", MenuAction::Rename(path.clone())));
             items.push(("Delete (to Recycle Bin)", MenuAction::Delete(path.clone())));
+            items.push(("Copy", MenuAction::CopyEntries(vec![path.clone()])));
+        }
+        if self.can_paste() {
+            items.push(("Paste", MenuAction::PasteInto(dir)));
+        }
+        if !is_root {
+            items.push(("Duplicate", MenuAction::Duplicate(vec![path.clone()])));
         }
         if is_root && self.tree.roots().len() > 1 {
             items.push((
@@ -1366,6 +1388,9 @@ impl App {
     }
 
     fn run_menu(&mut self, a: MenuAction) {
+        if self.run_tree_menu(&a) {
+            return;
+        }
         let ids = |s: &Self, keep: &dyn Fn(usize, u64) -> bool| -> Vec<u64> {
             s.tabs
                 .iter()
@@ -1825,12 +1850,15 @@ impl App {
 
     pub fn status_items(&self) -> Vec<String> {
         let mut v = self.view.status();
+        v.extend(self.status_tree_items());
         if let Some(n) = &self.notice {
             v.push(n.clone());
         }
         if let Some(n) = self.tree.truncated_note() {
             v.push(n);
         }
+        // Drawn at the right end of the bar.
+        v.extend(self.status_file_details());
         v
     }
 
@@ -2821,6 +2849,13 @@ impl App {
             }
             return true;
         }
+        // Tree keys for the selection: Ctrl+C / V / D, Delete of several.
+        if self.focus == Focus::Tree
+            && let Input::Key { key, mods } = input
+            && self.tree_key(key, *mods)
+        {
+            return true;
+        }
         match input {
             Input::Key {
                 key: Key::F(11),
@@ -2859,6 +2894,7 @@ impl App {
                 return true;
             }
             Input::FsChanged(paths) => {
+                self.file_details_changed(paths);
                 self.file_index = None;
                 let mut changed = self.tree.invalidate(paths);
                 // Comparisons showing a changed file recompute.
@@ -3315,7 +3351,7 @@ impl App {
                 }
             };
             if let Some((from, dir)) = self.tree.requested_move.take() {
-                self.ask_move(from, dir);
+                self.ask_move_many(from, dir);
                 return true;
             }
             return r;
@@ -3439,6 +3475,10 @@ impl App {
             t.more |= o.more;
             t.redraw |= o.redraw;
         }
+        // A paste / duplicate in the tree continues here, a slice at a time.
+        let copy = self.copy_tick(budget);
+        t.more |= copy.more;
+        t.redraw |= copy.redraw;
         self.pending = t.more;
         t
     }
@@ -3486,6 +3526,8 @@ impl App {
             self.size = (canvas.width().max(1) as u32, canvas.height().max(1) as u32);
         }
         self.trim_hidden_tabs();
+        self.sync_file_details();
+        let (status_tree, status_details) = (self.status_tree_items(), self.status_file_details());
         let layout = self.layout();
         canvas.set_clip(canvas.bounds());
         canvas.fill_rect(canvas.bounds(), theme::p().background);
@@ -3683,6 +3725,7 @@ impl App {
         let mut x = layout.status.x + pad_x;
         let y = layout.status.y + pad_y;
         let mut items = self.view.status();
+        items.extend(status_tree);
         if let Some(n) = &self.notice {
             items.push(n.clone());
         }
@@ -3707,6 +3750,7 @@ impl App {
             );
             x += w + pad_x * 2;
         }
+        let mut right = layout.status.right() - pad_x;
         if (self.zoom - 1.0).abs() > f32::EPSILON {
             let z = format!("{:.0}%", self.zoom * 100.0);
             let w = ctx.text_width(&z, FontKind::Ui) as i32;
@@ -3719,6 +3763,23 @@ impl App {
                 w + 2,
                 FontKind::Ui,
             );
+            right -= w + pad_x * 2;
+        }
+        // The active file's size and date, at the right end when there is
+        // room after the other items.
+        if let Some(d) = status_details {
+            let w = ctx.text_width(&d, FontKind::Ui) as i32;
+            if right - w >= x {
+                ctx.label(
+                    canvas,
+                    &d,
+                    right - w,
+                    y,
+                    theme::p().dim,
+                    w + 2,
+                    FontKind::Ui,
+                );
+            }
         }
         // The right-click menu goes over everything, the status bar included.
         if let Some(m) = self.menu.as_mut() {

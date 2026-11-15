@@ -39,6 +39,10 @@ pub enum NagAction {
     OpenWith(bool),
     /// Move an entry into a folder (tree drag and drop).
     MoveInto(std::path::PathBuf, std::path::PathBuf),
+    /// Move several entries to the Recycle Bin (one confirmation).
+    RecycleMany(Vec<std::path::PathBuf>),
+    /// Move several entries into a folder (one confirmation).
+    MoveMany(Vec<std::path::PathBuf>, std::path::PathBuf),
     Dismiss,
 }
 

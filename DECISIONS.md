@@ -28,6 +28,16 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-032 Copying in the tree: litedit's own list, strict limits
+Ctrl+C in the tree remembers the entries inside litedit only (it does not
+put files on the Windows clipboard, so you can't paste them into Explorer
+or the other way round). A copy never replaces anything ("name - Copy"),
+skips shortcuts / links instead of following them, and is refused up front
+when it is very large (entry and size caps) — use Explorer for those.
+Duplicate (Ctrl+D) doesn't ask, since it can't overwrite. If litedit is
+killed mid-copy one partly written file can remain; a normal exit or a
+failure removes it.
+
 ### D-031 Pictures: fit view keeps a reduced copy; 100% decodes everything
 A picture tab keeps at most 2400 pixels on the long side while fitted to the
 window (plenty for any screen litedit targets) and decodes the full picture

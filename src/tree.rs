@@ -78,7 +78,16 @@ pub struct Tree {
     rows_dirty: bool,
     pub visible: bool,
     pub width: f32,
-    selected: Option<usize>,
+    /// Keyboard cursor: the entry last clicked or moved to. Kept by path, so
+    /// a refresh can never slide it (or the selection) onto another file.
+    cursor: Option<PathBuf>,
+    /// Its row when last seen: where the cursor lands if the entry is gone.
+    cursor_row: usize,
+    /// Selected entries, by path; always visible rows. A plain click or an
+    /// arrow key leaves just the cursor's entry selected.
+    sel: HashSet<PathBuf>,
+    /// Where a Shift+click range starts.
+    anchor: Option<PathBuf>,
     hover: Option<usize>,
     scroll: Scroll,
     view_h: f32,
@@ -87,20 +96,24 @@ pub struct Tree {
     press: Option<Press>,
     /// Folder the dragged entry would move into (valid targets only).
     drop_target: Option<PathBuf>,
-    /// A finished drag: (entry, destination folder). The app asks first.
-    pub requested_move: Option<(PathBuf, PathBuf)>,
+    /// A finished drag: (entries, destination folder). The app asks first.
+    pub requested_move: Option<(Vec<PathBuf>, PathBuf)>,
 }
 
 struct Press {
     path: PathBuf,
     y: f32,
     dragging: bool,
+    /// Pressed on one of several selected entries: they stay selected so a
+    /// drag can move them all; a release without a drag selects just this
+    /// one and opens it.
+    deferred: bool,
 }
 
-/// Can `from` be moved into folder `dir`? Not into its own folder (no-op),
-/// itself, or anything inside it.
-pub fn can_move_into(from: &Path, dir: &Path) -> bool {
-    from.parent() != Some(dir) && !dir.starts_with(from)
+/// Can these entries be dropped on folder `dir`? Never onto or into one of
+/// them, and at least one must actually move.
+pub fn can_move_all_into(from: &[PathBuf], dir: &Path) -> bool {
+    !from.iter().any(|f| dir.starts_with(f)) && from.iter().any(|f| f.parent() != Some(dir))
 }
 
 fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
@@ -199,7 +212,10 @@ impl Tree {
             rows_dirty: true,
             visible: true,
             width: 260.0,
-            selected: None,
+            cursor: None,
+            cursor_row: 0,
+            sel: HashSet::new(),
+            anchor: None,
             hover: None,
             scroll: Scroll::default(),
             view_h: 0.0,
@@ -245,7 +261,7 @@ impl Tree {
         }
         let before = self.roots.len();
         self.roots.retain(|r| r != dir);
-        self.selected = None;
+        self.clear_selection();
         self.rows_dirty = true;
         self.roots.len() != before
     }
@@ -260,7 +276,7 @@ impl Tree {
         self.truncated.clear();
         self.expanded.clear();
         self.expanded.insert(dir.to_path_buf());
-        self.selected = None;
+        self.clear_selection();
         self.scroll = Scroll::default();
         self.rows_dirty = true;
     }
@@ -312,13 +328,194 @@ impl Tree {
             }
             self.rows = rows;
             self.rows_dirty = false;
-            if let Some(s) = self.selected
-                && s >= self.rows.len()
-            {
-                self.selected = self.rows.len().checked_sub(1);
-            }
+            self.resync_selection();
         }
         &self.rows
+    }
+
+    /// After the rows were rebuilt: the selection keeps only entries that
+    /// are still shown (nothing out of sight is ever acted on), and the
+    /// cursor follows its entry to its new row.
+    fn resync_selection(&mut self) {
+        if !self.sel.is_empty() {
+            let shown: HashSet<&Path> = self.rows.iter().map(|r| r.entry.path.as_path()).collect();
+            self.sel.retain(|p| shown.contains(p.as_path()));
+            if self.anchor.as_deref().is_some_and(|a| !shown.contains(a)) {
+                self.anchor = None;
+            }
+        }
+        let Some(cursor) = &self.cursor else { return };
+        match self.rows.iter().position(|r| &r.entry.path == cursor) {
+            Some(i) => self.cursor_row = i,
+            None => {
+                // Its entry is gone: the cursor stays at that place in the
+                // list, but the entry now there is not selected.
+                self.cursor_row = self.cursor_row.min(self.rows.len().saturating_sub(1));
+                self.cursor = self.rows.get(self.cursor_row).map(|r| r.entry.path.clone());
+                self.anchor = None;
+            }
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.cursor = None;
+        self.cursor_row = 0;
+        self.sel.clear();
+        self.anchor = None;
+    }
+
+    fn cursor_index(&mut self) -> Option<usize> {
+        self.rows();
+        let cursor = self.cursor.as_ref()?;
+        // Usually still where it was last seen.
+        if self
+            .rows
+            .get(self.cursor_row)
+            .is_some_and(|r| &r.entry.path == cursor)
+        {
+            return Some(self.cursor_row);
+        }
+        self.rows.iter().position(|r| &r.entry.path == cursor)
+    }
+
+    /// Select just row `i` and put the cursor there.
+    fn select_only(&mut self, i: usize) {
+        let Some(path) = self.rows().get(i).map(|r| r.entry.path.clone()) else {
+            return;
+        };
+        self.sel.clear();
+        self.sel.insert(path.clone());
+        self.anchor = Some(path.clone());
+        self.cursor = Some(path);
+        self.cursor_row = i;
+    }
+
+    /// Ctrl+click: add row `i` to the selection or take it out. The
+    /// workspace folders themselves are never part of a selection of
+    /// several entries.
+    fn toggle_selected(&mut self, i: usize) {
+        let Some(row) = self.rows().get(i).cloned() else {
+            return;
+        };
+        if row.depth == 0 {
+            return;
+        }
+        let roots = &self.roots;
+        self.sel.retain(|p| !roots.contains(p));
+        let path = row.entry.path;
+        if !self.sel.remove(&path) {
+            self.sel.insert(path.clone());
+        }
+        self.anchor = Some(path.clone());
+        self.cursor = Some(path);
+        self.cursor_row = i;
+    }
+
+    /// Shift+click / Shift+arrow: select everything from where the range
+    /// started to row `to` (workspace folders left out).
+    fn select_range(&mut self, to: usize) {
+        self.rows();
+        let Some(target) = self.rows.get(to).map(|r| r.entry.path.clone()) else {
+            return;
+        };
+        let from = match self.anchor.clone() {
+            Some(a) => self.rows.iter().position(|r| r.entry.path == a),
+            None => self.cursor_index(),
+        }
+        .unwrap_or(to);
+        let (lo, hi) = (from.min(to), from.max(to));
+        let range = self.rows.get(lo..=hi).unwrap_or(&[]);
+        let mut sel: HashSet<PathBuf> = range
+            .iter()
+            .filter(|r| r.depth > 0)
+            .map(|r| r.entry.path.clone())
+            .collect();
+        if sel.is_empty() {
+            sel.insert(target.clone());
+        }
+        if self.anchor.is_none() {
+            self.anchor = self.rows.get(from).map(|r| r.entry.path.clone());
+        }
+        self.sel = sel;
+        self.cursor = Some(target);
+        self.cursor_row = to;
+    }
+
+    /// Ctrl+A: select every shown entry of the folder the cursor is in.
+    fn select_all_in_root(&mut self) {
+        let at = self.cursor_index().unwrap_or(0);
+        let rows = &self.rows;
+        let Some(start) = rows
+            .get(..=at)
+            .and_then(|r| r.iter().rposition(|r| r.depth == 0))
+        else {
+            return;
+        };
+        let inside = rows.get(start + 1..).unwrap_or(&[]);
+        let len = inside
+            .iter()
+            .position(|r| r.depth == 0)
+            .unwrap_or(inside.len());
+        self.sel = inside
+            .iter()
+            .take(len)
+            .map(|r| r.entry.path.clone())
+            .collect();
+    }
+
+    /// The selected entries, top to bottom.
+    pub fn selection(&mut self) -> Vec<Row> {
+        self.rows();
+        self.rows
+            .iter()
+            .filter(|r| self.sel.contains(&r.entry.path))
+            .cloned()
+            .collect()
+    }
+
+    /// Are several entries selected?
+    pub fn is_multi(&self) -> bool {
+        self.sel.len() > 1
+    }
+
+    /// The path of the only selected entry (nothing when none or several).
+    pub fn single_selected(&self) -> Option<&Path> {
+        match self.sel.len() {
+            1 => self.sel.iter().next().map(PathBuf::as_path),
+            _ => None,
+        }
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.sel.len()
+    }
+
+    pub fn is_selected(&self, p: &Path) -> bool {
+        self.sel.contains(p)
+    }
+
+    /// The entry the keyboard cursor is on (where Ctrl+V pastes).
+    pub fn cursor_entry(&mut self) -> Option<Row> {
+        let i = self.cursor_index()?;
+        self.rows.get(i).cloned()
+    }
+
+    /// Select exactly these entries (those that are shown), e.g. what a
+    /// move or paste just produced.
+    pub fn select_paths(&mut self, paths: &[PathBuf]) {
+        self.rows();
+        let rows = &self.rows;
+        let shown: Vec<(usize, &PathBuf)> = paths
+            .iter()
+            .filter_map(|p| Some((rows.iter().position(|r| &r.entry.path == p)?, p)))
+            .collect();
+        let Some((first, path)) = shown.iter().min_by_key(|(i, _)| *i) else {
+            return;
+        };
+        self.cursor = Some((*path).clone());
+        self.cursor_row = *first;
+        self.anchor = self.cursor.clone();
+        self.sel = shown.iter().map(|(_, p)| (*p).clone()).collect();
     }
 
     fn push_children(&mut self, dir: &Path, depth: usize, rows: &mut Vec<Row>) {
@@ -380,8 +577,10 @@ impl Tree {
             p = dir.parent();
         }
         self.rows_dirty = true;
-        let idx = self.rows().iter().position(|r| r.entry.path == file);
-        self.selected = idx;
+        match self.rows().iter().position(|r| r.entry.path == file) {
+            Some(i) => self.select_only(i),
+            None => self.clear_selection(),
+        }
     }
 
     fn row_height(ctx: &Ctx) -> f32 {
@@ -411,7 +610,7 @@ impl Tree {
         let Some(row) = self.rows().get(i).cloned() else {
             return;
         };
-        self.selected = Some(i);
+        self.select_only(i);
         if row.entry.is_dir {
             if !row.entry.is_link {
                 self.toggle(&row.entry.path);
@@ -424,7 +623,7 @@ impl Tree {
     }
 
     fn ensure_selected_visible(&mut self, ctx: &Ctx) {
-        let Some(s) = self.selected else { return };
+        let Some(s) = self.cursor_index() else { return };
         let rh = Self::row_height(ctx);
         let y = s as f32 * rh;
         if y < self.scroll.y {
@@ -454,10 +653,26 @@ impl Tree {
         self.drop_target = None;
     }
 
-    /// The selected entry (keyboard actions like F2 / Delete).
+    /// The selected entry when exactly one is selected (F2 / Delete).
     pub fn selected_row(&mut self) -> Option<Row> {
-        let i = self.selected?;
-        self.rows().get(i).cloned()
+        if self.sel.len() != 1 {
+            return None;
+        }
+        self.selection().into_iter().next()
+    }
+
+    /// What a drag that started on `path` moves: every selected entry if it
+    /// is one of several, otherwise just it.
+    fn drag_set(&mut self, path: &Path) -> Vec<PathBuf> {
+        if self.sel.len() > 1 && self.sel.contains(path) {
+            self.selection()
+                .into_iter()
+                .filter(|r| r.depth > 0)
+                .map(|r| r.entry.path)
+                .collect()
+        } else {
+            vec![path.to_path_buf()]
+        }
     }
 
     /// The folder a drop at (x, y) would move into, if valid.
@@ -466,7 +681,7 @@ impl Tree {
         rect: Rect,
         x: f32,
         y: f32,
-        from: &Path,
+        from: &[PathBuf],
         ctx: &Ctx,
     ) -> Option<PathBuf> {
         if x < rect.x as f32
@@ -486,7 +701,7 @@ impl Tree {
         } else {
             row.entry.path.parent()?.to_path_buf()
         };
-        can_move_into(from, &dir).then_some(dir)
+        can_move_all_into(from, &dir).then_some(dir)
     }
 
     /// Handle input inside the tree panel. Returns true if a redraw is needed.
@@ -507,7 +722,8 @@ impl Tree {
                     }
                 }
                 if dragging {
-                    self.drop_target = self.drop_folder(rect, *x, *y, &from, ctx);
+                    let moving = self.drag_set(&from);
+                    self.drop_target = self.drop_folder(rect, *x, *y, &moving, ctx);
                     self.hover = None;
                     *ctx.cursor = if self.drop_target.is_some() {
                         Cursor::Pointer
@@ -523,7 +739,13 @@ impl Tree {
             } if self.press.is_some() => {
                 let p = self.press.take().expect("checked");
                 if let (true, Some(dir)) = (p.dragging, self.drop_target.take()) {
-                    self.requested_move = Some((p.path, dir));
+                    self.requested_move = Some((self.drag_set(&p.path), dir));
+                } else if p.deferred
+                    && !p.dragging
+                    && let Some(i) = self.rows().iter().position(|r| r.entry.path == p.path)
+                {
+                    // A click (no drag) on one of several selected entries.
+                    self.activate(i, false, ctx);
                 }
                 self.drop_target = None;
                 return true;
@@ -558,12 +780,28 @@ impl Tree {
             } => {
                 if let Some(i) = self.row_at(rect, *y, ctx) {
                     let row = self.rows()[i].clone();
+                    // Ctrl / Shift+click only select: nothing opens, no
+                    // folder expands, no drag starts.
+                    if ctx.mods.shift {
+                        self.select_range(i);
+                        return true;
+                    }
+                    if ctx.mods.ctrl {
+                        self.toggle_selected(i);
+                        return true;
+                    }
+                    let deferred =
+                        row.depth > 0 && self.sel.len() > 1 && self.sel.contains(&row.entry.path);
                     if row.depth > 0 {
                         self.press = Some(Press {
                             path: row.entry.path.clone(),
                             y: *y,
                             dragging: false,
+                            deferred,
                         });
+                    }
+                    if deferred {
+                        return true;
                     }
                     // A double-click's second click on a folder would undo
                     // the first (expand, collapse): only files react to it.
@@ -579,30 +817,42 @@ impl Tree {
                 self.clamp(ctx);
                 before != self.scroll.y
             }
-            Input::Key { key, .. } => {
+            Input::Key { key, mods } => {
                 let n = self.rows().len();
                 if n == 0 {
                     return false;
                 }
-                let sel = self.selected.unwrap_or(0);
-                match key {
-                    Key::Down => self.selected = Some((sel + 1).min(n - 1)),
-                    Key::Up => self.selected = Some(sel.saturating_sub(1)),
-                    Key::Home => self.selected = Some(0),
-                    Key::End => self.selected = Some(n - 1),
-                    Key::PageDown => self.selected = Some((sel + 20).min(n - 1)),
-                    Key::PageUp => self.selected = Some(sel.saturating_sub(20)),
-                    Key::Enter => self.activate(sel, true, ctx),
-                    Key::Char(' ') => self.activate(sel, false, ctx),
-                    Key::Right => {
+                if *key == Key::Char('a') && mods.ctrl && !mods.shift && !mods.alt {
+                    self.select_all_in_root();
+                    return true;
+                }
+                let sel = self.cursor_index().unwrap_or(0);
+                let to = match key {
+                    Key::Down => Some((sel + 1).min(n - 1)),
+                    Key::Up => Some(sel.saturating_sub(1)),
+                    Key::Home => Some(0),
+                    Key::End => Some(n - 1),
+                    Key::PageDown => Some((sel + 20).min(n - 1)),
+                    Key::PageUp => Some(sel.saturating_sub(20)),
+                    _ => None,
+                };
+                match (to, key) {
+                    // Shift extends the selection; without it, one entry.
+                    (Some(to), _) if mods.shift && !mods.ctrl => self.select_range(to),
+                    (Some(to), _) => self.select_only(to),
+                    (None, Key::Enter) => self.activate(sel, true, ctx),
+                    (None, Key::Char(' ')) => self.activate(sel, false, ctx),
+                    (None, Key::Right) => {
+                        self.select_only(sel);
                         let row = self.rows()[sel].clone();
                         if row.entry.is_dir && !row.expanded && !row.entry.is_link {
                             self.toggle(&row.entry.path);
                         } else if row.expanded {
-                            self.selected = Some((sel + 1).min(n - 1));
+                            self.select_only((sel + 1).min(n - 1));
                         }
                     }
-                    Key::Left => {
+                    (None, Key::Left) => {
+                        self.select_only(sel);
                         let row = self.rows()[sel].clone();
                         if row.expanded && row.depth > 0 {
                             self.toggle(&row.entry.path);
@@ -610,7 +860,7 @@ impl Tree {
                             // Jump to the parent folder.
                             let parent =
                                 self.rows()[..sel].iter().rposition(|r| r.depth < row.depth);
-                            self.selected = parent.or(Some(0));
+                            self.select_only(parent.unwrap_or(0));
                         }
                     }
                     _ => return false,
@@ -643,6 +893,8 @@ impl Tree {
         let last =
             (((self.scroll.y + rect.h as f32) / rh).ceil() as usize + 1).min(self.rows().len());
         let rows: Vec<Row> = self.rows()[first..last].to_vec();
+        let multi = self.sel.len() > 1;
+        let cursor = if focused { self.cursor_index() } else { None };
         for (k, row) in rows.iter().enumerate() {
             let i = first + k;
             let y = top + i as f32 * rh;
@@ -665,10 +917,35 @@ impl Tree {
                     Rect::new(row_rect.right() - t, row_rect.y, t, row_rect.h),
                     c,
                 );
-            } else if self.selected == Some(i) && focused {
+            } else if self.sel.contains(&row.entry.path) && (focused || multi) {
                 canvas.fill_rect(row_rect, theme::p().selection);
+                if multi {
+                    // Several selected: a caret-coloured bar marks each one
+                    // (also while the keyboard is elsewhere, because the
+                    // right-click menu acts on all of them).
+                    let w = ctx.px(3.0).max(2.0) as i32;
+                    canvas.fill_rect(
+                        Rect::new(row_rect.x, row_rect.y, w, row_rect.h),
+                        theme::p().caret,
+                    );
+                }
             } else if self.hover == Some(i) {
                 canvas.fill_rect(row_rect, theme::p().line_highlight);
+            }
+            if cursor == Some(i) && !self.sel.contains(&row.entry.path) {
+                // The keyboard cursor on an entry that is not selected.
+                let t = ctx.px(1.0).max(1.0) as i32;
+                let c = theme::p().dim;
+                canvas.fill_rect(Rect::new(row_rect.x, row_rect.y, row_rect.w, t), c);
+                canvas.fill_rect(
+                    Rect::new(row_rect.x, row_rect.bottom() - t, row_rect.w, t),
+                    c,
+                );
+                canvas.fill_rect(Rect::new(row_rect.x, row_rect.y, t, row_rect.h), c);
+                canvas.fill_rect(
+                    Rect::new(row_rect.right() - t, row_rect.y, t, row_rect.h),
+                    c,
+                );
             }
             let x = rect.x as f32 + ctx.px(10.0) + row.depth.saturating_sub(1) as f32 * indent;
             let cy = y + rh / 2.0;
@@ -841,8 +1118,7 @@ mod tests {
         let mut t = Tree::new();
         t.set_root(&d);
         t.reveal(&d.join("a/b/f.md"));
-        let sel = t.selected.unwrap();
-        assert_eq!(t.rows()[sel].entry.path, d.join("a/b/f.md"));
+        assert_eq!(t.selected_row().unwrap().entry.path, d.join("a/b/f.md"));
         t.reveal(Path::new("/somewhere/else.md")); // outside root: ignored
         std::fs::remove_dir_all(&d).ok();
     }

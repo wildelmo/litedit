@@ -2,6 +2,11 @@
 
 ## 1.1.0 — unreleased
 
+- File tree: select several entries (Ctrl+click, Shift+click, Shift+Up /
+  Down, Ctrl+A) and delete or drag-move them with one confirmation; Copy,
+  Paste and Duplicate (Ctrl+C / Ctrl+V / Ctrl+D in the tree) that never
+  overwrite anything; the status bar shows the selected file's size and
+  when it last changed.
 - Image files (png, jpg, gif, webp, bmp) open in a viewer tab: fit to the
   window or actual size (`0` / `1` or double-click), drag or scroll to pan,
   pixel size and file size in the status bar. Hidden picture tabs hold no
