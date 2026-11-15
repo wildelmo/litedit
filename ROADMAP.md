@@ -219,12 +219,12 @@ fixed first (S5.0).
 - [x] S8.1 CI screenshot decoder: names from the log cannot leave the output folder
 - [x] S8.2 Line limit counts lone-CR line endings
 - [x] S8.3 Markdown pictures: one budget per document, one spelling per picture
-- [ ] S8.4 Workspace restore: total size budget, one tab per file
+- [x] S8.4 Workspace restore: total size budget, one tab per file
 - [ ] S8.5 Markdown preview: budget for very large documents
-- [ ] S8.6 Links to network shares are not followed (a: gaps in the existing check, done; b: links, workspaces and tree entries)
+- [x] S8.6 Links to network shares are not followed (a: gaps in the existing check; b: links, workspaces and tree entries)
 - [x] S8.7 GitHub Actions pinned to commits
-- [ ] S8.8 One-window pipe: another local user answering first (not decided)
-- [ ] S8.9 One-window pipe: a silent client holding it (not decided)
+- [ ] S8.8 One-window pipe: another local user answering first (owner is handling this)
+- [ ] S8.9 One-window pipe: a silent client holding it (owner is handling this)
 - [x] S8.10 Folder listing: bounded work per folder
 - [x] S8.11 Rename never replaces a dangling link
 
@@ -234,6 +234,21 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S8.4 + S8.6b (sub-agent branch, reviewed and merged, one
+  correction). Restoring a session or a workspace opens each file once,
+  however its path is spelled, and at most 512 MB of files: the active tab
+  first, the rest in order; files left out are named in one message and stay
+  in the saved workspace (D-037). Opening `x/../a.txt` (or `A.TXT` on
+  Windows) focuses the tab that is already open. Links in markdown, tabs and
+  folders from a workspace file, files sent by a later launch and tree
+  entries that are links are checked without following any link and refused
+  if they lead to a network share or device path; the reader's own opens
+  (dialog, command line, drag and drop, saved session) are unchanged (D-036).
+  Correction at review: the check judged the whole path's spelling, which
+  would have blocked relative links and workspace tabs for a document the
+  reader opened on a share; it now judges links only. Linux tests only: real
+  Windows junctions and the absence of network traffic are not verified.
+  S8.8 and S8.9 (the one-window pipe) are with the owner.
 - 2026-11-15 — S8.3 Markdown pictures have a budget per document (sub-agent
   branch, reviewed and merged). Different spellings of one file (`./a.png`,
   `x/../a.png`, `A.PNG` on Windows) are one picture, decoded once. A document

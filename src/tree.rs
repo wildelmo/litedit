@@ -103,6 +103,8 @@ pub struct Tree {
     drop_target: Option<PathBuf>,
     /// A finished drag: (entries, destination folder). The app asks first.
     pub requested_move: Option<(Vec<PathBuf>, PathBuf)>,
+    /// An entry that is a link was not opened: why (the app shows it).
+    pub refused: Option<String>,
 }
 
 struct Press {
@@ -235,6 +237,7 @@ impl Tree {
             press: None,
             drop_target: None,
             requested_move: None,
+            refused: None,
         }
     }
 
@@ -627,6 +630,12 @@ impl Tree {
             if !row.entry.is_link {
                 self.toggle(&row.entry.path);
             }
+        } else if row.entry.is_link
+            && let Err(why) = crate::links::content_may_open(&row.entry.path)
+        {
+            // Whatever the folder holds may be a link to a network share
+            // (an unpacked zip): opening it would contact that server.
+            self.refused = Some(format!("Not opened ({why}): {}", row.entry.name));
         } else if keep {
             ctx.requests.push(Request::OpenPath(row.entry.path));
         } else {

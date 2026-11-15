@@ -112,6 +112,12 @@ pub fn forwardable(paths: &[PathBuf]) -> bool {
         // (network shares, `\\?\` paths and odd names are dropped by
         // `parse`): otherwise this launch opens its own window.
         && parse(&encode(paths)).as_deref() == Some(paths)
+        // The running window refuses paths that go through a link to a
+        // network share (anything can write to the pipe); the reader chose
+        // these, so this launch opens them in its own window instead.
+        && paths
+            .iter()
+            .all(|p| crate::links::content_may_open(p).is_ok())
 }
 
 /// The pipe's name for this user and session.

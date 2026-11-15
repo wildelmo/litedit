@@ -868,7 +868,10 @@ impl MarkdownView {
                 }
             }
             LinkTarget::File(p) => {
-                if p.is_file() {
+                // Before anything that follows links (`is_file` does).
+                if let Err(why) = crate::links::content_may_open(&p) {
+                    self.notice = Some(format!("Link blocked ({why}): {dest}"));
+                } else if p.is_file() {
                     ctx.requests.push(Request::OpenPath(p));
                 } else {
                     self.notice = Some(format!("Link target not found: {}", p.display()));
@@ -1953,6 +1956,42 @@ mod tests {
         assert_eq!(magenta_after_load(&mut two, &mut h), 2 * single);
         assert_eq!(two.images.counts(), (1, 1), "one entry, one decode");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_to_links_that_reach_a_network_share_are_blocked() {
+        let dir = tmpdir("linklinks");
+        std::fs::write(dir.join("real.md"), "# real").unwrap();
+        let _ = std::fs::remove_file(dir.join("net.md"));
+        let _ = std::fs::remove_file(dir.join("local.md"));
+        std::os::unix::fs::symlink("//evil/share/x.md", dir.join("net.md")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real.md"), dir.join("local.md")).unwrap();
+        let mut v = view("[net](net.md) [local](local.md)\n", &dir);
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 900, 600);
+        {
+            let p = link_point(&v, 0);
+            click(&mut v, &mut h, p)
+        };
+        assert!(h.requests.is_empty(), "never opened");
+        assert!(
+            v.status()
+                .iter()
+                .any(|s| s
+                    == "Link blocked (it is a link to a network share or device path): net.md"),
+            "{:?}",
+            v.status()
+        );
+        {
+            let p = link_point(&v, 1);
+            click(&mut v, &mut h, p)
+        };
+        assert_eq!(
+            h.requests.pop(),
+            Some(Request::OpenPath(dir.join("local.md")))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

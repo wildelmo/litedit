@@ -141,6 +141,32 @@ pub fn link_reaches_unsafe(p: &Path) -> bool {
     false
 }
 
+/// May content make us open `p`? "Content" is anything the reader did not
+/// choose themselves: a link in a document, a workspace file, a path sent
+/// by another launch, a tree entry that is itself a link. Every link along
+/// the path is checked (never followed), so this must be called before
+/// anything that follows links (`is_file`, `metadata`, `Document::open` …).
+/// `Err` is a plain reason for the status bar.
+///
+/// The path's spelling is not judged here. The part that content supplies
+/// is checked as text where it is read ([`classify`], `Workspace::parse`,
+/// `single::parse`); the folder it is resolved against is where the reader
+/// opened the document or workspace, which may be a network share they
+/// chose (`\\server\docs\notes.md` and the files next to it keep working).
+///
+/// Not for the reader's own choices (file dialog, command line, drag and
+/// drop, their saved session, Save As): a link they made to their own
+/// share keeps working.
+pub fn content_may_open(p: &Path) -> Result<(), &'static str> {
+    if crate::doc::is_reserved_name(p) {
+        return Err("device name");
+    }
+    if link_reaches_unsafe(p) {
+        return Err("it is a link to a network share or device path");
+    }
+    Ok(())
+}
+
 pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
     let dest = dest.trim();
     if dest.is_empty() {
@@ -257,6 +283,37 @@ mod tests {
         assert!(!link_reaches_unsafe(&d.join("real/x.png")));
         assert!(is_local_drive_target("\\\\?\\C:\\x") && is_local_drive_target("\\??\\D:\\y"));
         assert!(!is_local_drive_target("\\\\?\\UNC\\evil\\x"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn content_may_open_refuses_links_to_network_paths_without_following_them() {
+        let d = std::env::temp_dir().join(format!("litedit-may-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("real")).unwrap();
+        std::fs::write(d.join("real/a.md"), b"a").unwrap();
+        std::os::unix::fs::symlink("//evil/share/x.md", d.join("net.md")).unwrap();
+        std::os::unix::fs::symlink("//evil/share", d.join("netdir")).unwrap();
+        std::os::unix::fs::symlink(d.join("real/a.md"), d.join("local.md")).unwrap();
+        std::os::unix::fs::symlink(d.join("real"), d.join("localdir")).unwrap();
+        let why = content_may_open(&d.join("net.md")).unwrap_err();
+        assert_eq!(why, "it is a link to a network share or device path");
+        assert!(content_may_open(&d.join("netdir/x.md")).is_err());
+        assert!(content_may_open(&d.join("netdir")).is_err());
+        assert_eq!(content_may_open(&d.join("local.md")), Ok(()));
+        assert_eq!(content_may_open(&d.join("localdir/a.md")), Ok(()));
+        assert_eq!(content_may_open(&d.join("real/a.md")), Ok(()));
+        // Missing files are not this check's business.
+        assert_eq!(content_may_open(&d.join("nope.md")), Ok(()));
+        assert!(content_may_open(Path::new("/docs/CON")).is_err());
+        // A document the reader opened on a share: the files next to it are
+        // reached through the same spelling and stay allowed (on Linux a
+        // leading `//` is the same folder, which makes this testable).
+        let shared = PathBuf::from(format!("/{}", d.display()));
+        assert!(is_network_path(&shared.to_string_lossy()) && shared.join("real/a.md").is_file());
+        assert_eq!(content_may_open(&shared.join("real/a.md")), Ok(()));
+        assert!(content_may_open(&shared.join("net.md")).is_err());
         let _ = std::fs::remove_dir_all(&d);
     }
 

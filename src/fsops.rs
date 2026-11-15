@@ -341,6 +341,47 @@ fn is_under_fold(p: &Path, base: &Path, fold: bool) -> bool {
         .all(|b| mine.next().is_some_and(|m| lower(m) == lower(b)))
 }
 
+/// Are `a` and `b` the same file, however each was typed? Compared as text
+/// only (nothing on disk is touched, no `canonicalize`): `.` and `..` parts
+/// are resolved, and on Windows names that differ only by case, and `/`
+/// against `\`, are the same.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    path_key(a, cfg!(windows)) == path_key(b, cfg!(windows))
+}
+
+/// The parts of `p` with `.` dropped and `..` applied (lower-cased when
+/// `fold`). A `..` above the start is kept; one above the root is dropped.
+fn path_key(p: &Path, fold: bool) -> Vec<(u8, String)> {
+    use std::path::Component;
+    let text = |c: Component| {
+        let s = c.as_os_str().to_string_lossy();
+        if fold {
+            s.to_lowercase()
+        } else {
+            s.into_owned()
+        }
+    };
+    let mut out: Vec<(u8, String)> = Vec::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => match out.last() {
+                Some((2, _)) => {
+                    out.pop();
+                }
+                Some((0 | 1, _)) => {}
+                _ => out.push((3, String::new())),
+            },
+            // Separator style inside a prefix (`\\?\` vs `//?/`) is not
+            // folded: such paths are never opened anyway.
+            Component::Prefix(_) => out.push((0, text(c))),
+            Component::RootDir => out.push((1, String::new())),
+            Component::Normal(_) => out.push((2, text(c))),
+        }
+    }
+    out
+}
+
 /// Where `p` (at or under `old`) is after `old` became `new`. Counts path
 /// parts instead of comparing them, so a different spelling of `old` (case
 /// on Windows) still gives the right place.
@@ -849,6 +890,26 @@ mod tests {
             PathBuf::from("/x/moved/b.md")
         );
         assert_eq!(rebase(base, base, Path::new("/x/n")), PathBuf::from("/x/n"));
+    }
+
+    #[test]
+    fn same_file_resolves_dots_and_folds_case_only_where_the_file_system_does() {
+        let key = |s: &str, fold: bool| path_key(Path::new(s), fold);
+        let big = key("/w/big.txt", false);
+        for s in [
+            "/w/./big.txt",
+            "/w/x/../big.txt",
+            "/w/x/y/../../big.txt",
+            "/../w/big.txt",
+        ] {
+            assert_eq!(key(s, false), big, "{s}");
+        }
+        assert_ne!(key("/w/BIG.TXT", false), big);
+        assert_eq!(key("/w/BIG.TXT", true), key("/w/big.txt", true));
+        assert_ne!(key("/w/big.txt", false), key("/w/big.txt2", false));
+        assert_ne!(key("../a", false), key("a", false));
+        assert_eq!(key("a/../../b", false), key("../b", false));
+        assert!(same_file(Path::new("/w/./a"), Path::new("/w/a")));
     }
 
     #[test]

@@ -28,6 +28,28 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-037 Restoring tabs: one per file, at most 512 MB together
+A session or workspace restore opens each file once (paths compared as text:
+`.` and `..` resolved, case and slash style ignored on Windows) and at most
+512 MB of files in total, the active tab first. Files that do not fit are
+not opened; one message says how many, and they stay in the workspace so the
+next restore tries again. Why: a workspace file naming one large file 200
+ways made the editor allocate tens of gigabytes. Side effect: opening a file
+under another spelling now focuses the tab that is already open.
+
+### D-036 Which opens are checked for links to network shares
+When content asks for a file, every link along its path is checked (never
+followed) and it is refused if one leads to a network share or device path:
+file links in markdown, tabs and folders from a workspace file, paths sent
+by a later launch, tree entries that are links, and Compare from the tree.
+The reader's own choices are never checked: file dialog, command line, drag
+and drop, Save / Save As, the saved session and the remembered workspace of
+a folder. A document opened on a share on purpose keeps working, including
+the files next to it; only a link that leads somewhere else on the network
+is refused. `Document::open` itself is not checked. Known cost: inside a
+folder reached through your own link to a NAS, markdown file links and
+pictures are refused.
+
 ### D-035 Markdown pictures: a budget per document, no eviction
 One markdown preview keeps track of at most 1000 different pictures and holds
 at most 512 MB of decoded pixels. A picture is filed under one spelling of

@@ -135,7 +135,16 @@ pub struct App {
     file_pos: Remembered,
     /// Tree copy / paste state and the active file's size and date.
     ops: treeops::TreeOps,
+    /// How many bytes of files one restore (session, workspace) may open.
+    restore_budget: u64,
+    /// Tabs of the restored workspace that did not fit in the budget:
+    /// (path, side, position). Kept in the workspace when it is saved.
+    not_reopened: Vec<(PathBuf, u8, Option<ViewPos>)>,
 }
+
+/// At most this much file text is opened by one restore (a session or a
+/// workspace, which may come from someone else and name 200 big files).
+pub const MAX_RESTORE_BYTES: u64 = 512 * 1024 * 1024;
 
 struct TabSlot {
     id: u64,
@@ -246,6 +255,8 @@ impl App {
             file_pos: Remembered::default(),
             ops: Default::default(),
             mods: crate::input::Mods::default(),
+            restore_budget: MAX_RESTORE_BYTES,
+            not_reopened: Vec::new(),
         }
     }
 
@@ -734,8 +745,14 @@ impl App {
         self.tabs.iter().position(|t| t.id == id)
     }
 
+    /// The tab showing `path`, however it is spelled (`.`/`..` parts; case
+    /// and `/` vs `\` on Windows): one file is never open in two tabs.
     fn find_tab(&self, path: &Path) -> Option<usize> {
-        (0..self.tabs.len()).find(|&i| self.tab_view(i).path() == Some(path))
+        (0..self.tabs.len()).find(|&i| {
+            self.tab_view(i)
+                .path()
+                .is_some_and(|p| crate::fsops::same_file(p, path))
+        })
     }
 
     /// Bring tab `i` to the front.
@@ -1503,6 +1520,14 @@ impl App {
             }
             MenuAction::Compare(old, new) => {
                 let (old, new) = (old.clone(), new.clone());
+                // Picked in the tree, where an entry may be a link to a
+                // network share: never read through one.
+                for p in [&old, &new] {
+                    if let Err(why) = crate::links::content_may_open(p) {
+                        self.notice = Some(refused_notice(why, &[p.as_path()]));
+                        return;
+                    }
+                }
                 self.compare_files(&old, &new);
                 return;
             }
@@ -1679,6 +1704,7 @@ impl App {
 
     /// Reopen the last session (only what still exists on disk).
     pub fn restore(&mut self, s: Session) {
+        self.not_reopened.clear();
         self.recent = s.recent;
         self.tree.width = s.tree_width;
         self.zoom = s.zoom;
@@ -1695,7 +1721,9 @@ impl App {
             .enumerate()
             .map(|(i, t)| (t.clone(), s.groups.get(i).copied().unwrap_or(0)))
             .collect();
-        self.open_workspace_tabs(&tabs, &s.positions, s.active);
+        // The reader's own session: not gated (a link they made to their
+        // own share keeps working), but within the restore budget.
+        self.open_workspace_tabs(&tabs, &s.positions, s.active, false);
         self.tree.visible = s.tree_visible;
         self.focus = Focus::Main;
         self.session_dirty = false;
@@ -1744,6 +1772,10 @@ impl App {
     }
 
     fn open_now(&mut self, path: &Path) {
+        // Opened after all: from now on it is an ordinary tab (closing it
+        // takes it out of the workspace).
+        self.not_reopened
+            .retain(|(p, ..)| !crate::fsops::same_file(p, path));
         // D-012: opening a file with no folder open shows its folder.
         if self.tree.root().is_none()
             && let Some(parent) = path.parent().filter(|p| p.is_dir())
@@ -2277,6 +2309,7 @@ impl App {
         let mut v = Vec::new();
         if let Some(sel) = &self.compare_with
             && sel != path
+            && crate::links::content_may_open(sel).is_ok()
             && sel.is_file()
         {
             v.push((
@@ -2493,7 +2526,21 @@ impl App {
                 w.positions.push(pos.filter(|p| *p != ViewPos::default()));
             }
         }
+        // Tabs that were too big to reopen stay in the workspace: saving it
+        // never drops a file the reader did not close.
+        for (p, g, pos) in &self.not_reopened {
+            if !w.tabs.iter().any(|(t, _)| crate::fsops::same_file(t, p)) {
+                w.tabs.push((p.clone(), *g));
+                w.positions.push(*pos);
+            }
+        }
         w
+    }
+
+    /// Lower the restore budget (tests: no need for 512 MB of files).
+    #[cfg(test)]
+    pub fn set_restore_budget(&mut self, bytes: u64) {
+        self.restore_budget = bytes;
     }
 
     /// Save the current folder's workspace in the store (best effort).
@@ -2505,15 +2552,86 @@ impl App {
         }
     }
 
-    /// Open `tabs` (existing files only) on their sides, each where the
-    /// reader was (`positions`, by index); show `active`.
+    /// Which of `tabs` to open: one entry per file (however it is spelled),
+    /// existing files only, and together no bigger than the restore budget
+    /// (files already open cost nothing). The active tab is counted first,
+    /// so it is restored whenever it fits on its own; then the others in
+    /// order. With `gate` (the list comes from a workspace file) tabs that
+    /// content may not open are refused before anything touches them.
+    /// Returns the indices to open (in order), those left out for size and
+    /// the refused ones.
+    fn plan_restore(
+        &self,
+        tabs: &[(PathBuf, u8)],
+        active: usize,
+        gate: bool,
+    ) -> (Vec<usize>, Vec<usize>, Vec<(usize, &'static str)>) {
+        let mut unique: Vec<usize> = Vec::new();
+        let mut refused = Vec::new();
+        for (k, (p, _)) in tabs.iter().enumerate() {
+            if gate && let Err(why) = crate::links::content_may_open(p) {
+                refused.push((k, why));
+                continue;
+            }
+            if !unique
+                .iter()
+                .any(|&j| crate::fsops::same_file(&tabs[j].0, p))
+            {
+                unique.push(k);
+            }
+        }
+        // The active tab may be a second spelling of an earlier one.
+        let active = tabs.get(active).and_then(|(a, _)| {
+            unique
+                .iter()
+                .copied()
+                .find(|&j| crate::fsops::same_file(&tabs[j].0, a))
+        });
+        let order = active
+            .into_iter()
+            .chain(unique.iter().copied().filter(|&k| Some(k) != active));
+        let (mut open, mut skipped, mut used) = (Vec::new(), Vec::new(), 0u64);
+        for k in order {
+            let p = &tabs[k].0;
+            if self.find_tab(p).is_some() {
+                open.push(k);
+                continue;
+            }
+            let Some(size) = std::fs::metadata(p)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+            else {
+                continue;
+            };
+            match used.checked_add(size).filter(|&u| u <= self.restore_budget) {
+                Some(u) => {
+                    used = u;
+                    open.push(k);
+                }
+                None => skipped.push(k),
+            }
+        }
+        open.sort_unstable();
+        skipped.sort_unstable();
+        (open, skipped, refused)
+    }
+
+    /// Open `tabs` (existing files only, within the restore budget) on
+    /// their sides, each where the reader was (`positions`, by index); show
+    /// `active`. Tabs left out for size are remembered (and kept when the
+    /// workspace is saved) and the reader is told once. With `gate`, tabs
+    /// content may not open are refused; returns what to say about them.
     fn open_workspace_tabs(
         &mut self,
         tabs: &[(PathBuf, u8)],
         positions: &[Option<ViewPos>],
         active: usize,
-    ) {
-        for (k, (p, _)) in tabs.iter().enumerate().filter(|(_, (p, _))| p.is_file()) {
+        gate: bool,
+    ) -> Option<String> {
+        let (open, skipped, refused) = self.plan_restore(tabs, active, gate);
+        for &k in &open {
+            let p = &tabs[k].0;
             // A tab that is already open stays where its reader is.
             let was_open = self.find_tab(p).is_some();
             self.open_now(p);
@@ -2524,10 +2642,41 @@ impl App {
                 self.view.restore_position(pos);
             }
         }
+        if !skipped.is_empty() {
+            for &k in &skipped {
+                let (p, g) = &tabs[k];
+                self.not_reopened
+                    .push((p.clone(), *g, positions.get(k).copied().flatten()));
+            }
+            let n = skipped.len();
+            let b = self.restore_budget;
+            let limit = if b >= 1 << 20 && b.is_multiple_of(1 << 20) {
+                format!("{} MB", b >> 20)
+            } else {
+                human_size(b as usize)
+            };
+            let msg = if n == 1 {
+                format!(
+                    "1 file was not reopened: together with the others it would be larger \
+                     than {limit}. It stays in the workspace."
+                )
+            } else {
+                format!(
+                    "{n} files were not reopened: together they are larger than {limit}. \
+                     They stay in the workspace."
+                )
+            };
+            if self.nag.is_none() {
+                self.nag = Some(Nag::error(msg));
+            } else {
+                self.notice = Some(msg);
+            }
+        }
         // Sides: only when both sides end up with tabs.
-        let right: Vec<usize> = tabs
+        let right: Vec<usize> = open
             .iter()
-            .filter(|(p, g)| *g == 1 && p.is_file())
+            .map(|&k| &tabs[k])
+            .filter(|(_, g)| *g == 1)
             .filter_map(|(p, _)| self.find_tab(p))
             .collect();
         if !right.is_empty() && right.len() < self.tabs.len() {
@@ -2543,17 +2692,45 @@ impl App {
                 self.group_shown[0] = Some(self.tabs[i].id);
             }
         }
-        if let Some((p, _)) = tabs.get(active).filter(|(p, _)| p.is_file())
+        if let Some((p, _)) = tabs.get(active)
             && let Some(i) = self.find_tab(p)
         {
             self.activate(i);
         }
+        let paths: Vec<&Path> = refused.iter().map(|&(k, _)| tabs[k].0.as_path()).collect();
+        refused.first().map(|&(_, why)| refused_notice(why, &paths))
+    }
+
+    /// Switch to workspace `w` read from a workspace file (which may come
+    /// from anyone): folders and tabs that content may not open are
+    /// refused before anything touches them.
+    pub fn apply_workspace(&mut self, w: Workspace) {
+        self.switch_workspace(w, true);
     }
 
     /// Switch to workspace `w`: remember the current folder's tabs, close
     /// tabs that are saved and outside the new folder (unsaved ones stay —
     /// nothing is ever dropped), show the new folder and open its files.
-    pub fn apply_workspace(&mut self, w: Workspace) {
+    /// `gate`: `w` comes from a workspace file, not from our own store.
+    fn switch_workspace(&mut self, mut w: Workspace, gate: bool) {
+        let mut refused: Vec<(PathBuf, &'static str)> = Vec::new();
+        if gate {
+            if let Some(Err(why)) = w.folders.first().map(|f| crate::links::content_may_open(f)) {
+                self.nag = Some(Nag::error(format!(
+                    "The workspace's folder was not opened ({why}): {}",
+                    w.folders[0].display()
+                )));
+                return;
+            }
+            w.folders
+                .retain(|f| match crate::links::content_may_open(f) {
+                    Ok(()) => true,
+                    Err(why) => {
+                        refused.push((f.clone(), why));
+                        false
+                    }
+                });
+        }
         let Some(root) = w.folders.first().filter(|f| f.is_dir()).cloned() else {
             self.nag = Some(Nag::error(
                 "The workspace's folder doesn't exist any more.".into(),
@@ -2561,6 +2738,8 @@ impl App {
             return;
         };
         self.persist_workspace();
+        // Those belonged to the folder that is left (saved just above).
+        self.not_reopened.clear();
         let keep_dirty = (0..self.tabs.len())
             .filter(|&i| self.tab_view(i).is_dirty())
             .count();
@@ -2586,17 +2765,26 @@ impl App {
             self.tree.add_root(f);
         }
         self.tree.visible = true;
-        self.open_workspace_tabs(&w.tabs, &w.positions, w.active);
+        let tabs_note = self.open_workspace_tabs(&w.tabs, &w.positions, w.active, gate);
         if self.view.path().is_none() && self.tabs.len() == 1 {
             self.view = Box::new(MessageView::folder_opened());
             self.focus = Focus::Tree;
         } else {
             self.focus = Focus::Main;
         }
-        if keep_dirty > 0 {
-            self.notice = Some(format!(
-                "Kept {keep_dirty} tab(s) with unsaved edits from the previous folder"
-            ));
+        let kept = (keep_dirty > 0).then(|| {
+            format!("Kept {keep_dirty} tab(s) with unsaved edits from the previous folder")
+        });
+        let folders_note = refused.first().map(|&(_, why)| {
+            let paths: Vec<&Path> = refused.iter().map(|(p, _)| p.as_path()).collect();
+            refused_notice(why, &paths)
+        });
+        let notes: Vec<String> = [kept, folders_note, tabs_note]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !notes.is_empty() {
+            self.notice = Some(notes.join(". "));
         }
         self.session_dirty = true;
         self.file_index = None;
@@ -2617,7 +2805,8 @@ impl App {
             .and_then(|s| Workspace::load(&workspace::folder_file(s, dir)).ok())
             .filter(|w| w.folders.first().is_some_and(|f| f == dir))
             .unwrap_or_else(|| Workspace::for_folder(dir));
-        self.apply_workspace(w);
+        // Our own store, written from what the reader opened: not gated.
+        self.switch_workspace(w, false);
     }
 
     /// "File: Add Folder to Workspace…": show another folder in the tree.
@@ -2713,7 +2902,11 @@ impl App {
     }
 
     fn handle_input(&mut self, input: Input) -> bool {
-        let redraw = self.handle_inner(&input);
+        let mut redraw = self.handle_inner(&input);
+        if let Some(n) = self.tree.refused.take() {
+            self.notice = Some(n);
+            redraw = true;
+        }
         self.sync_nag_owner();
         // Requests the app handles itself (opening a file from a link or the tree).
         self.drain_queued_opens();
@@ -2786,7 +2979,16 @@ impl App {
     /// while a question is showing they wait, so its answer can't land on
     /// the wrong tab and nothing is dropped.
     pub fn open_from_other_launch(&mut self, paths: Vec<PathBuf>) {
+        let mut refused: Vec<(PathBuf, &'static str)> = Vec::new();
         for p in paths {
+            // Anything on this PC can write to the pipe: check before
+            // `is_file` follows a link. (A launch whose own file is behind
+            // such a link opens its own window instead; see
+            // `single::forwardable`.)
+            if let Err(why) = crate::links::content_may_open(&p) {
+                refused.push((p, why));
+                continue;
+            }
             if p.is_file()
                 && !workspace::is_workspace_file(&p)
                 && !self.queued_opens.contains(&p)
@@ -2794,6 +2996,10 @@ impl App {
             {
                 self.queued_opens.push(p);
             }
+        }
+        if let Some(&(_, why)) = refused.first() {
+            let paths: Vec<&Path> = refused.iter().map(|(p, _)| p.as_path()).collect();
+            self.notice = Some(refused_notice(why, &paths));
         }
         self.drain_queued_opens();
         self.pending = true;
@@ -3859,6 +4065,19 @@ fn display_name(p: &Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| p.display().to_string())
+}
+
+/// What the status bar says when content asked to open `paths` and was
+/// refused (`why` is the first one's reason).
+fn refused_notice(why: &str, paths: &[&Path]) -> String {
+    let first = paths
+        .first()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    match paths.len() {
+        0 | 1 => format!("Not opened ({why}): {first}"),
+        n => format!("Not opened ({why}): {first} and {} more", n - 1),
+    }
 }
 
 fn human_size(n: usize) -> String {
