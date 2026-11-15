@@ -28,6 +28,12 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-034 Hidden tabs keep the colours of their first 2000 lines
+The rule is that a tab you aren't looking at holds nothing it can rebuild.
+One exception: syntax colours for up to 2000 lines stay (a few hundred KB
+at most), so switching back to an ordinary file doesn't flash uncoloured
+text. Longer files drop all colours when hidden and recolour as you read.
+
 ### D-033 Read-only lock: what it blocks and what it doesn't
 A locked tab refuses everything that changes its text, including undo and
 redo. Cut copies without removing. Save As, and reloading when another

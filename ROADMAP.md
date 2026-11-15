@@ -220,6 +220,15 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — Epic 7 independent review, part 1 (editing / navigation /
+  compare): no data loss found (4,000-file open-and-save fuzz matched the
+  old decoder exactly; read-only lock and Back / Forward held). Fixed: a
+  comparison could keep rows of the old text after one file changed while
+  the other was briefly unreadable, then panic when drawn (`recompute` now
+  replaces a side only together with a fresh diff; drawing no longer
+  indexes); Compare with Clipboard on text that is mostly line breaks used
+  hundreds of MB before being refused (line breaks are counted first).
+  Recorded D-034 (hidden tabs keep colours of the first 2000 lines).
 - 2026-11-15 — S7.1 Big files + read-only lock (sub-agent branch, reviewed
   and merged): syntax colouring runs only as far as the view (or a jump
   target) needs, in compact span blocks; hidden code / compare tabs drop

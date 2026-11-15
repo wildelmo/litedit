@@ -91,7 +91,16 @@ impl Side {
                 diff::MAX_BYTES / (1024 * 1024)
             ));
         }
+        // Counted before splitting: a clipboard full of line breaks would
+        // otherwise become millions of strings just to be refused.
+        let breaks = text.bytes().filter(|b| matches!(b, b'\n' | b'\r')).count();
+        if breaks > diff::MAX_LINES.saturating_mul(2) {
+            return Err(too_many_lines());
+        }
         let mut side = Self::from_text(text, label, syntax_path);
+        if side.lines.len() > diff::MAX_LINES {
+            return Err(too_many_lines());
+        }
         side.origin = origin.map(Path::to_path_buf);
         Ok(side)
     }
@@ -305,26 +314,35 @@ impl DiffView {
     fn recompute(&mut self) -> bool {
         // An earlier problem (file missing, too large) may be gone now.
         let had_error = self.error.take().is_some();
-        let mut changed = false;
-        for side in [&mut self.old, &mut self.new] {
-            if let Some(p) = side.path.clone() {
-                match Side::from_file(&p, side.label.clone()) {
-                    Ok(s) if s.lines.len() > diff::MAX_LINES => {
-                        self.error = Some(too_many_lines());
-                        return true;
-                    }
-                    Ok(s) => {
-                        if s.lines != side.lines {
-                            *side = s;
-                            changed = true;
-                        }
-                    }
-                    Err(e) => {
-                        self.error = Some(e);
-                        return true;
+        // Read both sides before touching either: the rows on screen belong
+        // to the stored lines, so a side is only replaced together with a
+        // fresh comparison.
+        let mut fresh: [Option<Side>; 2] = [None, None];
+        for (i, side) in [&self.old, &self.new].into_iter().enumerate() {
+            let Some(p) = side.path.clone() else { continue };
+            match Side::from_file(&p, side.label.clone()) {
+                Ok(s) if s.lines.len() > diff::MAX_LINES => {
+                    self.error = Some(too_many_lines());
+                    return true;
+                }
+                Ok(s) => {
+                    if s.lines != side.lines {
+                        fresh[i] = Some(s);
                     }
                 }
+                Err(e) => {
+                    self.error = Some(e);
+                    return true;
+                }
             }
+        }
+        let [old, new] = fresh;
+        let changed = old.is_some() || new.is_some();
+        if let Some(s) = old {
+            self.old = s;
+        }
+        if let Some(s) = new {
+            self.new = s;
         }
         if changed {
             self.rebuild();
@@ -425,7 +443,10 @@ impl DiffView {
                 .get(&li)
                 .is_none_or(|c| spans_ready && !c.spans_drawn);
             if stale {
-                let src = &self.side(s).lines[li];
+                // (Rows always belong to the stored lines; never index.)
+                let Some(src) = self.side(s).lines.get(li) else {
+                    continue;
+                };
                 let spans = self.side(s).highlighter.spans(li);
                 let mut buffer = shape_code_line(src, spans, &fam, ctx.code_metrics());
                 buffer.shape_until_scroll(&mut ctx.fonts.system, false);
@@ -929,9 +950,9 @@ mod tests {
         let v = DiffView::new(side, Side::from_text("x", "t".into(), p)).unwrap();
         assert!(v.watched_paths().is_empty());
         let many = "\n".repeat(diff::MAX_LINES + 5);
-        let side = Side::from_snapshot(&many, "Clipboard".into(), p, None)
-            .ok()
-            .unwrap();
-        assert!(DiffView::new(side, Side::from_text("x", "t".into(), p)).is_err());
+        // Refused before the text is split into lines.
+        assert!(Side::from_snapshot(&many, "Clipboard".into(), p, None).is_err());
+        let most = "\n".repeat(diff::MAX_LINES - 1);
+        assert!(Side::from_snapshot(&most, "Clipboard".into(), p, None).is_ok());
     }
 }

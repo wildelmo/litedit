@@ -957,3 +957,68 @@ fn non_text_tabs_are_refused_with_a_notice() {
     assert!(no_tab_is_dirty(&app));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---- from the independent review of Epic 7 ----
+
+#[test]
+fn a_file_error_that_clears_never_leaves_rows_of_the_old_text() {
+    let d = tmp_dir("cmp-stale");
+    let body = |mark: usize| -> String {
+        (0..200)
+            .map(|i| {
+                if i == mark {
+                    format!("changed {i}\n")
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect()
+    };
+    let (o, n) = (
+        write(&d, "old.txt", &body(usize::MAX)),
+        write(&d, "new.txt", &body(150)),
+    );
+    let mut app = new_app();
+    app.compare_files(&o, &n);
+    key(&mut app, "ctrl+end");
+    // One side shrinks while the other is briefly missing…
+    std::fs::write(&o, "short\n").unwrap();
+    std::fs::remove_file(&n).unwrap();
+    app.handle(Input::FsChanged(vec![o.clone(), n.clone()]));
+    render_hash(&mut app, 900, 500);
+    // …and comes back unchanged: the rows must be those of the new texts.
+    std::fs::write(&n, body(150)).unwrap();
+    app.handle(Input::FsChanged(vec![n.clone()]));
+    render_hash(&mut app, 900, 500);
+    key(&mut app, "ctrl+home");
+    render_hash(&mut app, 900, 500);
+    key(&mut app, "ctrl+end");
+    render_hash(&mut app, 900, 500);
+    // Same picture as a comparison of these two files made from scratch.
+    let now = settled_hash(&mut app);
+    let mut fresh = new_app();
+    fresh.compare_files(&o, &n);
+    key(&mut fresh, "ctrl+end");
+    let other = settled_hash(&mut fresh);
+    assert_eq!(now, other);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_clipboard_of_line_breaks_is_refused_before_it_is_split() {
+    let d = tmp_dir("cmp-breaks");
+    let f = write(&d, "a.txt", OLD);
+    let mut app = new_app();
+    app.open(&f);
+    let tabs = app.tab_titles().len();
+    set_clipboard(&mut app, Some(&"\n".repeat(3_000_000)));
+    let t = std::time::Instant::now();
+    run_command(&mut app, "compare with clipboard");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        t.elapsed()
+    );
+    assert_eq!(app.tab_titles().len(), tabs, "no comparison tab");
+    let _ = std::fs::remove_dir_all(&d);
+}

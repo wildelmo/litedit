@@ -25,6 +25,7 @@ clone lives outside the repo; copy architecture/behaviour, credit in `NOTICE`.
 - **Hidden tabs hold no rebuildable caches.** Anything a view can rebuild
   (shaped text, layouts, decoded images) must be freed in `View::on_hide`;
   drawing that starts background work reports `has_background_work`.
+  (One recorded exception, D-034: syntax colours of files up to 2000 lines.)
 - **Headless modes never read user settings** (`--screenshot`, `--script`,
   `--bench`, tests); use `--theme light` or script `theme light`.
 - Markdown: `pulldown-cmark`. Syntax: `syntect` with fancy-regex (pure Rust).
