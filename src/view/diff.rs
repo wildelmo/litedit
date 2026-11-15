@@ -57,6 +57,11 @@ impl Side {
             ));
         }
         let doc = Document::open(path).map_err(|e| e.to_string())?;
+        // Counted before splitting, like a snapshot: a file may hold far
+        // more lines than are compared.
+        if crate::doc::count_line_breaks(&doc.text, diff::MAX_LINES) > diff::MAX_LINES {
+            return Err(too_many_lines());
+        }
         let mut side = Self::from_text(&doc.text, label, path);
         side.path = Some(path.to_path_buf());
         Ok(side)
@@ -93,8 +98,7 @@ impl Side {
         }
         // Counted before splitting: a clipboard full of line breaks would
         // otherwise become millions of strings just to be refused.
-        let breaks = text.bytes().filter(|b| matches!(b, b'\n' | b'\r')).count();
-        if breaks > diff::MAX_LINES.saturating_mul(2) {
+        if crate::doc::count_line_breaks(text, diff::MAX_LINES) > diff::MAX_LINES {
             return Err(too_many_lines());
         }
         let mut side = Self::from_text(text, label, syntax_path);

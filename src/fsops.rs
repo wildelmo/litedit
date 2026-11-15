@@ -67,9 +67,10 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
     if target == path {
         return Ok(target);
     }
-    if target.exists() {
+    // (A dangling link counts as something there.)
+    if occupied(&target) {
         // A case-only rename (a.md → A.md) is allowed when it is the same
-        // file: on a case-insensitive folder `exists` sees ourselves. If an
+        // file: on a case-insensitive folder the check sees ourselves. If an
         // entry with exactly the new name is listed, it is another file
         // (case-sensitive folder) and must not be overwritten.
         let case_only =
@@ -1262,6 +1263,25 @@ mod tests {
         // Non-ASCII case change of the same file.
         std::fs::write(d.join("é.md"), "e").unwrap();
         assert!(rename(&d.join("é.md"), "É.md").is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rename_never_replaces_a_dangling_link() {
+        let d = std::env::temp_dir().join(format!("litedit-dangle-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink(d.join("nowhere"), d.join("link")).unwrap();
+        let f = create_file(&d, "f.md").unwrap();
+        assert!(rename(&f, "link").is_err(), "a dangling link is something");
+        assert!(f.exists());
+        let m = std::fs::symlink_metadata(d.join("link")).unwrap();
+        assert!(m.file_type().is_symlink(), "the link is still there");
+        assert_eq!(
+            std::fs::read_link(d.join("link")).unwrap(),
+            d.join("nowhere")
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

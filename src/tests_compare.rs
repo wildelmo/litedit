@@ -266,6 +266,30 @@ fn split_compare_names_the_folders_of_same_named_files_and_caps_size() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+#[test]
+fn a_file_of_lone_cr_lines_is_refused_by_compare_quickly() {
+    let d = tmp_dir("cmp-cr");
+    let a = write(&d, "a.txt", "x\n");
+    let b = write(&d, "b.txt", "x\n");
+    std::fs::write(&b, "\r".repeat(crate::diff::MAX_LINES + 10)).unwrap();
+    let mut app = new_app();
+    split(&mut app, &a, &b);
+    let n = app.tab_count();
+    let t = std::time::Instant::now();
+    run_command(&mut app, "compare left");
+    assert!(t.elapsed() < std::time::Duration::from_secs(5));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("Cannot compare"),
+        "{:?}",
+        app.nag_message()
+    );
+    key(&mut app, "escape");
+    assert_eq!(app.tab_count(), n);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---- 2. ignore whitespace -------------------------------------------------
 
 /// Re-indented with tabs, CRLF endings, trailing blanks, doubled spaces —

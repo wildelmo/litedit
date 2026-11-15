@@ -20,6 +20,8 @@ pub enum LinkTarget {
 }
 
 const MAX_URL_LEN: usize = 2048;
+/// Links followed from one path component before giving up.
+const MAX_LINK_HOPS: usize = 16;
 
 /// Decode `%XX` escapes; invalid escapes are kept literally.
 pub fn percent_decode(s: &str) -> String {
@@ -102,13 +104,15 @@ fn is_local_drive_target(t: &str) -> bool {
 
 /// Does any symlink/junction along `p` — or any hop of a chain of links —
 /// point at a network share or device path? (Following it would make
-/// Windows contact that server.)
+/// Windows contact that server.) A chain longer than [`MAX_LINK_HOPS`] or a
+/// loop counts as unsafe: what was not checked is not followed.
 pub fn link_reaches_unsafe(p: &Path) -> bool {
     let mut prefix = PathBuf::new();
     for comp in p.components() {
         prefix.push(comp);
         let mut cur = prefix.clone();
-        for _ in 0..16 {
+        let mut settled = false;
+        for _ in 0..MAX_LINK_HOPS {
             match std::fs::symlink_metadata(&cur) {
                 Ok(m) if m.file_type().is_symlink() => match std::fs::read_link(&cur) {
                     Ok(t) => {
@@ -124,8 +128,14 @@ pub fn link_reaches_unsafe(p: &Path) -> bool {
                     }
                     Err(_) => return true,
                 },
-                _ => break,
+                _ => {
+                    settled = true;
+                    break;
+                }
             }
+        }
+        if !settled {
+            return true;
         }
     }
     false
@@ -192,6 +202,38 @@ pub fn classify(dest: &str, base_dir: &Path) -> LinkTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn long_chains_and_loops_of_links_count_as_unsafe() {
+        let d = std::env::temp_dir().join(format!("litedit-chain-len-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("real.txt"), b"x").unwrap();
+        // l0 -> real.txt, l1 -> l0, ... : a chain of `n` local links.
+        let chain = |n: usize| {
+            std::os::unix::fs::symlink(d.join("real.txt"), d.join("l0")).unwrap();
+            for i in 1..n {
+                std::os::unix::fs::symlink(d.join(format!("l{}", i - 1)), d.join(format!("l{i}")))
+                    .unwrap();
+            }
+            d.join(format!("l{}", n - 1))
+        };
+        let short = chain(3);
+        assert!(!link_reaches_unsafe(&short), "a short local chain is fine");
+        for i in 0..3 {
+            std::fs::remove_file(d.join(format!("l{i}"))).unwrap();
+        }
+        let long = chain(MAX_LINK_HOPS + 2);
+        assert!(
+            link_reaches_unsafe(&long),
+            "too long a chain is not followed"
+        );
+        std::os::unix::fs::symlink(d.join("loop-b"), d.join("loop-a")).unwrap();
+        std::os::unix::fs::symlink(d.join("loop-a"), d.join("loop-b")).unwrap();
+        assert!(link_reaches_unsafe(&d.join("loop-a")), "a loop is unsafe");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[cfg(unix)]
     #[test]

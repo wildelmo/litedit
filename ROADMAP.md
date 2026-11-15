@@ -214,12 +214,44 @@ fixed first (S5.0).
 - [x] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
        the status bar
 
+## Epic 8 — Security scan findings (static scan of 2026-11-15, at dc5209f)
+
+- [x] S8.1 CI screenshot decoder: names from the log cannot leave the output folder
+- [x] S8.2 Line limit counts lone-CR line endings
+- [ ] S8.3 Markdown pictures: one budget per document, one spelling per picture
+- [ ] S8.4 Workspace restore: total size budget, one tab per file
+- [ ] S8.5 Markdown preview: budget for very large documents
+- [ ] S8.6 Links to network shares are not followed (a: gaps in the existing check, done; b: links, workspaces and tree entries)
+- [x] S8.7 GitHub Actions pinned to commits
+- [ ] S8.8 One-window pipe: another local user answering first (not decided)
+- [ ] S8.9 One-window pipe: a silent client holding it (not decided)
+- [x] S8.10 Folder listing: bounded work per folder
+- [x] S8.11 Rename never replaces a dangling link
+
 ---
 
 ## Progress log
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — Security scan triage, fixes S8.2, S8.6a, S8.7, S8.10 and
+  S8.11. A file made only of lone CR bytes got past the line limit (only
+  LF was counted, but the editor and Compare also split on CR) and could
+  become hundreds of millions of lines; `doc::count_line_breaks` now counts
+  LF, CRLF (as one) and lone CR on the decoded text, and Open and both
+  Compare sides use it. Rename no longer replaces a dangling link (it counts
+  as something there). Link chains longer than 16 hops, or loops, now count
+  as unsafe instead of safe; image loading checks the folders on the way
+  before looking at the file; the quick-open and folder-search index skips
+  links to network or device paths. Folder listings read at most 50,000
+  entries of one folder (the index no more than the overall cap still
+  allows) and sort with one lowercase name per entry; the tree note says
+  "more than N items" when reading stopped early. The GitHub Actions in the
+  workflow are pinned to the commits their tags point at today (checked with
+  `git ls-remote`). Checked by new tests for each point (including a small
+  injected read limit instead of 50,000 files), `cargo fmt`, clippy with
+  warnings as errors and the full test suite on Linux; the workflow itself
+  has not been run on GitHub.
 - 2026-11-15 — Security scan triage, fix 1 of the findings (the one rated
   high): `scripts/ci-shots.sh` took the file name of each screenshot from
   the CI log, so a log line could make it write anywhere (`../`, absolute

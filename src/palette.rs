@@ -10,7 +10,7 @@ use crate::canvas::{Canvas, Rect};
 use crate::input::{Input, MouseButton};
 use crate::inputbar::{BarEvent, InputBar};
 use crate::theme;
-use crate::tree::{is_ignored, read_dir_all};
+use crate::tree::{is_ignored, read_dir_limited};
 use crate::ui::{Ctx, FontKind};
 
 /// Quick open lists at most this many files.
@@ -173,7 +173,12 @@ pub fn index_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let (entries, _) = read_dir_all(&dir, false);
+        // Never read more of one folder than the overall cap still allows.
+        let room = MAX_INDEX_FILES.saturating_sub(out.len());
+        if room == 0 {
+            return out;
+        }
+        let (entries, _, _) = read_dir_limited(&dir, false, room);
         for e in entries {
             if out.len() >= MAX_INDEX_FILES {
                 return out;
@@ -182,7 +187,9 @@ pub fn index_files(root: &Path) -> Vec<PathBuf> {
                 if !e.is_link && depth < 24 && !is_ignored(&e.name) && !is_cache_dir(&e.path) {
                     stack.push((e.path, depth + 1));
                 }
-            } else {
+            } else if !(e.is_link && crate::links::link_reaches_unsafe(&e.path)) {
+                // (A link to a network share or device path is shown in the
+                // tree but never read: searching it would contact the server.)
                 out.push(e.path);
             }
         }
@@ -575,6 +582,26 @@ mod tests {
         assert!(idx.iter().any(|p| p.ends_with("file05199.txt")));
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_skips_links_to_network_paths_but_lists_local_ones() {
+        let d = std::env::temp_dir().join(format!("litedit-idx-net-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("real.txt"), "x").unwrap();
+        std::os::unix::fs::symlink("//evil/share/x", d.join("net.txt")).unwrap();
+        std::os::unix::fs::symlink(d.join("real.txt"), d.join("local.txt")).unwrap();
+        let names: Vec<String> = index_files(&d)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"real.txt".to_string()));
+        assert!(names.contains(&"local.txt".to_string()), "{names:?}");
+        assert!(!names.contains(&"net.txt".to_string()), "{names:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
     use crate::input::parse_key_combo;
 
     #[test]

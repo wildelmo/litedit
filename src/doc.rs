@@ -57,21 +57,23 @@ impl Document {
             )));
         }
         let bytes = std::fs::read(path)?;
-        // Each line costs memory beyond its text; millions of tiny lines
-        // would need gigabytes.
-        let lines = bytes.iter().filter(|&&b| b == b'\n').count();
-        if lines > MAX_LINES {
-            return Err(io::Error::other(format!(
-                "file has too many lines to open ({} million)",
-                lines / 1_000_000
-            )));
-        }
         if looks_binary(&bytes) {
             return Err(io::Error::other(
                 "this looks like a binary file (an image, program or archive), not text",
             ));
         }
         let (text, encoding, lossy) = decode_owned(bytes);
+        // Each line costs memory beyond its text; millions of tiny lines
+        // would need gigabytes. Counted on the decoded text, exactly as the
+        // editor splits it (a lone CR ends a line too), before any line is
+        // allocated.
+        let lines = count_line_breaks(&text, MAX_LINES);
+        if lines > MAX_LINES {
+            return Err(io::Error::other(format!(
+                "file has too many lines to open (more than {} million)",
+                MAX_LINES / 1_000_000
+            )));
+        }
         Ok(Self {
             path: path.to_path_buf(),
             text,
@@ -87,6 +89,23 @@ impl Document {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| self.path.display().to_string())
     }
+}
+
+/// Line breaks in `text` as the editor buffer and the compare view split
+/// it: LF, CRLF (one break) and a lone CR. Stops counting once the number
+/// is above `limit` (the result is then just "more than `limit`").
+pub fn count_line_breaks(text: &str, limit: usize) -> usize {
+    let b = text.as_bytes();
+    let mut n = 0;
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'\n' || (c == b'\r' && b.get(i + 1) != Some(&b'\n')) {
+            n += 1;
+            if n > limit {
+                break;
+            }
+        }
+    }
+    n
 }
 
 /// Windows device names (CON, NUL, COM1, …, with any extension) refer to
@@ -206,6 +225,51 @@ fn decode_utf16(bytes: &[u8], f: fn([u8; 2]) -> u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn count_line_breaks_matches_the_editor_split() {
+        let n = |t: &str| count_line_breaks(t, usize::MAX);
+        assert_eq!(n(""), 0);
+        assert_eq!(n("a"), 0);
+        assert_eq!(n("a\nb"), 1);
+        assert_eq!(n("a\r\nb"), 1, "CRLF is one break");
+        assert_eq!(n("a\rb"), 1, "a lone CR is a break");
+        assert_eq!(n("\r\r\n\n"), 3);
+        assert_eq!(n("a\r"), 1, "a trailing CR is a break");
+        // Over the limit it stops early: the result is only "more than".
+        assert_eq!(count_line_breaks("\n\n\n\n\n", 2), 3);
+        assert_eq!(count_line_breaks("\r\r\r\r\r", 2), 3);
+        assert_eq!(count_line_breaks("\n\n", 2), 2);
+        assert_eq!(count_line_breaks("\r\n\r\n\r\n", 2), 3);
+    }
+
+    fn tmp_file(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("litedit-doc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d.join("f.txt")
+    }
+
+    #[test]
+    fn a_file_of_lone_cr_line_ends_counts_against_the_line_limit() {
+        let f = tmp_file("cr");
+        std::fs::write(&f, "\r".repeat(MAX_LINES + 1)).unwrap();
+        let e = Document::open(&f).unwrap_err();
+        assert!(e.to_string().contains("too many lines"), "{e}");
+        std::fs::write(&f, "\r".repeat(MAX_LINES)).unwrap();
+        assert!(Document::open(&f).is_ok());
+        std::fs::remove_dir_all(f.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn crlf_lines_count_once_toward_the_line_limit() {
+        // 2.5 million lines: 5 million LF + CR bytes, but under the limit.
+        let f = tmp_file("crlf");
+        std::fs::write(&f, "x\r\n".repeat(2_500_000)).unwrap();
+        let d = Document::open(&f).expect("2.5 million CRLF lines open");
+        assert!(d.text.starts_with("x"));
+        std::fs::remove_dir_all(f.parent().unwrap()).ok();
+    }
 
     #[test]
     fn reserved_device_names() {

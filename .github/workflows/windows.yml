@@ -1,5 +1,9 @@
 name: windows
 
+# Actions are pinned to commit SHAs (a moved tag cannot change what runs). To
+# update: look up the new tag's commit with `git ls-remote <repo> refs/tags/<tag>^{}`
+# and replace the SHA and the trailing tag comment.
+
 on:
   push:
     branches: ["**"]
@@ -14,9 +18,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 (v2.9.3)
 
       - name: Tests
         run: cargo test --locked
@@ -31,7 +35,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) { Write-Error "onig_sys (C regex) is in the dependency tree"; exit 1 }
           exit 0
 
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
       - name: Static CRT check (no VC++ redistributable needed)
         shell: pwsh
@@ -298,7 +302,7 @@ jobs:
             Write-Output "END_PNG"
           }
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: litedit-windows
           path: |
@@ -314,8 +318,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: litedit-windows
           path: artifact

@@ -197,9 +197,14 @@ pub fn decode_file_max(path: &Path, max_side: u32) -> Result<Decoded, String> {
         return Err("not a file".into());
     }
     // A symlink could point at a network share (reading it authenticates
-    // to that server); local images are opened only as plain files.
+    // to that server); local images are opened only as plain files. The
+    // folders on the way are checked first: looking at the file itself
+    // already goes through a linked folder.
+    if crate::links::link_reaches_unsafe(path) {
+        return Err("linked images are not opened".into());
+    }
     let link = std::fs::symlink_metadata(path).map_err(|_| "image not found".to_string())?;
-    if link.file_type().is_symlink() || crate::links::link_reaches_unsafe(path) {
+    if link.file_type().is_symlink() {
         return Err("linked images are not opened".into());
     }
     let meta = std::fs::metadata(path).map_err(|_| "image not found".to_string())?;
@@ -444,6 +449,18 @@ pub fn scale_to(d: &Decoded, w: u32, h: u32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_image_under_a_folder_linked_to_a_network_share_is_refused() {
+        let d = std::env::temp_dir().join(format!("litedit-img-netdir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::os::unix::fs::symlink("//evil/share", d.join("pics")).unwrap();
+        let e = decode_file(&d.join("pics").join("a.png")).unwrap_err();
+        assert!(e.contains("linked images"), "refused as a link, got: {e}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn huge_dimensions_are_refused_from_the_header_alone() {

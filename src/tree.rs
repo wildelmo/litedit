@@ -48,6 +48,10 @@ pub fn is_ignored(name: &str) -> bool {
 
 /// At most this many entries are listed per directory.
 pub const MAX_ENTRIES: usize = 5000;
+/// At most this many entries of one directory are read at all (well above
+/// what is shown; a folder with millions of entries must not be walked,
+/// stat-ed and sorted in full).
+pub const MAX_READ: usize = 50_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
@@ -71,8 +75,9 @@ pub struct Tree {
     /// workspace, like lite-xl's "add directory").
     roots: Vec<PathBuf>,
     entries: HashMap<PathBuf, Vec<Entry>>,
-    /// Directories whose listing was truncated: (shown, total).
-    truncated: HashMap<PathBuf, usize>,
+    /// Directories whose listing was truncated: (total seen, reading
+    /// stopped early so the real total is higher).
+    truncated: HashMap<PathBuf, (usize, bool)>,
     expanded: HashSet<PathBuf>,
     rows: Vec<Row>,
     rows_dirty: bool,
@@ -132,20 +137,29 @@ fn is_hidden(name: &str, meta: &std::fs::Metadata) -> bool {
 
 /// Read one directory: ignored names removed, dirs first, case-insensitive,
 /// cut at MAX_ENTRIES (the tree's display limit). Returns (entries, total).
+#[cfg(test)]
 pub fn read_dir_sorted(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
-    let (mut out, total) = read_dir_all(dir, show_hidden);
-    out.truncate(MAX_ENTRIES);
+    let (out, total, _) = read_dir_shown(dir, show_hidden);
     (out, total)
 }
 
-/// Like [`read_dir_sorted`] without the display limit (quick open and find
-/// in folder must see every file; they have their own overall cap).
-pub fn read_dir_all(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
+/// [`read_dir_sorted`] that also says whether reading stopped at
+/// [`MAX_READ`] (then `total` is only what was seen: "more than").
+pub fn read_dir_shown(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize, bool) {
+    let (mut out, total, more) = read_dir_limited(dir, show_hidden, MAX_READ);
+    out.truncate(MAX_ENTRIES);
+    (out, total, more)
+}
+
+/// Read at most `limit` entries of `dir` from the file system (ignored and
+/// hidden ones count: they cost a look too), sorted. The last value is true
+/// when more entries were left unread.
+pub fn read_dir_limited(dir: &Path, show_hidden: bool, limit: usize) -> (Vec<Entry>, usize, bool) {
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return (out, 0);
+    let Ok(mut rd) = std::fs::read_dir(dir) else {
+        return (out, 0, false);
     };
-    for e in rd.flatten() {
+    for e in rd.by_ref().take(limit).flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         if is_ignored(&name) {
             continue;
@@ -186,13 +200,11 @@ pub fn read_dir_all(dir: &Path, show_hidden: bool) -> (Vec<Entry>, usize) {
             is_link,
         });
     }
-    out.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    let more = rd.next().is_some();
+    // Dirs first, then by lowercase name (each name lowercased once).
+    out.sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase()));
     let total = out.len();
-    (out, total)
+    (out, total, more)
 }
 
 impl Default for Tree {
@@ -295,9 +307,9 @@ impl Tree {
 
     fn children(&mut self, dir: &Path) -> Vec<Entry> {
         if !self.entries.contains_key(dir) {
-            let (list, total) = read_dir_sorted(dir, self.show_hidden);
-            if total > list.len() {
-                self.truncated.insert(dir.to_path_buf(), total);
+            let (list, total, more) = read_dir_shown(dir, self.show_hidden);
+            if total > list.len() || more {
+                self.truncated.insert(dir.to_path_buf(), (total, more));
             } else {
                 self.truncated.remove(dir);
             }
@@ -1012,12 +1024,13 @@ impl Tree {
         draw_vscrollbar(canvas, rect, self.scroll.y, content, ctx);
     }
 
-    /// Folders whose listing was cut at MAX_ENTRIES.
+    /// Folders whose listing was cut at MAX_ENTRIES (or whose reading was
+    /// stopped at MAX_READ: then the count is "more than").
     pub fn truncated_note(&self) -> Option<String> {
-        self.truncated
-            .values()
-            .max()
-            .map(|n| format!("folder has {n} items; first {MAX_ENTRIES} shown"))
+        self.truncated.values().max().map(|&(n, more)| {
+            let more = if more { "more than " } else { "" };
+            format!("folder has {more}{n} items; first {MAX_ENTRIES} shown")
+        })
     }
 }
 
@@ -1084,6 +1097,44 @@ mod tests {
             "ignored even when showing hidden"
         );
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn reading_a_folder_stops_at_the_limit_and_says_so() {
+        let d = tmp("limit");
+        for i in 0..10 {
+            std::fs::write(d.join(format!("f{i}.txt")), "").unwrap();
+        }
+        let (list, total, more) = read_dir_limited(&d, false, 4);
+        assert_eq!((list.len(), total, more), (4, 4, true));
+        let (list, total, more) = read_dir_limited(&d, false, 10);
+        assert_eq!((list.len(), total, more), (10, 10, false));
+        let (list, _, more) = read_dir_limited(&d, false, 100);
+        assert_eq!((list.len(), more), (10, false));
+        // Sorted order is unchanged by the early stop: dirs first, then
+        // names ignoring case.
+        std::fs::create_dir(d.join("Zdir")).unwrap();
+        std::fs::write(d.join("B.txt"), "").unwrap();
+        std::fs::write(d.join("a.txt"), "").unwrap();
+        let (list, _, _) = read_dir_limited(&d, false, 100);
+        let names: Vec<&str> = list.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(&names[..4], ["Zdir", "a.txt", "B.txt", "f0.txt"]);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn the_truncation_note_says_more_than_when_reading_stopped_early() {
+        let mut t = Tree::new();
+        t.truncated.insert(PathBuf::from("a"), (7000, false));
+        assert_eq!(
+            t.truncated_note().unwrap(),
+            format!("folder has 7000 items; first {MAX_ENTRIES} shown")
+        );
+        t.truncated.insert(PathBuf::from("b"), (50_000, true));
+        assert_eq!(
+            t.truncated_note().unwrap(),
+            format!("folder has more than 50000 items; first {MAX_ENTRIES} shown")
+        );
     }
 
     #[test]
