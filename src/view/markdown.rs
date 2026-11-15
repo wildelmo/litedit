@@ -1913,6 +1913,48 @@ mod tests {
         d
     }
 
+    /// Render until every picture is decoded; count the magenta pixels.
+    fn magenta_after_load(v: &mut MarkdownView, h: &mut Harness) -> usize {
+        let (w, hgt) = (800u32, 600u32);
+        let start = std::time::Instant::now();
+        loop {
+            render(v, h, w, hgt);
+            if !v.images.pending() {
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 10, "pictures never loaded");
+            std::thread::sleep(Duration::from_millis(2));
+            v.tick(&mut h.ctx(), Duration::from_millis(5));
+        }
+        let mut buf = vec![0u32; (w * hgt) as usize];
+        let mut c = Canvas::new(&mut buf, w, hgt);
+        let rect = c.bounds();
+        v.render(&mut c, rect, &mut h.ctx());
+        buf.iter()
+            .filter(|&&p| {
+                let (r, g, b) = ((p >> 16) & 255, (p >> 8) & 255, p & 255);
+                r > 200 && g < 70 && b > 200
+            })
+            .count()
+    }
+
+    #[test]
+    fn two_spellings_of_one_picture_both_show_from_one_decode() {
+        let dir = tmpdir("spell");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        image::RgbaImage::from_pixel(40, 30, image::Rgba([255, 0, 255, 255]))
+            .save(dir.join("pic.png"))
+            .unwrap();
+        let mut h = Harness::new();
+        let mut one = view("![a](pic.png)\n", &dir);
+        let single = magenta_after_load(&mut one, &mut h);
+        assert!(single >= 40 * 30, "the picture is drawn: {single}");
+        let mut two = view("![a](pic.png)\n\n![b](./sub/../pic.png)\n", &dir);
+        assert_eq!(magenta_after_load(&mut two, &mut h), 2 * single);
+        assert_eq!(two.images.counts(), (1, 1), "one entry, one decode");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn links_open_safely() {
         let dir = tmpdir("links");

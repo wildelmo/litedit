@@ -28,6 +28,18 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-035 Markdown pictures: a budget per document, no eviction
+One markdown preview keeps track of at most 1000 different pictures and holds
+at most 512 MB of decoded pixels. A picture is filed under one spelling of
+its path (`.` and `..` resolved as text, case ignored on Windows, never
+`canonicalize`). The first picture that does not fit, and every one after it,
+shows "not shown: the pictures on this page already use 512 MB", and decoding
+stops. Why: one small document naming the same picture a few hundred ways
+made the editor hold gigabytes and abort. Not done: loading only the pictures
+near the screen (a document with more than about 22 full-size photos loses
+the later ones; say if that matters to you). Worst case for one visible
+document is about 0.7 GB including the picture being decoded.
+
 ### D-034 Hidden tabs keep the colours of their first 2000 lines
 The rule is that a tab you aren't looking at holds nothing it can rebuild.
 One exception: syntax colours for up to 2000 lines stay (measured: about

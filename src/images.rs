@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 
 pub const MAX_FILE_BYTES: u64 = 40 * 1024 * 1024;
 pub const MAX_DIMENSION: u32 = 16_384;
@@ -18,6 +18,14 @@ pub const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 25_000_000;
 /// Images are stored at most this large (longest side), to bound memory.
 pub const STORE_MAX_SIDE: u32 = 2400;
+
+/// Most distinct pictures one document's preview keeps track of. Pictures
+/// past this show a note and are never queued.
+pub const MAX_DOC_IMAGES: usize = 1000;
+/// Most decoded pixel bytes one document's preview holds at once (the sum of
+/// every shown picture's RGBA). The picture that would go past it, and every
+/// one after it, shows a note instead.
+pub const MAX_DOC_IMAGE_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct Decoded {
@@ -42,13 +50,26 @@ pub enum ImgState {
     },
 }
 
+/// (store key, decode result)
 type Done = (PathBuf, Result<Decoded, String>);
+/// (store key, path to open)
+type Req = (PathBuf, PathBuf);
 
 pub struct ImageStore {
+    /// Keyed by [`store_key`], so every spelling of one file is one entry.
     map: HashMap<PathBuf, ImgState>,
-    tx: Option<Sender<PathBuf>>,
+    tx: Option<Sender<Req>>,
     rx: Option<Receiver<Done>>,
     in_flight: usize,
+    /// Sum of `rgba.len()` over the `Ready` entries.
+    held: usize,
+    /// The byte budget was reached: new pictures are not loaded.
+    over_budget: bool,
+    max_images: usize,
+    max_bytes: usize,
+    /// Decodes asked of the worker (tests).
+    #[cfg(test)]
+    requested: usize,
 }
 
 impl Default for ImageStore {
@@ -57,27 +78,108 @@ impl Default for ImageStore {
     }
 }
 
+/// One spelling per file: `.` dropped, `..` resolved against the component
+/// before it (Windows resolves `..` the same way, without looking at the
+/// disk). Returns (the path to open, the key to store it under); on Windows
+/// the key ignores case. Never touches the file system.
+fn store_key(path: &Path) -> (PathBuf, PathBuf) {
+    use std::path::Component;
+    let verbatim = matches!(
+        path.components().next(),
+        Some(Component::Prefix(p)) if p.kind().is_verbatim()
+    );
+    let open = if verbatim {
+        // `\\?\` paths reach the file system exactly as written.
+        path.to_path_buf()
+    } else {
+        let mut out = PathBuf::new();
+        let mut names = 0usize;
+        for c in path.components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir if names > 0 => {
+                    out.pop();
+                    names -= 1;
+                }
+                // `..` at the root stays at the root.
+                Component::ParentDir if out.has_root() => {}
+                Component::Normal(s) => {
+                    out.push(s);
+                    names += 1;
+                }
+                other => out.push(other),
+            }
+        }
+        if out.as_os_str().is_empty() {
+            out.push(".");
+        }
+        out
+    };
+    let key = if cfg!(windows) {
+        match open.to_str() {
+            Some(s) => PathBuf::from(s.to_lowercase()),
+            None => open.clone(),
+        }
+    } else {
+        open.clone()
+    };
+    (open, key)
+}
+
 impl ImageStore {
     pub fn new() -> Self {
+        Self::with_limits(MAX_DOC_IMAGES, MAX_DOC_IMAGE_BYTES)
+    }
+
+    /// A store tracking at most `max_images` pictures and holding at most
+    /// `max_bytes` of decoded pixels.
+    pub fn with_limits(max_images: usize, max_bytes: usize) -> Self {
         Self {
             map: HashMap::new(),
             tx: None,
             rx: None,
             in_flight: 0,
+            held: 0,
+            over_budget: false,
+            max_images,
+            max_bytes,
+            #[cfg(test)]
+            requested: 0,
         }
     }
 
-    fn worker(&mut self) -> &Sender<PathBuf> {
+    fn budget_note(&self) -> String {
+        format!(
+            "not shown: the pictures on this page already use {} MB",
+            self.max_bytes / (1024 * 1024)
+        )
+    }
+
+    /// Store `state` under `key`, keeping `held` right.
+    fn set(&mut self, key: PathBuf, state: ImgState) {
+        if let ImgState::Ready(d) = &state {
+            self.held += d.rgba.len();
+        }
+        if let Some(ImgState::Ready(old)) = self.map.insert(key, state) {
+            self.held = self.held.saturating_sub(old.rgba.len());
+        }
+    }
+
+    /// Ask the worker to decode `open`; false if there is no worker.
+    fn request(&mut self, key: &Path, open: PathBuf) -> bool {
         if self.tx.is_none() {
-            let (req_tx, req_rx) = channel::<PathBuf>();
-            let (done_tx, done_rx) = channel::<Done>();
+            let (req_tx, req_rx) = channel::<Req>();
+            // At most one finished picture waits to be collected, so the
+            // worker never runs far ahead of `poll`.
+            let (done_tx, done_rx) = sync_channel::<Done>(1);
             let spawned = std::thread::Builder::new()
                 .name("litedit-images".into())
                 .spawn(move || {
-                    // Ends when the store (and its sender) is dropped.
-                    while let Ok(p) = req_rx.recv() {
+                    // Ends when the store (and its sender) is dropped, or
+                    // when the store stops listening.
+                    while let Ok((key, p)) = req_rx.recv() {
                         let r = decode_file(&p);
-                        if done_tx.send((p, r)).is_err() {
+                        if done_tx.send((key, r)).is_err() {
                             break;
                         }
                     }
@@ -87,57 +189,91 @@ impl ImageStore {
             }
             self.tx = Some(req_tx);
         }
-        self.tx.as_ref().expect("worker sender")
+        let sent = self.rx.is_some()
+            && self
+                .tx
+                .as_ref()
+                .is_some_and(|tx| tx.send((key.to_path_buf(), open)).is_ok());
+        if sent {
+            self.in_flight += 1;
+            #[cfg(test)]
+            {
+                self.requested += 1;
+            }
+        }
+        sent
     }
 
     /// Current state of `path`, starting a load if it was never requested.
     pub fn get(&mut self, path: &Path) -> ImgState {
-        if let Some(ImgState::Unloaded {
-            natural,
-            reloading: false,
-        }) = self.map.get(path)
-        {
-            // Shown again: decode in the background, keep the size meanwhile.
-            let natural = *natural;
-            let sent = self.worker().send(path.to_path_buf()).is_ok() && self.rx.is_some();
-            if sent {
-                self.in_flight += 1;
-            }
-            let s = ImgState::Unloaded {
+        let (open, key) = store_key(path);
+        match self.map.get(&key) {
+            Some(ImgState::Unloaded {
                 natural,
-                reloading: sent,
-            };
-            self.map.insert(path.to_path_buf(), s.clone());
-            return s;
+                reloading: false,
+            }) => {
+                // Shown again: decode in the background, keep the size meanwhile.
+                let natural = *natural;
+                let sent = self.request(&key, open);
+                let s = ImgState::Unloaded {
+                    natural,
+                    reloading: sent,
+                };
+                self.set(key, s.clone());
+                return s;
+            }
+            Some(s) => return s.clone(),
+            None => {}
         }
-        if let Some(s) = self.map.get(path) {
-            return s.clone();
+        if self.map.len() >= self.max_images {
+            // Not stored, so the map (and the queue) stay bounded.
+            return ImgState::Failed("too many pictures in this document".into());
         }
-        let sent = self.worker().send(path.to_path_buf()).is_ok() && self.rx.is_some();
-        let state = if sent {
-            self.in_flight += 1;
+        let state = if self.over_budget {
+            ImgState::Failed(self.budget_note())
+        } else if self.request(&key, open) {
             ImgState::Loading
         } else {
             ImgState::Failed("image loader unavailable".into())
         };
-        self.map.insert(path.to_path_buf(), state.clone());
+        self.set(key, state.clone());
         state
     }
 
     /// Collect finished loads. Returns true if anything changed.
     pub fn poll(&mut self) -> bool {
-        let Some(rx) = &self.rx else { return false };
         let mut changed = false;
-        while let Ok((p, r)) = rx.try_recv() {
+        // One at a time: a result that goes over the budget stops the rest.
+        while let Some(Ok((key, r))) = self.rx.as_ref().map(Receiver::try_recv) {
             self.in_flight = self.in_flight.saturating_sub(1);
-            let state = match r {
-                Ok(d) => ImgState::Ready(Arc::new(d)),
-                Err(e) => ImgState::Failed(e),
-            };
-            self.map.insert(p, state);
             changed = true;
+            match r {
+                Ok(d) if self.held.saturating_add(d.rgba.len()) > self.max_bytes => {
+                    drop(d);
+                    self.stop_for_budget(key);
+                }
+                Ok(d) => self.set(key, ImgState::Ready(Arc::new(d))),
+                Err(e) => self.set(key, ImgState::Failed(e)),
+            }
         }
         changed
+    }
+
+    /// The picture under `key` doesn't fit: it and every picture still
+    /// waiting show a note, and the worker stops (it finishes at most the
+    /// file it is decoding, then finds nobody listening).
+    fn stop_for_budget(&mut self, key: PathBuf) {
+        self.over_budget = true;
+        self.tx = None;
+        self.rx = None;
+        self.in_flight = 0;
+        let note = self.budget_note();
+        self.set(key, ImgState::Failed(note.clone()));
+        for s in self.map.values_mut() {
+            if matches!(s, ImgState::Loading | ImgState::Unloaded { .. }) {
+                *s = ImgState::Failed(note.clone());
+            }
+        }
     }
 
     pub fn pending(&self) -> bool {
@@ -168,6 +304,9 @@ impl ImageStore {
                 _ => {}
             }
         }
+        // Pictures that didn't fit keep their note; the ones that did are
+        // decoded again when the tab is shown, and fit again.
+        self.held = 0;
         n
     }
 
@@ -180,9 +319,23 @@ impl ImageStore {
             .count()
     }
 
+    /// Pictures tracked, and decodes asked for so far (tests).
+    #[cfg(test)]
+    pub fn counts(&self) -> (usize, usize) {
+        (self.map.len(), self.requested)
+    }
+
+    /// Decoded pixel bytes held (tests).
+    #[cfg(test)]
+    pub fn held(&self) -> usize {
+        self.held
+    }
+
     /// Forget everything (after the document reloads, files may have changed).
     pub fn clear(&mut self) {
         self.map.retain(|_, s| matches!(s, ImgState::Loading));
+        self.held = 0;
+        self.over_budget = false;
     }
 }
 
@@ -650,5 +803,192 @@ mod tests {
             ImgState::Loading
         ));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("litedit-imgdoc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Collect results until nothing is left to decode.
+    fn settle(store: &mut ImageStore) {
+        let start = std::time::Instant::now();
+        while store.pending() {
+            assert!(start.elapsed().as_secs() < 10, "decoding never finished");
+            store.poll();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn paths_are_spelled_one_way_without_touching_the_disk() {
+        let k = |s: &str| store_key(Path::new(s)).0;
+        assert_eq!(k("/x/./y/../a.png"), Path::new("/x/a.png"));
+        assert_eq!(k("/x/y/z/../../a.png"), Path::new("/x/a.png"));
+        assert_eq!(k("/../../a.png"), Path::new("/a.png"));
+        assert_eq!(k("./a.png"), Path::new("a.png"));
+        assert_eq!(k("../../a.png"), Path::new("../../a.png"));
+        assert_eq!(k("x/../../a.png"), Path::new("../a.png"));
+        assert_eq!(k("x/.."), Path::new("."));
+        assert_eq!(k("/x//y/a.png"), Path::new("/x/y/a.png"));
+        if cfg!(windows) {
+            assert_eq!(k(r"C:\x\..\A.png"), Path::new(r"C:\A.png"));
+            assert_eq!(k(r"C:\..\A.png"), Path::new(r"C:\A.png"));
+            // The key ignores case, the path opened keeps it.
+            let (open, key) = store_key(Path::new(r"C:\Pics\A.PNG"));
+            assert_eq!(open, Path::new(r"C:\Pics\A.PNG"));
+            assert_eq!(key, store_key(Path::new(r"c:\pics\.\a.png")).1);
+        } else {
+            let (open, key) = store_key(Path::new("/p/A.PNG"));
+            assert_eq!(open, key, "case matters off Windows");
+        }
+    }
+
+    #[test]
+    fn every_spelling_of_one_picture_is_one_entry_and_one_decode() {
+        let d = tmp("spell");
+        std::fs::create_dir_all(d.join("sub")).unwrap();
+        std::fs::write(d.join("a.png"), png(4, 4)).unwrap();
+        let mut spellings = vec![
+            d.join("a.png"),
+            d.join("./a.png"),
+            d.join("sub/../a.png"),
+            d.join("sub/./../sub/../a.png"),
+            d.join("nothere/../a.png"),
+        ];
+        if cfg!(windows) {
+            spellings.push(d.join("A.PNG"));
+            spellings.push(d.join("SUB\\..\\a.Png"));
+        }
+        let mut store = ImageStore::new();
+        for p in &spellings {
+            store.get(p);
+        }
+        assert_eq!(store.counts(), (1, 1));
+        settle(&mut store);
+        for p in &spellings {
+            assert!(matches!(store.get(p), ImgState::Ready(_)), "{p:?}");
+        }
+        assert_eq!(store.counts(), (1, 1));
+        assert_eq!(store.held(), 4 * 4 * 4);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn names_differing_only_in_case_stay_apart_off_windows() {
+        let d = tmp("case");
+        std::fs::write(d.join("a.png"), png(4, 4)).unwrap();
+        std::fs::write(d.join("A.png"), png(2, 2)).unwrap();
+        if std::fs::read_dir(&d).unwrap().count() != 2 {
+            return; // a case-insensitive file system: nothing to show here
+        }
+        let mut store = ImageStore::new();
+        store.get(&d.join("a.png"));
+        store.get(&d.join("A.png"));
+        assert_eq!(store.counts(), (2, 2));
+        settle(&mut store);
+        let size = |p: &Path, s: &mut ImageStore| match s.get(p) {
+            ImgState::Ready(x) => (x.w, x.h),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(size(&d.join("a.png"), &mut store), (4, 4));
+        assert_eq!(size(&d.join("A.png"), &mut store), (2, 2));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn pictures_past_the_count_limit_show_a_note_and_are_never_queued() {
+        let d = tmp("count");
+        for i in 0..4 {
+            std::fs::write(d.join(format!("{i}.png")), png(2, 2)).unwrap();
+        }
+        let mut store = ImageStore::with_limits(2, MAX_DOC_IMAGE_BYTES);
+        let p = |i: usize| d.join(format!("{i}.png"));
+        assert!(matches!(store.get(&p(0)), ImgState::Loading));
+        assert!(matches!(store.get(&p(1)), ImgState::Loading));
+        for _ in 0..3 {
+            match store.get(&p(2)) {
+                ImgState::Failed(e) => assert_eq!(e, "too many pictures in this document"),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(store.counts(), (2, 2), "nothing stored or queued");
+        settle(&mut store);
+        assert_eq!(store.loaded(), 2);
+        assert!(matches!(store.get(&p(3)), ImgState::Failed(_)));
+        // Another spelling of a picture already in is still that picture.
+        assert!(matches!(
+            store.get(&d.join("x/../1.png")),
+            ImgState::Ready(_)
+        ));
+        assert_eq!(store.counts(), (2, 2));
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn pictures_past_the_byte_budget_show_a_note_and_stop_decoding() {
+        let d = tmp("bytes");
+        for i in 0..6 {
+            std::fs::write(d.join(format!("{i}.png")), png(4, 4)).unwrap();
+        }
+        let p = |i: usize| d.join(format!("{i}.png"));
+        // Room for two 64-byte pictures, not three.
+        let mut store = ImageStore::with_limits(MAX_DOC_IMAGES, 150);
+        for i in 0..5 {
+            assert!(matches!(store.get(&p(i)), ImgState::Loading));
+        }
+        settle(&mut store);
+        assert!(!store.pending());
+        let check = |store: &mut ImageStore| {
+            for i in 0..5 {
+                match store.get(&p(i)) {
+                    ImgState::Ready(_) => assert!(i < 2, "{i} should not fit"),
+                    ImgState::Failed(e) => {
+                        assert!(i >= 2, "{i} should fit");
+                        assert_eq!(e, "not shown: the pictures on this page already use 0 MB");
+                    }
+                    other => panic!("{i}: {other:?}"),
+                }
+            }
+            assert_eq!(store.held(), 2 * 64);
+            assert!(!store.pending());
+        };
+        check(&mut store);
+        // A picture asked for afterwards is not decoded.
+        let before = store.counts().1;
+        assert!(matches!(store.get(&p(5)), ImgState::Failed(_)));
+        assert_eq!(store.counts().1, before);
+        // Hidden and shown again: the same two come back, nothing else.
+        assert_eq!(store.unload(), 2);
+        assert_eq!((store.loaded(), store.held()), (0, 0));
+        for i in 0..5 {
+            store.get(&p(i));
+        }
+        assert_eq!(store.counts().1, before + 2, "only the two that fit");
+        settle(&mut store);
+        check(&mut store);
+        // A reloaded document starts over.
+        store.clear();
+        assert_eq!(store.held(), 0);
+        assert!(matches!(store.get(&p(3)), ImgState::Loading));
+        settle(&mut store);
+        assert!(matches!(store.get(&p(3)), ImgState::Ready(_)));
+        assert_eq!(store.held(), 64);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_picture_larger_than_the_whole_budget_never_stays_loading() {
+        let d = tmp("onebig");
+        std::fs::write(d.join("a.png"), png(8, 8)).unwrap();
+        let mut store = ImageStore::with_limits(MAX_DOC_IMAGES, 100);
+        store.get(&d.join("a.png"));
+        settle(&mut store);
+        assert!(matches!(store.get(&d.join("a.png")), ImgState::Failed(_)));
+        assert_eq!(store.held(), 0);
+        std::fs::remove_dir_all(&d).ok();
     }
 }

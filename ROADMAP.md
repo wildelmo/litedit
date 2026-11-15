@@ -218,7 +218,7 @@ fixed first (S5.0).
 
 - [x] S8.1 CI screenshot decoder: names from the log cannot leave the output folder
 - [x] S8.2 Line limit counts lone-CR line endings
-- [ ] S8.3 Markdown pictures: one budget per document, one spelling per picture
+- [x] S8.3 Markdown pictures: one budget per document, one spelling per picture
 - [ ] S8.4 Workspace restore: total size budget, one tab per file
 - [ ] S8.5 Markdown preview: budget for very large documents
 - [ ] S8.6 Links to network shares are not followed (a: gaps in the existing check, done; b: links, workspaces and tree entries)
@@ -234,6 +234,14 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S8.3 Markdown pictures have a budget per document (sub-agent
+  branch, reviewed and merged). Different spellings of one file (`./a.png`,
+  `x/../a.png`, `A.PNG` on Windows) are one picture, decoded once. A document
+  shows at most 1000 pictures and keeps at most 512 MB of decoded pixels;
+  pictures past either limit show a short note and the decoder stops instead
+  of working through the rest (D-035). Ordinary documents are unchanged.
+  Checked on Linux with small injected limits; the Windows-only case folding
+  is not run here.
 - 2026-11-15 — Security scan triage, fixes S8.2, S8.6a, S8.7, S8.10 and
   S8.11. A file made only of lone CR bytes got past the line limit (only
   LF was counted, but the editor and Compare also split on CR) and could
