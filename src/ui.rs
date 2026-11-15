@@ -68,6 +68,22 @@ impl Ctx<'_> {
         max_w: i32,
         kind: FontKind,
     ) {
+        self.label_styled(canvas, text, x, y, color, max_w, kind, false);
+    }
+
+    /// [`Self::label`], optionally in italics (peek tabs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_styled(
+        &mut self,
+        canvas: &mut Canvas,
+        text: &str,
+        x: i32,
+        y: i32,
+        color: Color,
+        max_w: i32,
+        kind: FontKind,
+        italic: bool,
+    ) {
         if max_w <= 0 || text.is_empty() {
             return;
         }
@@ -77,7 +93,10 @@ impl Ctx<'_> {
             self.ui_metrics()
         };
         let fam = self.family(kind);
-        let attrs = Attrs::new().family(Family::Name(&fam));
+        let mut attrs = Attrs::new().family(Family::Name(&fam));
+        if italic {
+            attrs = attrs.style(cosmic_text::Style::Italic);
+        }
         let mut text: String = crate::text::sanitize(clip_chars(text, 2000)).into_owned();
         let mut b = Buffer::new_empty(m);
         b.set_wrap(Wrap::None);

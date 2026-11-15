@@ -2331,7 +2331,7 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
             continue;
         };
         steps_run += 1;
-        match rnd(7) {
+        match rnd(8) {
             0 if n > 0 => {
                 // Drag a tab somewhere else.
                 let a = rects[rnd(rects.len())];
@@ -2358,6 +2358,9 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
                 });
             }
             1 => {
+                // Click into the file first (a tree click leaves the
+                // keyboard in the tree), then type.
+                mouse(&mut app, 500.0, 300.0, MouseButton::Left);
                 app.handle(Input::Text(format!("<{step}>")));
             }
             2 => {
@@ -2392,6 +2395,13 @@ fn tab_reorder_and_close_fuzz_never_loses_edits() {
                     key(&mut app, "escape");
                 }
                 key(&mut app, "escape");
+            }
+            6 => {
+                // Single or double click on a file in the tree (peek / keep).
+                if app.nag_message().is_none() {
+                    let f = files[rnd(files.len())].clone();
+                    click_tree(&mut app, &f, 1 + rnd(2) as u32);
+                }
             }
             5 => {
                 key(
@@ -3522,5 +3532,107 @@ fn clicking_a_task_checkbox_in_the_preview_ticks_it_in_the_file() {
     let (x, y) = app.preview_checkboxes()[0];
     mouse(&mut app, x + 200.0, y + 300.0, MouseButton::Left);
     assert_eq!(app.view_text(), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+fn click_tree(app: &mut App, p: &Path, clicks: u32) {
+    render_hash(app, 800, 600);
+    let y = app
+        .tree_row_y(p)
+        .unwrap_or_else(|| panic!("no tree row for {}", p.display()));
+    for c in 1..=clicks {
+        app.handle(Input::MouseDown {
+            x: 60.0,
+            y,
+            button: crate::input::MouseButton::Left,
+            clicks: c,
+        });
+        app.handle(Input::MouseUp {
+            x: 60.0,
+            y,
+            button: crate::input::MouseButton::Left,
+        });
+    }
+}
+
+#[test]
+fn single_clicks_in_the_tree_reuse_one_peek_tab() {
+    let (d, files) = many_files("peek", 5);
+    let names = |app: &App| -> Vec<String> { app.tab_titles().into_iter().map(|t| t.0).collect() };
+    let mut app = new_app();
+    app.open(&d);
+    // Browsing with single clicks: one tab, replaced each time.
+    for f in &files[..3] {
+        click_tree(&mut app, f, 1);
+    }
+    assert_eq!(names(&app), ["f02.txt"]);
+    assert_eq!(app.peek_tabs(), [true]);
+    // Double-click keeps it; the next single click opens a new peek beside it.
+    click_tree(&mut app, &files[2], 2);
+    assert_eq!(app.peek_tabs(), [false]);
+    click_tree(&mut app, &files[3], 1);
+    assert_eq!(names(&app), ["f02.txt", "f03.txt"]);
+    assert_eq!(app.peek_tabs(), [false, true]);
+    // A peek leaves the keyboard in the tree (arrow keys keep browsing);
+    // click into the file and edit it: that keeps it, with its edits.
+    app.handle(Input::Text("ignored".into()));
+    assert!(!app.tab_titles()[1].1);
+    mouse(&mut app, 500.0, 100.0, crate::input::MouseButton::Left);
+    app.handle(Input::Text("edit ".into()));
+    assert_eq!(app.peek_tabs(), [false, false]);
+    click_tree(&mut app, &files[4], 1);
+    assert_eq!(names(&app), ["f02.txt", "f03.txt", "f04.txt"]);
+    assert!(
+        app.tab_titles()[1].1,
+        "the edited tab is still there and unsaved"
+    );
+    // Clicking a file that is already open just shows it.
+    click_tree(&mut app, &files[2], 1);
+    assert_eq!(names(&app).len(), 3);
+    assert!(app.title().starts_with("f02.txt"));
+    // The peek is replaced in place even when another tab is in front.
+    click_tree(&mut app, &files[0], 1);
+    assert_eq!(names(&app), ["f02.txt", "f03.txt", "f00.txt"]);
+    // Opening on purpose (Ctrl+P, Enter in the tree, a link) keeps it.
+    app.open(&files[0]);
+    assert_eq!(app.peek_tabs(), [false, false, false]);
+    // Peeked files are not offered by Ctrl+Shift+T after being replaced.
+    click_tree(&mut app, &files[1], 1);
+    click_tree(&mut app, &files[4], 1);
+    key(&mut app, "ctrl+shift+t");
+    assert!(
+        !names(&app).contains(&"f01.txt".to_string()),
+        "{:?}",
+        names(&app)
+    );
+    // While a question is showing, a click in the tree changes nothing.
+    key(&mut app, "alt+2");
+    key(&mut app, "ctrl+w");
+    assert!(app.nag_message().is_some());
+    let before = names(&app);
+    click_tree(&mut app, &files[1], 1);
+    assert_eq!(names(&app), before);
+    assert!(app.nag_message().is_some());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_lone_peek_tab_on_the_right_side_keeps_the_split() {
+    let (d, files) = many_files("peeksplit", 4);
+    let mut app = new_app();
+    app.open(&d);
+    app.open(&files[0]);
+    app.open(&files[1]);
+    key(&mut app, "ctrl+alt+right"); // f01 right
+    key(&mut app, "ctrl+w"); // close it: one side again
+    assert!(!app.is_split_for_test());
+    click_tree(&mut app, &files[2], 1); // a peek
+    key(&mut app, "ctrl+alt+right"); // moved across: kept, alone on the right
+    assert!(app.is_split_for_test());
+    click_tree(&mut app, &files[3], 1); // new peek on the right
+    click_tree(&mut app, &files[1], 1); // replaces it there
+    assert!(app.is_split_for_test(), "the right side still exists");
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(names.len(), 3, "{names:?}");
     let _ = std::fs::remove_dir_all(&d);
 }

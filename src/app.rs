@@ -127,6 +127,9 @@ struct TabSlot {
     group: u8,
     /// Its rebuildable caches were freed since it was last on screen.
     trimmed: bool,
+    /// A "peek" tab (single click in the tree): the next peek replaces it
+    /// unless it was kept (double-click, edit, explicit open).
+    peek: bool,
 }
 
 /// The editor group that doesn't have focus (split view).
@@ -179,6 +182,7 @@ impl App {
                 view: None,
                 group: 0,
                 trimmed: false,
+                peek: false,
             }],
             active: 0,
             next_tab_id: 2,
@@ -475,6 +479,12 @@ impl App {
         self.view.scroll_y()
     }
 
+    /// Which tabs are peek tabs (tests).
+    #[cfg(test)]
+    pub fn peek_tabs(&self) -> Vec<bool> {
+        self.tabs.iter().map(|t| t.peek).collect()
+    }
+
     #[cfg(test)]
     pub fn tree_roots(&self) -> Vec<PathBuf> {
         self.tree.roots().to_vec()
@@ -602,6 +612,7 @@ impl App {
                 view: Some(view),
                 group: self.focused_group(),
                 trimmed: false,
+                peek: false,
             },
         );
         self.activate(at);
@@ -621,7 +632,9 @@ impl App {
     fn remove_tab(&mut self, id: u64) {
         self.session_dirty = true;
         let Some(i) = self.tab_index(id) else { return };
-        if let Some(p) = self.tab_view(i).path().map(Path::to_path_buf) {
+        if let Some(p) = self.tab_view(i).path().map(Path::to_path_buf)
+            && !self.tabs[i].peek
+        {
             self.closed.retain(|c| c != &p);
             self.closed.push(p);
             if self.closed.len() > 30 {
@@ -1158,6 +1171,12 @@ impl App {
                 .collect()
         };
         match &a {
+            MenuAction::KeepTab(id) => {
+                if let Some(i) = self.tab_index(*id) {
+                    self.keep_tab(i);
+                }
+                return;
+            }
             MenuAction::CloseTab(id) => {
                 if let Some(i) = self.tab_index(*id) {
                     self.close_tab(i);
@@ -1448,11 +1467,21 @@ impl App {
             self.tree.set_root(parent);
         }
         if let Some(i) = self.find_tab(path) {
+            // Opening it on purpose keeps a peeked file open.
+            self.tabs[i].peek = false;
             self.activate(i);
             self.focus = Focus::Main;
             return;
         }
-        let view: Box<dyn View> = match Document::open(path) {
+        let view = self.make_view(path);
+        self.add_tab(view);
+        self.tree.reveal(path);
+        self.focus = Focus::Main;
+        self.pending = true;
+    }
+
+    fn make_view(&self, path: &Path) -> Box<dyn View> {
+        match Document::open(path) {
             Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
             Ok(doc) => {
                 let mut v = CodeView::new(doc);
@@ -1463,11 +1492,75 @@ impl App {
                 "Error",
                 format!("Could not open {}: {e}", path.display()),
             )),
-        };
-        self.add_tab(view);
+        }
+    }
+
+    /// Single click in the tree: show `path` in the peek tab of the focused
+    /// side, replacing the file peeked before. A peek tab that was edited
+    /// or kept is an ordinary tab and is never replaced.
+    pub fn open_peek(&mut self, path: &Path) {
+        if path.is_dir() || workspace::is_workspace_file(path) {
+            self.open(path);
+            return;
+        }
+        if let Some(i) = self.find_tab(path) {
+            self.activate(i);
+            self.focus = Focus::Main;
+            return;
+        }
+        let g = self.focused_group();
+        let old = (0..self.tabs.len()).find(|&i| {
+            self.tabs[i].peek && self.tabs[i].group == g && !self.tab_view(i).is_dirty()
+        });
+        let view = self.make_view(path);
+        match old {
+            // The start page: becomes the peek tab.
+            None if self.view.path().is_none() && self.tabs.len() == 1 => {
+                self.add_tab(view);
+                self.tabs[0].peek = true;
+            }
+            None => {
+                self.add_tab(view);
+                self.tabs[self.active].peek = true;
+            }
+            // Take the old peek's place: add the new tab right after it
+            // (so a side never becomes empty), then remove the old one.
+            Some(i) => {
+                let old_id = self.tabs[i].id;
+                let id = self.next_tab_id;
+                self.next_tab_id += 1;
+                self.tabs.insert(
+                    i + 1,
+                    TabSlot {
+                        id,
+                        view: Some(view),
+                        group: g,
+                        trimmed: false,
+                        peek: true,
+                    },
+                );
+                if self.active > i {
+                    self.active += 1;
+                }
+                self.activate(i + 1);
+                self.remove_tab(old_id);
+            }
+        }
         self.tree.reveal(path);
-        self.focus = Focus::Main;
         self.pending = true;
+    }
+
+    /// A peek tab becomes an ordinary tab (kept, edited, saved).
+    fn keep_tab(&mut self, i: usize) {
+        if let Some(t) = self.tabs.get_mut(i)
+            && t.peek
+        {
+            t.peek = false;
+            if let Some(p) = self.tab_view(i).path().map(Path::to_path_buf) {
+                push_recent(&mut self.recent, &p);
+            }
+            self.session_dirty = true;
+        }
     }
 
     pub fn title(&self) -> String {
@@ -1611,6 +1704,7 @@ impl App {
             self.notice = Some("Open another file to split the view".into());
             return false;
         }
+        self.keep_tab(self.active);
         let id = self.tabs[self.active].id;
         // The group left behind shows its nearest other tab.
         let left_behind = self.group_tabs(cur);
@@ -1830,7 +1924,11 @@ impl App {
     fn open_tab_menu(&mut self, i: usize, x: f32, y: f32) {
         let id = self.tabs[i].id;
         let path = self.tab_view(i).path().map(Path::to_path_buf);
-        let mut items = vec![
+        let mut items = Vec::new();
+        if self.tabs[i].peek {
+            items.push(("Keep Open", MenuAction::KeepTab(id)));
+        }
+        items.extend([
             ("Close", MenuAction::CloseTab(id)),
             ("Close Others", MenuAction::CloseOthers(id)),
             ("Close to the Right", MenuAction::CloseToRight(id)),
@@ -1848,7 +1946,7 @@ impl App {
                     "ctrl+alt+left"
                 }),
             ),
-        ];
+        ]);
         if let Some(p) = path {
             if self.tab_view(i).is_dirty() {
                 items.push(("Compare with Saved", MenuAction::CompareWithSaved(id)));
@@ -2193,8 +2291,17 @@ impl App {
         let redraw = self.handle_inner(&input);
         self.sync_nag_owner();
         // Requests the app handles itself (opening a file from a link or the tree).
+        // Editing a peeked file keeps it open.
+        if self.tabs[self.active].peek && self.view.is_dirty() {
+            self.keep_tab(self.active);
+        }
         let mut open = None;
+        let mut peek = None;
         self.requests.retain(|r| match r {
+            Request::PeekPath(p) => {
+                peek = Some(p.clone());
+                false
+            }
             Request::OpenPath(p) => {
                 open = Some((p.clone(), None));
                 false
@@ -2205,6 +2312,14 @@ impl App {
             }
             _ => true,
         });
+        if let Some(p) = peek.filter(|_| open.is_none()) {
+            if self.nag.is_some() {
+                // Don't switch tabs under an open question.
+                return redraw;
+            }
+            self.open_peek(&p);
+            return true;
+        }
         if let Some((p, line)) = open {
             if self.nag.is_some() {
                 // Don't switch tabs under an open question.
@@ -2713,6 +2828,9 @@ impl App {
                             MouseButton::Middle => self.close_tab(i),
                             MouseButton::Left if on_close => self.close_tab(i),
                             MouseButton::Left => {
+                                if *clicks >= 2 {
+                                    self.keep_tab(i);
+                                }
                                 self.activate(i);
                                 self.focus = Focus::Main;
                                 self.tab_drag = Some((i, *x, false));
@@ -3074,7 +3192,9 @@ impl App {
                     theme::p().text
                 };
                 let text_w = (close.x - r.x - pad - ctx.px(4.0) as i32).max(0);
-                ctx.label(
+                // Peek tabs (replaced by the next single click) are italic.
+                let peek = self.tabs.get(*i).is_some_and(|t| t.peek);
+                ctx.label_styled(
                     canvas,
                     title,
                     r.x + pad,
@@ -3082,6 +3202,7 @@ impl App {
                     color,
                     text_w,
                     FontKind::Ui,
+                    peek,
                 );
                 if *dirty && !hovered {
                     canvas.fill_circle(

@@ -195,7 +195,8 @@ fixed first (S5.0).
        work in the preview)
 - [x] S6.4 Find in the preview (Ctrl+F stays in the preview; F3 / Shift+F3,
        Alt+C / Alt+R, count in the bar and status; Ctrl+H still goes to the source)
-- [ ] S6.5 Peek tab: single click in the tree reuses one temporary tab
+- [x] S6.5 Peek tab: single click in the tree reuses one temporary tab (italic
+       title); double-click, Enter, editing, moving it across or "Keep Open" keeps it
 - [ ] S6.6 One window: a second launch opens its files in the running window
 - [ ] S6.7 "Open with" registration for markdown (explicit command)
 
@@ -205,6 +206,12 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.5 peek tab: Request::PeekPath from tree single click /
+  Space, TabSlot.peek, App::open_peek (new tab added before the old peek is
+  removed; never replaces a dirty tab; blocked while a question shows; not
+  added to recents or the closed list until kept), italic title. Tab fuzz now
+  clicks the tree and types into the editor (mutation-checked).
+  Windows CI for S6.1: 12 viewed markdown tabs = 21.2 MB private.
 - 2026-11-15 — S6.4 find in preview: PreviewFind (Finder + match list of
   element ranges, recomputed per pattern and per layout, time-budgeted and
   capped), highlights via LayoutRun::highlight, current match revealed;

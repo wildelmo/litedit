@@ -108,6 +108,8 @@ pub enum Request {
     ToggleFullscreen,
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
+    /// Show a file in the reusable "peek" tab (single click in the tree).
+    PeekPath(PathBuf),
     /// Open a file at a 1-based line (search results).
     OpenPathAt(PathBuf, usize),
     /// Show a file in Windows Explorer.

@@ -60,7 +60,7 @@ impl Runner {
                     event_loop.exit();
                 }
                 // Handled inside the app; never reaches the window.
-                Request::OpenPath(_) | Request::OpenPathAt(..) => {}
+                Request::OpenPath(_) | Request::OpenPathAt(..) | Request::PeekPath(_) => {}
                 Request::OpenUrl(url) => {
                     let _ = crate::platform::open_url(&url);
                 }

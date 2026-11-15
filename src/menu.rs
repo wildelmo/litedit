@@ -18,6 +18,7 @@ pub enum MenuAction {
     /// Search inside this folder (also used for the Ctrl+Shift+F prompt).
     FindInFolder(PathBuf),
     // Tab menu (ids are tab ids).
+    KeepTab(u64),
     CloseTab(u64),
     CloseOthers(u64),
     CloseToRight(u64),

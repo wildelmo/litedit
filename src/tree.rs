@@ -404,7 +404,10 @@ impl Tree {
         self.rows().get(i).cloned()
     }
 
-    fn activate(&mut self, i: usize, ctx: &mut Ctx) {
+    /// Open the entry on row `i`: folders expand / collapse; files open in
+    /// the peek tab (`keep` = false: single click, Space) or stay open
+    /// (`keep` = true: double-click, Enter).
+    fn activate(&mut self, i: usize, keep: bool, ctx: &mut Ctx) {
         let Some(row) = self.rows().get(i).cloned() else {
             return;
         };
@@ -413,8 +416,10 @@ impl Tree {
             if !row.entry.is_link {
                 self.toggle(&row.entry.path);
             }
-        } else {
+        } else if keep {
             ctx.requests.push(Request::OpenPath(row.entry.path));
+        } else {
+            ctx.requests.push(Request::PeekPath(row.entry.path));
         }
     }
 
@@ -548,18 +553,23 @@ impl Tree {
             Input::MouseDown {
                 y,
                 button: MouseButton::Left,
+                clicks,
                 ..
             } => {
                 if let Some(i) = self.row_at(rect, *y, ctx) {
                     let row = self.rows()[i].clone();
                     if row.depth > 0 {
                         self.press = Some(Press {
-                            path: row.entry.path,
+                            path: row.entry.path.clone(),
                             y: *y,
                             dragging: false,
                         });
                     }
-                    self.activate(i, ctx);
+                    // A double-click's second click on a folder would undo
+                    // the first (expand, collapse): only files react to it.
+                    if *clicks < 2 || !row.entry.is_dir {
+                        self.activate(i, *clicks >= 2, ctx);
+                    }
                 }
                 true
             }
@@ -582,7 +592,8 @@ impl Tree {
                     Key::End => self.selected = Some(n - 1),
                     Key::PageDown => self.selected = Some((sel + 20).min(n - 1)),
                     Key::PageUp => self.selected = Some(sel.saturating_sub(20)),
-                    Key::Enter | Key::Char(' ') => self.activate(sel, ctx),
+                    Key::Enter => self.activate(sel, true, ctx),
+                    Key::Char(' ') => self.activate(sel, false, ctx),
                     Key::Right => {
                         let row = self.rows()[sel].clone();
                         if row.entry.is_dir && !row.expanded && !row.entry.is_link {

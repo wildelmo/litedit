@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Peek tab: a single click on a file in the tree shows it in one reusable
+  tab (italic title) instead of opening a new tab each time. Double-click,
+  Enter, editing it, or "Keep Open" in the tab menu keeps it.
 - Find in the markdown preview: Ctrl+F now searches the rendered page
   (matches highlighted, F3 / Shift+F3, count) instead of switching to the
   raw text. Ctrl+H (replace) still opens the source.
