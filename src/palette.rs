@@ -30,6 +30,8 @@ pub enum Action {
     AddFolder,
     /// A named editing command run by the active view.
     Command(&'static str),
+    /// Go to the heading on this 0-based source line.
+    Heading(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +80,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("File: Close Tab", "ctrl+w"),
     ("Go to File…", "ctrl+p"),
     ("Go to Line…", "ctrl+g"),
+    ("Markdown: Go to Heading…", "ctrl+shift+g"),
     ("Find", "ctrl+f"),
     ("Replace", "ctrl+h"),
     ("Find in Folder…", "ctrl+shift+f"),
@@ -289,6 +292,20 @@ impl Palette {
             "Open file".to_string()
         };
         Self::new(Mode::Files, &label, items, 0)
+    }
+
+    /// "Go to Heading": the document outline, indented by level.
+    pub fn headings(list: &[(u8, String, usize)]) -> Self {
+        let top = list.iter().map(|h| h.0).min().unwrap_or(1);
+        let items = list
+            .iter()
+            .map(|(level, text, line)| Item {
+                label: format!("{}{}", "    ".repeat((level - top) as usize), text),
+                detail: format!("line {}", line + 1),
+                action: Action::Heading(*line),
+            })
+            .collect();
+        Self::new(Mode::Files, "Go to heading", items, 0)
     }
 
     /// Ask for a line of text (e.g. a file name), prefilled with `initial`.

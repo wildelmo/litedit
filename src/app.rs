@@ -466,6 +466,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn view_scroll_y(&self) -> f32 {
+        self.view.scroll_y()
+    }
+
+    #[cfg(test)]
     pub fn tree_roots(&self) -> Vec<PathBuf> {
         self.tree.roots().to_vec()
     }
@@ -985,6 +990,10 @@ impl App {
             }
             Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
             Outcome::Run(Action::AddFolder) => self.requests.push(Request::AddFolderDialog),
+            Outcome::Run(Action::Heading(line)) => {
+                self.view.goto_heading(line);
+                self.focus = Focus::Main;
+            }
             Outcome::Run(Action::Command(c)) => {
                 if self.view.run_command(c) {
                     self.pending = true;
@@ -2457,6 +2466,18 @@ impl App {
                         let items: Vec<PathBuf> =
                             self.recent.iter().filter(|p| p.exists()).cloned().collect();
                         self.palette = Some(Palette::recent(&items));
+                        true
+                    }
+                    Key::Char('g') if mods.shift => {
+                        match self.view.headings() {
+                            Some(h) if !h.is_empty() => {
+                                self.palette = Some(Palette::headings(&h));
+                            }
+                            Some(_) => self.notice = Some("This document has no headings".into()),
+                            None => {
+                                self.notice = Some("Go to Heading works in markdown files".into())
+                            }
+                        }
                         true
                     }
                     Key::Char('g') if !mods.shift => {

@@ -3345,3 +3345,59 @@ fn hidden_tabs_free_their_caches_and_come_back_identical() {
     key(&mut app, "alt+1");
     assert_eq!(settled_hash(&mut app), scrolled);
 }
+
+#[test]
+fn go_to_heading_scrolls_the_preview_and_moves_the_caret_in_the_source() {
+    let d = tmp_dir("headings");
+    let f = d.join("doc.md");
+    let mut text = String::from("# Top\n\nintro\n\n");
+    for i in 0..40 {
+        text.push_str(&format!("para {i}\n\n"));
+    }
+    text.push_str("## Deep *section*\n\nbody\n\n> ### Quoted heading\n\n");
+    for i in 0..60 {
+        text.push_str(&format!("tail {i}\n\n"));
+    }
+    std::fs::write(&f, &text).unwrap();
+    let deep_line = text[..text.find("## Deep").unwrap()].matches('\n').count();
+    let mut app = new_app();
+    app.open(&f);
+    render_hash(&mut app, 800, 600);
+    assert_eq!(app.view_scroll_y(), 0.0);
+    // Preview: pick "Deep section" from the list.
+    key(&mut app, "ctrl+shift+g");
+    app.handle(Input::Text("deep".into()));
+    key(&mut app, "enter");
+    render_hash(&mut app, 800, 600);
+    let y = app.view_scroll_y();
+    assert!(y > 500.0, "preview scrolled to the heading: {y}");
+    // The same jump works right after the window was resized (no layout yet).
+    key(&mut app, "ctrl+home");
+    key(&mut app, "home");
+    app.handle(Input::Resize(700, 500));
+    key(&mut app, "ctrl+shift+g");
+    app.handle(Input::Text("quoted".into()));
+    key(&mut app, "enter");
+    render_hash(&mut app, 700, 500);
+    assert!(app.view_scroll_y() > y, "{}", app.view_scroll_y());
+    // Source: the caret goes to the heading's line.
+    key(&mut app, "ctrl+e");
+    key(&mut app, "ctrl+shift+g");
+    app.handle(Input::Text("deep".into()));
+    key(&mut app, "enter");
+    assert!(
+        app.status_text()
+            .contains(&format!("Ln {},", deep_line + 1)),
+        "{}",
+        app.status_text()
+    );
+    // Not markdown: a hint, no panic.
+    app.open(&fixture("sample.rs"));
+    key(&mut app, "ctrl+shift+g");
+    assert!(
+        app.status_text().contains("markdown"),
+        "{}",
+        app.status_text()
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}

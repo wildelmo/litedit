@@ -2,6 +2,8 @@
 
 ## 1.1.0 — unreleased
 
+- Go to heading (Ctrl+Shift+G): a searchable outline of the markdown
+  document; jumps in the preview or the source.
 - Much less memory with many tabs: tabs you aren't looking at free their
   rendered previews and images (30 viewed markdown tabs: 272 MB → 36 MB in
   a test) and rebuild instantly when you return.

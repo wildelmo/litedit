@@ -75,6 +75,8 @@ pub struct MarkdownView {
     selecting: bool,
     /// Message shown in the status bar (e.g. blocked link).
     notice: Option<String>,
+    /// Scroll the preview to this source line once the layout exists.
+    pending_scroll_line: Option<usize>,
 }
 
 impl MarkdownView {
@@ -104,6 +106,7 @@ impl MarkdownView {
             sel: None,
             selecting: false,
             notice: None,
+            pending_scroll_line: None,
         };
         v.request_images();
         v
@@ -547,6 +550,9 @@ impl MarkdownView {
         self.sync_preview();
         canvas.fill_rect(rect, theme::p().background);
         self.ensure_layout(rect.w, ctx);
+        if let Some(line) = self.pending_scroll_line.take() {
+            self.scroll_to_source_line(line);
+        }
         self.clamp();
         let dx = rect.x as f32;
         let dy = rect.y as f32 - self.scroll.y;
@@ -926,6 +932,11 @@ impl View for MarkdownView {
     }
 
     #[cfg(test)]
+    fn scroll_y(&self) -> f32 {
+        self.scroll.y
+    }
+
+    #[cfg(test)]
     fn has_caches(&self) -> bool {
         self.layout.is_some()
             || !self.scaled.is_empty()
@@ -939,6 +950,32 @@ impl View for MarkdownView {
 
     fn text(&self) -> Option<String> {
         self.editor.text()
+    }
+
+    fn headings(&mut self) -> Option<Vec<(u8, String, usize)>> {
+        self.sync_preview();
+        let text = self.md_text.as_bytes();
+        Some(
+            crate::markdown::parse::headings(&self.md)
+                .into_iter()
+                .map(|(level, title, off)| {
+                    let off = off.min(text.len());
+                    let line = text[..off].iter().filter(|b| **b == b'\n').count();
+                    (level, title, line)
+                })
+                .collect(),
+        )
+    }
+
+    fn goto_heading(&mut self, line: usize) {
+        if self.mode != Mode::Preview {
+            self.editor.goto_line(line + 1);
+        }
+        if self.mode != Mode::Source {
+            // The layout may not exist yet (hidden tab, resized window):
+            // resolved at the next draw.
+            self.pending_scroll_line = Some(line);
+        }
     }
 
     fn run_command(&mut self, name: &str) -> bool {

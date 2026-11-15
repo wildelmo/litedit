@@ -190,7 +190,7 @@ fixed first (S5.0).
 
 - [x] S6.1 Hidden tabs free their rendered caches (30 viewed markdown tabs:
        272 MB → 36 MB peak on Linux; 30 code tabs 69 → 55 MB)
-- [ ] S6.2 Go to heading (Ctrl+Shift+G): list of the document's headings
+- [x] S6.2 Go to heading (Ctrl+Shift+G): list of the document's headings
 - [ ] S6.3 Click a task checkbox in the preview to tick / untick it
 - [ ] S6.4 Find in the preview (Ctrl+F stays in the preview)
 - [ ] S6.5 Peek tab: single click in the tree reuses one temporary tab
@@ -203,6 +203,9 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.2 go to heading: parse::headings, View::headings /
+  goto_heading, palette list indented by level; preview scroll resolved at
+  the next draw (works without a layout); caret moves in source / split.
 - 2026-11-15 — S6.1: View::on_hide; App::trim_hidden_tabs sweeps before every
   frame (covers tab switch, split moves, closes, workspace restore; the tab
   shown on the other side of a split is kept). Markdown drops layout, scaled

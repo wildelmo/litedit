@@ -106,6 +106,39 @@ pub struct MdDoc {
     pub links: Vec<String>,
 }
 
+/// Every heading in document order: (level, plain text, source byte offset).
+pub fn headings(doc: &MdDoc) -> Vec<(u8, String, usize)> {
+    fn walk(blocks: &[Block], out: &mut Vec<(u8, String, usize)>, depth: usize) {
+        if depth > 64 {
+            return;
+        }
+        for b in blocks {
+            match &b.kind {
+                BlockKind::Heading { level, inlines, .. } => {
+                    let text = plain_text(inlines);
+                    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !text.is_empty() {
+                        out.push((*level, text, b.offset));
+                    }
+                }
+                BlockKind::Quote { blocks, .. } | BlockKind::Footnote { blocks, .. } => {
+                    walk(blocks, out, depth + 1)
+                }
+                BlockKind::List { items, .. } => {
+                    for it in items {
+                        walk(&it.blocks, out, depth + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&doc.blocks, &mut out, 0);
+    out.truncate(5000);
+    out
+}
+
 enum Container {
     Root(Vec<Block>),
     Quote {

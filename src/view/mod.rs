@@ -66,6 +66,15 @@ pub trait View {
         None
     }
 
+    /// The document's headings for "Go to Heading": (level, text, 0-based
+    /// source line). None if this view has no outline.
+    fn headings(&mut self) -> Option<Vec<(u8, String, usize)>> {
+        None
+    }
+
+    /// Show the heading on 0-based source `line`.
+    fn goto_heading(&mut self, _line: usize) {}
+
     /// A named editing command from the command palette ("upper-case",
     /// "trim-whitespace", …). Returns false if this view doesn't do it.
     fn run_command(&mut self, _name: &str) -> bool {
@@ -86,6 +95,12 @@ pub trait View {
     /// that needs `tick` to be called until it finishes?
     fn has_background_work(&self) -> bool {
         false
+    }
+
+    /// Test hook: vertical scroll offset in pixels.
+    #[cfg(test)]
+    fn scroll_y(&self) -> f32 {
+        0.0
     }
 
     /// Test hook: does this view hold rebuildable caches right now?

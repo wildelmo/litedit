@@ -42,6 +42,7 @@ or drag a file or folder onto the window.
 | `Ctrl+F` / `Ctrl+H` | Find / replace (`F3`, `Alt+C` case, `Alt+R` regex, `Ctrl+Enter` replace all) |
 | `Ctrl+Shift+F` | Find in folder |
 | `Ctrl+G` | Go to line |
+| `Ctrl+Shift+G` | Markdown: go to heading (outline list) |
 | `Ctrl+Shift+V` | Markdown: side-by-side live preview |
 | `Ctrl+E` | Markdown: switch preview ↔ editing |
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
