@@ -207,7 +207,7 @@ fixed first (S5.0).
 - [x] S7.0 Fix confirmed findings from the independent review of Epic 6
 - [ ] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
        while loading; read-only lock for code files
-- [ ] S7.2 Image files open in a viewer tab
+- [x] S7.2 Image files open in a viewer tab
 - [x] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
 - [x] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
        jump to a change in the file, compare with the clipboard
@@ -220,6 +220,15 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.2 Image viewer (sub-agent branch, reviewed and merged):
+  `src/view/image.rs` — png / jpg / gif (first frame) / webp / bmp open in a
+  viewer tab: fit (never enlarges) or 100% (`0` / `1`, double-click), pan by
+  drag / wheel / arrows, checkerboard under transparency, status shows
+  pixels, file size, zoom. Decoding in the background under the existing
+  limits (40 MB file, 25 MP, 128 MB alloc); a row-at-a-time area-averaging
+  downscaler replaces the `image` crate's filter (lower peak for markdown
+  images too); pixels freed in `on_hide`; reloads on disk change; never
+  "modified", save commands skip it (`View::can_save`). 323 tests.
 - 2026-11-15 — S7.4 Compare extras (sub-agent branch, reviewed and merged):
   Compare Left ↔ Right of a split (palette + tab menu), Alt+W ignores
   whitespace (text shown is still the real text), Enter / double-click

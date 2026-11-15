@@ -28,6 +28,13 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-031 Pictures: fit view keeps a reduced copy; 100% decodes everything
+A picture tab keeps at most 2400 pixels on the long side while fitted to the
+window (plenty for any screen litedit targets) and decodes the full picture
+only at 100%. Limits are the same as for images in markdown: 40 MB file, 25
+megapixels. Animated GIFs show their first frame. Zoom is fit or 100% only
+(Ctrl+wheel stays text zoom). The pixels are freed when you switch tabs.
+
 ### D-030 One window: a second launch opens its files in the running window
 Double-clicking another file while litedit is open adds a tab to the open
 window instead of starting a second copy (less memory, tabs in one place).

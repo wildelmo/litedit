@@ -187,6 +187,12 @@ impl ImageStore {
 }
 
 pub fn decode_file(path: &Path) -> Result<Decoded, String> {
+    decode_file_max(path, STORE_MAX_SIDE)
+}
+
+/// [`decode_file`], keeping at most `max_side` pixels on the longest side
+/// (`u32::MAX`: every pixel, for the image viewer at 100%).
+pub fn decode_file_max(path: &Path, max_side: u32) -> Result<Decoded, String> {
     if crate::doc::is_reserved_name(path) {
         return Err("not a file".into());
     }
@@ -207,10 +213,18 @@ pub fn decode_file(path: &Path) -> Result<Decoded, String> {
         ));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read image: {e}"))?;
-    decode_bytes(&bytes)
+    let img = decode_image(&bytes)?;
+    // The file's bytes aren't needed while the pixels are reduced.
+    drop(bytes);
+    Ok(store(img, max_side))
 }
 
+#[cfg(test)]
 pub fn decode_bytes(bytes: &[u8]) -> Result<Decoded, String> {
+    Ok(store(decode_image(bytes)?, STORE_MAX_SIDE))
+}
+
+fn decode_image(bytes: &[u8]) -> Result<image::DynamicImage, String> {
     let (w, h) = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|e| format!("unreadable image: {e}"))?
@@ -227,27 +241,187 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<Decoded, String> {
     limits.max_image_height = Some(MAX_DIMENSION);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    let img = reader
+    reader
         .decode()
-        .map_err(|e| format!("cannot decode image: {e}"))?;
+        .map_err(|e| format!("cannot decode image: {e}"))
+}
+
+/// Turn a decoded image into stored RGBA, at most `max_side` on its longest
+/// side. Peak memory is the decoder's buffer plus the stored copy: nothing
+/// is converted or resampled at full size.
+fn store(img: image::DynamicImage, max_side: u32) -> Decoded {
     let natural = (img.width(), img.height());
-    let img = if natural.0.max(natural.1) > STORE_MAX_SIDE {
-        img.resize(
-            STORE_MAX_SIDE,
-            STORE_MAX_SIDE,
-            image::imageops::FilterType::Triangle,
-        )
+    let longest = natural.0.max(natural.1);
+    if longest <= max_side.max(1) {
+        use image::DynamicImage as I;
+        // Kept whole: the decoder's own buffer becomes the stored pixels.
+        let rgba = match img {
+            I::ImageRgba8(b) => b.into_raw(),
+            I::ImageRgb8(b) => expand_to_rgba(b.into_raw(), 3),
+            I::ImageLuma8(b) => expand_to_rgba(b.into_raw(), 1),
+            I::ImageLumaA8(b) => expand_to_rgba(b.into_raw(), 2),
+            other => other.into_rgba8().into_raw(),
+        };
+        return Decoded {
+            w: natural.0,
+            h: natural.1,
+            rgba,
+            natural,
+        };
+    }
+    let k = f64::from(max_side.max(1)) / f64::from(longest);
+    let w = ((f64::from(natural.0) * k).round() as u32).clamp(1, max_side.max(1));
+    let h = ((f64::from(natural.1) * k).round() as u32).clamp(1, max_side.max(1));
+    let channels = usize::from(img.color().channel_count());
+    let rgba = if usize::from(img.color().bytes_per_pixel()) == channels {
+        // 8 bits per channel (nearly every file): straight from the
+        // decoder's buffer.
+        downscale(img.as_bytes(), natural.0, natural.1, channels, w, h)
     } else {
-        img
+        let full = img.into_rgba8();
+        downscale(full.as_raw(), natural.0, natural.1, 4, w, h)
     };
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    Ok(Decoded {
+    Decoded {
         w,
         h,
-        rgba: rgba.into_raw(),
+        rgba,
         natural,
-    })
+    }
+}
+
+/// Grey, grey + alpha or RGB pixels made RGBA in the same buffer: it grows
+/// once and is filled from the end backwards, so the picture is never held
+/// twice (a 12-megapixel photo would be 36 MB + 48 MB).
+fn expand_to_rgba(mut px: Vec<u8>, channels: usize) -> Vec<u8> {
+    if !(1..=3).contains(&channels) {
+        return px;
+    }
+    let n = px.len() / channels;
+    px.truncate(n * channels);
+    px.reserve_exact(n * (4 - channels));
+    px.resize(n * 4, 0);
+    for i in (0..n).rev() {
+        let s = i * channels;
+        let rgba = match channels {
+            1 => [px[s], px[s], px[s], 255],
+            2 => [px[s], px[s], px[s], px[s + 1]],
+            _ => [px[s], px[s + 1], px[s + 2], 255],
+        };
+        // Pixel i ends before pixel i + 1 started, in both layouts, so
+        // nothing still to be read is overwritten.
+        px[i * 4..i * 4 + 4].copy_from_slice(&rgba);
+    }
+    px
+}
+
+/// The source pixels `start..end` one output pixel covers, with how much of
+/// the first and last it covers (the ones between count fully).
+struct Span {
+    start: usize,
+    end: usize,
+    first: f32,
+    last: f32,
+    total: f32,
+}
+
+impl Span {
+    fn weight(&self, i: usize) -> f32 {
+        if i == self.start {
+            self.first
+        } else if i + 1 == self.end {
+            self.last
+        } else {
+            1.0
+        }
+    }
+}
+
+fn spans(src: usize, dst: usize) -> Vec<Span> {
+    let r = src as f64 / dst as f64;
+    (0..dst)
+        .map(|i| {
+            let a = i as f64 * r;
+            let b = ((i + 1) as f64 * r).min(src as f64);
+            let start = (a.floor() as usize).min(src - 1);
+            let end = (b.ceil() as usize).clamp(start + 1, src);
+            let (first, last) = if end - start == 1 {
+                (b - a, 0.0)
+            } else {
+                ((start + 1) as f64 - a, b - (end - 1) as f64)
+            };
+            Span {
+                start,
+                end,
+                first: first as f32,
+                last: last as f32,
+                total: (b - a) as f32,
+            }
+        })
+        .collect()
+}
+
+/// Resample `src` (`sw x sh` pixels of `channels` bytes: grey, grey + alpha,
+/// RGB or RGBA) to `dw x dh` straight-alpha RGBA by averaging the area each
+/// output pixel covers. Working memory is one row of the output (the `image`
+/// crate's filters build a full-height float copy first), and colours are
+/// weighted by alpha so transparent pixels don't darken edges.
+pub fn downscale(src: &[u8], sw: u32, sh: u32, channels: usize, dw: u32, dh: u32) -> Vec<u8> {
+    let (sw, sh) = (sw as usize, sh as usize);
+    let (dw, dh) = (dw.max(1) as usize, dh.max(1) as usize);
+    let mut out = vec![0u8; dw * dh * 4];
+    let enough = sw
+        .checked_mul(sh)
+        .and_then(|n| n.checked_mul(channels))
+        .is_some_and(|n| src.len() >= n);
+    if sw == 0 || sh == 0 || !(1..=4).contains(&channels) || !enough {
+        return out;
+    }
+    let xs = spans(sw, dw);
+    let ys = spans(sh, dh);
+    // Per output pixel of the current row: sums of r*a, g*a, b*a and a.
+    let mut acc = vec![[0f32; 4]; dw];
+    for (y, out_row) in ys.iter().zip(out.chunks_exact_mut(dw * 4)) {
+        acc.fill([0.0; 4]);
+        for sy in y.start..y.end {
+            let wy = y.weight(sy);
+            let row = &src[sy * sw * channels..(sy + 1) * sw * channels];
+            for (x, acc) in xs.iter().zip(acc.iter_mut()) {
+                let mut sum = [0f32; 4];
+                for sx in x.start..x.end {
+                    let s = &row[sx * channels..(sx + 1) * channels];
+                    let (r, g, b, a) = match channels {
+                        1 => (s[0], s[0], s[0], 255),
+                        2 => (s[0], s[0], s[0], s[1]),
+                        3 => (s[0], s[1], s[2], 255),
+                        _ => (s[0], s[1], s[2], s[3]),
+                    };
+                    let aw = x.weight(sx) * f32::from(a);
+                    sum[0] += f32::from(r) * aw;
+                    sum[1] += f32::from(g) * aw;
+                    sum[2] += f32::from(b) * aw;
+                    sum[3] += aw;
+                }
+                for (a, s) in acc.iter_mut().zip(sum) {
+                    *a += s * wy;
+                }
+            }
+        }
+        for ((x, acc), px) in xs.iter().zip(&acc).zip(out_row.chunks_exact_mut(4)) {
+            let [r, g, b, alpha] = *acc;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let area = (x.total * y.total).max(f32::MIN_POSITIVE);
+            let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
+            px.copy_from_slice(&[
+                byte(r / alpha),
+                byte(g / alpha),
+                byte(b / alpha),
+                byte(alpha / area),
+            ]);
+        }
+    }
+    out
 }
 
 /// Scale decoded pixels to exactly `w x h` for display.
@@ -342,6 +516,102 @@ mod tests {
         p[16..20].copy_from_slice(&100_000u32.to_be_bytes());
         p[20..24].copy_from_slice(&100_000u32.to_be_bytes());
         assert!(decode_bytes(&p).is_err());
+    }
+
+    #[test]
+    fn downscale_averages_areas_and_weights_colour_by_alpha() {
+        // A solid colour stays exactly that colour at any ratio.
+        let solid: Vec<u8> = [10u8, 200, 30, 255].repeat(7 * 5);
+        for (w, h) in [(7, 5), (3, 2), (1, 1), (6, 4)] {
+            let d = downscale(&solid, 7, 5, 4, w, h);
+            assert_eq!(d.len(), (w * h * 4) as usize);
+            assert!(d.chunks(4).all(|p| p == [10, 200, 30, 255]), "{w}x{h}");
+        }
+        // 2x2 -> 1: the plain average.
+        let four = [
+            0u8, 0, 0, 255, 100, 0, 0, 255, 0, 100, 0, 255, 0, 0, 200, 255,
+        ];
+        assert_eq!(downscale(&four, 2, 2, 4, 1, 1), [25, 25, 50, 255]);
+        // Opaque red next to a fully transparent pixel: half as opaque,
+        // still pure red (not darkened by the invisible pixel's colour).
+        let edge = [255u8, 0, 0, 255, 0, 255, 0, 0];
+        assert_eq!(downscale(&edge, 2, 1, 4, 1, 1), [255, 0, 0, 128]);
+        // 3 -> 2: each output covers one and a half source pixels.
+        let grey = [0u8, 90, 255];
+        assert_eq!(
+            downscale(&grey, 3, 1, 1, 2, 1),
+            [30, 30, 30, 255, 200, 200, 200, 255]
+        );
+        // RGB and grey + alpha sources.
+        assert_eq!(downscale(&[1, 2, 3], 1, 1, 3, 1, 1), [1, 2, 3, 255]);
+        assert_eq!(downscale(&[9, 40], 1, 1, 2, 1, 1), [9, 9, 9, 40]);
+        // Nonsense input gives transparent pixels of the asked size, no panic.
+        assert_eq!(downscale(&[1, 2, 3], 5, 5, 4, 2, 2), [0; 16]);
+        assert_eq!(downscale(&[], 0, 0, 4, 1, 1), [0; 4]);
+        assert_eq!(downscale(&[1; 64], 4, 4, 9, 1, 1), [0; 4]);
+        // Asked to enlarge: pixels repeat.
+        assert_eq!(
+            downscale(&[5, 50], 2, 1, 1, 4, 1),
+            [5, 5, 5, 255, 5, 5, 5, 255, 50, 50, 50, 255, 50, 50, 50, 255]
+        );
+    }
+
+    #[test]
+    fn pixels_become_rgba_in_place() {
+        assert_eq!(
+            expand_to_rgba(vec![1, 2, 3, 4, 5, 6], 3),
+            [1, 2, 3, 255, 4, 5, 6, 255]
+        );
+        assert_eq!(
+            expand_to_rgba(vec![7, 8, 9], 1),
+            [7, 7, 7, 255, 8, 8, 8, 255, 9, 9, 9, 255]
+        );
+        assert_eq!(
+            expand_to_rgba(vec![7, 100, 9, 0], 2),
+            [7, 7, 7, 100, 9, 9, 9, 0]
+        );
+        assert_eq!(expand_to_rgba(vec![1, 2, 3, 4], 4), [1, 2, 3, 4]);
+        assert_eq!(expand_to_rgba(Vec::new(), 3), [0u8; 0]);
+        // Whole decoded images of each kind match the image crate's own
+        // conversion.
+        use image::DynamicImage as I;
+        let rgb = image::RgbImage::from_fn(13, 7, |x, y| image::Rgb([x as u8, y as u8, 99]));
+        let la = image::GrayAlphaImage::from_fn(13, 7, |x, y| image::LumaA([x as u8, y as u8]));
+        let l = image::GrayImage::from_fn(13, 7, |x, y| image::Luma([(x * y) as u8]));
+        for img in [I::ImageRgb8(rgb), I::ImageLumaA8(la), I::ImageLuma8(l)] {
+            let want = img.to_rgba8().into_raw();
+            let d = store(img, STORE_MAX_SIDE);
+            assert_eq!((d.w, d.h, d.natural), (13, 7, (13, 7)));
+            assert_eq!(d.rgba, want);
+        }
+    }
+
+    #[test]
+    fn every_pixel_format_is_stored_as_rgba_when_reduced() {
+        use image::{DynamicImage, GrayAlphaImage, GrayImage, RgbImage};
+        let side = STORE_MAX_SIDE + 100;
+        let imgs = [
+            DynamicImage::ImageLuma8(GrayImage::from_pixel(side, 2, image::Luma([77]))),
+            DynamicImage::ImageLumaA8(GrayAlphaImage::from_pixel(side, 2, image::LumaA([77, 255]))),
+            DynamicImage::ImageRgb8(RgbImage::from_pixel(side, 2, image::Rgb([77, 77, 77]))),
+            DynamicImage::ImageRgb16(image::ImageBuffer::from_pixel(
+                side,
+                2,
+                image::Rgb([77 * 257, 77 * 257, 77 * 257]),
+            )),
+        ];
+        for img in imgs {
+            let d = store(img, STORE_MAX_SIDE);
+            assert_eq!((d.w, d.h), (STORE_MAX_SIDE, 2));
+            assert_eq!(d.natural, (side, 2));
+            assert!(d.rgba.chunks(4).all(|p| p == [77, 77, 77, 255]));
+        }
+        // Not reduced when asked for every pixel.
+        let d = store(
+            DynamicImage::ImageRgb8(RgbImage::from_pixel(side, 2, image::Rgb([1, 2, 3]))),
+            u32::MAX,
+        );
+        assert_eq!((d.w, d.h), (side, 2));
     }
 
     #[test]

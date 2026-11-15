@@ -2,6 +2,10 @@
 
 ## 1.1.0 — unreleased
 
+- Image files (png, jpg, gif, webp, bmp) open in a viewer tab: fit to the
+  window or actual size (`0` / `1` or double-click), drag or scroll to pan,
+  pixel size and file size in the status bar. Hidden picture tabs hold no
+  pixels.
 - Compare: the two sides of a split (Compare Left ↔ Right), Compare with
   Clipboard, Alt+W ignores whitespace differences, and Enter or a
   double-click on a line opens the file there.

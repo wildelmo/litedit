@@ -40,6 +40,8 @@ mod tests;
 #[cfg(test)]
 mod tests_compare;
 #[cfg(test)]
+mod tests_image;
+#[cfg(test)]
 mod tests_nav;
 
 use std::io::Write;

@@ -23,6 +23,7 @@ use crate::tree::Tree;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
 use crate::view::diff::{DiffView, Side};
+use crate::view::image::{ImageView, is_image};
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::search::SearchView;
@@ -924,7 +925,7 @@ impl App {
     /// Save the active tab. Unless `overwrite`, first check that nobody else
     /// changed the file since it was opened or last saved.
     fn save_checked(&mut self, allow_lossy: bool, then: Option<Pending>, overwrite: bool) -> bool {
-        if self.view.path().is_none() {
+        if self.view.path().is_none() || !self.view.can_save() {
             return false;
         }
         let name = self.view_name();
@@ -1699,6 +1700,9 @@ impl App {
     }
 
     fn make_view_at_top(&self, path: &Path) -> Box<dyn View> {
+        if is_image(path) {
+            return Box::new(ImageView::new(path));
+        }
         match Document::open(path) {
             Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
             Ok(doc) => {
@@ -3032,7 +3036,9 @@ impl App {
                         true
                     }
                     Key::Char('s') if mods.shift => {
-                        if let Some(p) = self.view.path() {
+                        if self.view.can_save()
+                            && let Some(p) = self.view.path()
+                        {
                             self.requests.push(Request::SaveAsDialog(p.to_path_buf()));
                         }
                         true

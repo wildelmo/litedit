@@ -2,6 +2,7 @@
 
 pub mod code;
 pub mod diff;
+pub mod image;
 pub mod markdown;
 pub mod message;
 pub mod search;
@@ -129,6 +130,12 @@ pub trait View {
     /// Unsaved edits?
     fn is_dirty(&self) -> bool {
         false
+    }
+
+    /// False for a file that is only looked at (a picture): Ctrl+S and
+    /// Save As do nothing.
+    fn can_save(&self) -> bool {
+        true
     }
 
     fn save(&mut self, _allow_lossy: bool) -> Result<usize, SaveError> {

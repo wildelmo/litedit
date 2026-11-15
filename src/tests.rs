@@ -2819,9 +2819,9 @@ fn a_line_starting_with_right_to_left_text_is_drawn_in_view() {
 fn small_fixes_from_the_review() {
     let d = tmp_dir("small");
     // Binary files are not opened as text.
-    std::fs::write(d.join("pic.png"), [0x89, b'P', b'N', b'G', 0, 0, 0, 13]).unwrap();
+    std::fs::write(d.join("pic.bin"), [0x89, b'P', b'N', b'G', 0, 0, 0, 13]).unwrap();
     let mut app = new_app();
-    app.open(&d.join("pic.png"));
+    app.open(&d.join("pic.bin"));
     assert!(app.title().starts_with("Error"), "{}", app.title());
     // Go to line with an absurd number goes to the last line.
     std::fs::write(d.join("t.txt"), "a\nb\nc\n").unwrap();

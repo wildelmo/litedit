@@ -48,6 +48,7 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | `Ctrl+G` | Go to line |
 | `Ctrl+Shift+G` | Markdown: go to heading (outline list) |
 | `Alt+Left` / `Alt+Right` | Back / forward through the places you've been |
+| `1` / `0` / double-click (picture tab) | Actual size / fit to window / toggle; drag or wheel pans |
 | `Ctrl+Shift+V` | Markdown: side-by-side live preview |
 | `Ctrl+E` | Markdown: switch preview ↔ editing |
 | Click a task checkbox in the preview | Tick / untick it (`Ctrl+Z` undoes; `Ctrl+S` saves) |
