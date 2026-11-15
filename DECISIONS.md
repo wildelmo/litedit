@@ -28,6 +28,20 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-038 Markdown preview: only up to 1 MiB, 100,000 lines, 30,000 blocks
+Larger markdown files open in source view with a status-bar notice; Ctrl+E
+previews again once the file is small enough. Blocks are counted at every
+level (list items and table cells included). Why: the preview shapes the
+whole document at once, which costs about 300 bytes of memory per byte of
+text plus about 3.5 KB per block (Linux, release). Without a limit one
+million headings took 8 s and 3.4 GB, and a 16 MB file of headings ran out
+of memory. Just under the limits the worst files take about 1 s and under
+500 MB (29,000 list items: 1.05 s / 477 MB; 1 MB of prose: 0.8 s / 320 MB).
+A book of about 1 MB still previews; a 3 MB one, or a changelog with more
+than about 15,000 entries, opens as source. **To review:** raising the byte
+limit to 2 MiB would preview 2 MB of prose at about 600–850 MB. The real
+fix is to shape only the part near the screen, which is not built.
+
 ### D-037 Restoring tabs: one per file, at most 512 MB together
 A session or workspace restore opens each file once (paths compared as text:
 `.` and `..` resolved, case and slash style ignored on Windows) and at most

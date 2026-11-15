@@ -15,7 +15,7 @@ use crate::links::{LinkTarget, classify};
 use crate::markdown::layout::{
     Element, ImgInfo, Layout, LayoutCtx, META_CODE, layout, link_from_meta,
 };
-use crate::markdown::parse::{Block, BlockKind, Inline, MdDoc, parse};
+use crate::markdown::parse::{Block, BlockKind, Budget, Inline, MdDoc, parse_within};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
@@ -33,7 +33,7 @@ pub fn is_markdown(path: &Path) -> bool {
         })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
     Preview,
     Source,
@@ -45,6 +45,9 @@ enum Mode {
 /// after the last edit before refreshing the side-by-side preview.
 const LIVE_DEBOUNCE: Duration = Duration::from_millis(180);
 const LIVE_DEBOUNCE_MIN_BYTES: usize = 30_000;
+
+/// Shown in the status bar while the preview is refused for size.
+pub const TOO_LARGE: &str = "This file is too large to preview; showing the source";
 
 /// Most matches listed by find in the preview.
 const MAX_PREVIEW_MATCHES: usize = 20_000;
@@ -115,19 +118,27 @@ pub struct MarkdownView {
     anchor_memo: (usize, u32),
     /// Where the preview was before a `#heading` link scrolled it.
     jump_from: Option<ViewPos>,
+    /// Whole-document limits of the preview.
+    budget: Budget,
+    /// The text of `md_version` is over `budget`: `md` is empty and the
+    /// view stays in source mode.
+    md_over: bool,
 }
 
 impl MarkdownView {
     pub fn new(doc: Document) -> Self {
+        Self::with_budget(doc, Budget::default())
+    }
+
+    /// A view whose preview has the given whole-document limits.
+    pub fn with_budget(doc: Document, budget: Budget) -> Self {
         let mut editor = CodeView::new(doc);
         editor.wrap = true; // prose reads better wrapped (D-022)
-        let md_text = crate::text::sanitize(&editor.doc.buf.to_text_lf()).into_owned();
-        let md = parse(&md_text);
         let md_version = editor.doc.version();
-        let v = Self {
+        let mut v = Self {
             editor,
-            md,
-            md_text,
+            md: MdDoc::default(),
+            md_text: String::new(),
             md_version,
             layout: None,
             images: ImageStore::new(),
@@ -151,10 +162,91 @@ impl MarkdownView {
             restore_anchor: None,
             anchor_memo: (0, 0),
             jump_from: None,
+            budget,
+            md_over: false,
         };
+        v.parse_current();
         // Images are requested when the page is first laid out (drawn), so
         // tabs that were never shown hold no decoded pictures.
         v
+    }
+
+    /// Whether the editor's text passes the cheap size check (before any
+    /// copy or parse).
+    fn source_fits(&self) -> bool {
+        let buf = &self.editor.doc.buf;
+        if buf.line_count() > self.budget.lines {
+            return false;
+        }
+        // Lines joined with '\n' (no newline after the last one).
+        let mut bytes = buf.line_count().saturating_sub(1);
+        for l in buf.lines() {
+            bytes = bytes.saturating_add(l.len());
+            if bytes > self.budget.bytes {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Parse the editor's text into `md` within the budget. Over it, `md`
+    /// and `md_text` are emptied and the view goes to source mode (the
+    /// status bar says why). The caller has dropped the old layout.
+    fn parse_current(&mut self) {
+        self.md_version = self.editor.doc.version();
+        let parsed = if self.source_fits() {
+            let text = crate::text::sanitize(&self.editor.doc.buf.to_text_lf()).into_owned();
+            parse_within(&text, &self.budget).ok().map(|md| (text, md))
+        } else {
+            None
+        };
+        match parsed {
+            Some((text, md)) => {
+                self.md_text = text;
+                self.md = md;
+                self.md_over = false;
+            }
+            None => {
+                self.md_text = String::new();
+                self.md = MdDoc::default();
+                self.refuse_preview();
+            }
+        }
+    }
+
+    /// The document is too big to preview: forget what was built for it and
+    /// show the source (text, caret and undo are the editor's and stay).
+    fn refuse_preview(&mut self) {
+        self.md_over = true;
+        if self.layout.is_some() {
+            self.drop_layout();
+        }
+        self.last_shape = None;
+        self.sel = None;
+        self.selecting = false;
+        self.hover_link = None;
+        self.pfind = None;
+        self.pending_scroll_line = None;
+        self.mode = Mode::Source;
+    }
+
+    /// Switch to preview or side by side unless the document is over the
+    /// budget (then it stays in source, with `TOO_LARGE` in the status
+    /// bar). True if switched.
+    fn enter_preview_mode(&mut self, mode: Mode) -> bool {
+        self.sync_preview();
+        if self.md_over {
+            self.refuse_preview();
+            return false;
+        }
+        self.mode = mode;
+        true
+    }
+
+    /// Whether the preview is refused for size (tests).
+    #[cfg(test)]
+    pub fn over_budget(&self) -> bool {
+        self.md_over
     }
 
     /// Every image source in the document.
@@ -408,14 +500,20 @@ impl MarkdownView {
         }
         // Before the text is replaced: the position is in terms of it.
         self.drop_layout();
-        self.md_text = crate::text::sanitize(&self.editor.doc.buf.to_text_lf()).into_owned();
-        self.md = parse(&self.md_text);
-        self.md_version = self.editor.doc.version();
+        // Not two copies of the text (and its tree) at once.
+        self.md_text = String::new();
+        self.md = MdDoc::default();
+        self.parse_current();
         self.last_shape = None;
         self.scaled.clear();
     }
 
-    fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) -> &Layout {
+    /// Lay the preview out for `width` if needed. A document whose layout
+    /// goes over the budget is refused like one whose parse did.
+    fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) {
+        if self.md_over {
+            return;
+        }
         let k = ctx.scale * ctx.zoom;
         let key = (width, k.to_bits(), self.images_version);
         if self.layout.as_ref().map(|(k, _)| *k) != Some(key) {
@@ -426,8 +524,16 @@ impl MarkdownView {
                 mono: ctx.fonts.mono.clone(),
                 fonts: &mut ctx.fonts.system,
                 k,
+                max_elements: self.budget.max_elements(),
             };
             let l = layout(&self.md, &mut lctx, width as f32);
+            if l.over_budget {
+                drop(l);
+                self.refuse_preview();
+                self.md = MdDoc::default();
+                self.md_text = String::new();
+                return;
+            }
             // Keep a selection across relayouts that only change sizes (image
             // loaded, window resized): same elements, same order.
             let same_shape = self.last_shape == Some(l.elements.len());
@@ -438,7 +544,6 @@ impl MarkdownView {
             self.layout_gen += 1;
             self.layout = Some((key, l));
         }
-        &self.layout.as_ref().expect("just laid out").1
     }
 
     fn content_height(&self) -> f32 {
@@ -894,12 +999,16 @@ impl MarkdownView {
             }
             Mode::Source | Mode::Split => {
                 let line = self.editor.top_line(ctx);
-                self.sync_preview();
+                if !self.enter_preview_mode(Mode::Preview) {
+                    return;
+                }
                 // Lay out now so the scroll position can be mapped.
                 let w = self.last_rect.w.max(1);
                 self.ensure_layout(w, ctx);
+                if self.md_over {
+                    return;
+                }
                 self.scroll_to_source_line(line);
-                self.mode = Mode::Preview;
             }
         }
     }
@@ -1290,6 +1399,9 @@ fn frect(x: f32, y: f32, w: f32, h: f32) -> Rect {
 impl View for MarkdownView {
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         self.last_rect = rect;
+        let outer_clip = canvas.set_clip(rect);
+        canvas.set_clip(outer_clip);
+        let mode = self.mode;
         match self.mode {
             Mode::Preview => {
                 let (page, bar) = self.preview_rects(rect, ctx);
@@ -1319,6 +1431,13 @@ impl View for MarkdownView {
                 }
             }
         }
+        if self.mode != mode {
+            // The preview was refused while drawing (the text grew over the
+            // budget): this frame shows the source instead.
+            canvas.set_clip(outer_clip);
+            self.last_rect = rect;
+            self.editor.render(canvas, rect, ctx);
+        }
     }
 
     fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
@@ -1346,11 +1465,11 @@ impl View for MarkdownView {
             && mods.ctrl
             && mods.shift
         {
-            self.mode = if self.mode == Mode::Split {
-                Mode::Source
+            if self.mode == Mode::Split {
+                self.mode = Mode::Source;
             } else {
-                Mode::Split
-            };
+                self.enter_preview_mode(Mode::Split);
+            }
             self.followed_line = usize::MAX;
             return true;
         }
@@ -1474,7 +1593,17 @@ impl View for MarkdownView {
             Mode::Source => {
                 let mut s = self.editor.status();
                 s.insert(0, "Markdown source".into());
-                s.insert(1, "Ctrl+E: preview".into());
+                // Over the budget the notice takes the hint's place (it
+                // stays until the text is small enough and Ctrl+E is used).
+                s.insert(
+                    1,
+                    if self.md_over {
+                        TOO_LARGE
+                    } else {
+                        "Ctrl+E: preview"
+                    }
+                    .into(),
+                );
                 s
             }
         };
@@ -1569,6 +1698,11 @@ impl View for MarkdownView {
 
     fn headings(&mut self) -> Option<Vec<(u8, String, usize)>> {
         self.sync_preview();
+        if self.md_over {
+            // Too big to parse: a line scan finds the `#` headings.
+            let lines = self.editor.doc.buf.lines().iter().map(String::as_str);
+            return Some(crate::markdown::parse::scan_headings(lines));
+        }
         let text = self.md_text.as_bytes();
         Some(
             crate::markdown::parse::headings(&self.md)
@@ -1618,11 +1752,15 @@ impl View for MarkdownView {
         if self.position() == Some(pos) {
             return;
         }
-        self.mode = match pos.mode {
-            1 => Mode::Source,
-            2 => Mode::Split,
-            _ => Mode::Preview,
-        };
+        match pos.mode {
+            1 => self.mode = Mode::Source,
+            2 => {
+                self.enter_preview_mode(Mode::Split);
+            }
+            _ => {
+                self.enter_preview_mode(Mode::Preview);
+            }
+        }
         self.editor.restore_editor_pos(pos);
         self.pending_scroll_line = None;
         self.restore_anchor = Some((pos.ptop, pos.poff.min(ViewPos::MAX_POFF)));
@@ -2097,6 +2235,226 @@ mod tests {
         assert_eq!(v.status()[0], "Markdown preview");
         assert!(v.scroll.y > 1000.0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn budget(bytes: usize, lines: usize, blocks: usize) -> Budget {
+        Budget {
+            bytes,
+            lines,
+            blocks,
+        }
+    }
+
+    fn view_with(text: &str, dir: &Path, b: Budget) -> MarkdownView {
+        let path = dir.join("doc.md");
+        std::fs::write(&path, text).unwrap();
+        MarkdownView::with_budget(Document::open(&path).unwrap(), b)
+    }
+
+    fn ctrl(c: char, shift: bool) -> Input {
+        Input::Key {
+            key: Key::Char(c),
+            mods: crate::input::Mods {
+                ctrl: true,
+                shift,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn shows_too_large(v: &MarkdownView) -> bool {
+        v.mode == Mode::Source
+            && v.status()[0] == "Markdown source"
+            && v.status().iter().any(|s| s == TOO_LARGE)
+    }
+
+    /// Twenty headings: 81 bytes, 22 lines (two empty at the end), 20 blocks.
+    fn twenty() -> String {
+        "# x\n".repeat(20) + "\n"
+    }
+
+    #[test]
+    fn over_budget_documents_open_in_source() {
+        let dir = tmpdir("budget-open");
+        let mut h = Harness::new();
+        let text = twenty();
+        for (b, over) in [
+            (budget(80, 1000, 1000), true), // bytes
+            (budget(1000, 21, 1000), true), // lines
+            (budget(1000, 1000, 19), true), // blocks
+            (budget(81, 22, 20), false),    // just within all three
+            (budget(1000, 1000, 1000), false),
+        ] {
+            let mut v = view_with(&text, &dir, b);
+            assert_eq!(v.over_budget(), over, "{b:?}");
+            if over {
+                assert!(shows_too_large(&v), "{b:?}");
+                // Nothing was kept from the parse.
+                assert!(v.md.blocks.is_empty() && v.md_text.is_empty());
+            } else {
+                assert_eq!(v.md.blocks.len(), 20);
+                assert_eq!(v.status()[0], "Markdown preview");
+            }
+            render(&mut v, &mut h, 600, 400);
+            assert_eq!(v.layout.is_some(), !over, "{b:?}");
+            assert_eq!(v.over_budget(), over);
+            // The source is all there and editable.
+            assert_eq!(v.text().unwrap(), text);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_document_within_the_budget_renders_as_before() {
+        let dir = tmpdir("budget-same");
+        let src = std::fs::read_to_string(crate::tests::fixture("sample.md")).unwrap();
+        let mut h = Harness::new();
+        let pixels = |v: &mut MarkdownView, h: &mut Harness| {
+            let (w, hh) = (700u32, 900u32);
+            let mut buf = vec![0u32; (w * hh) as usize];
+            let mut c = Canvas::new(&mut buf, w, hh);
+            let rect = c.bounds();
+            v.render(&mut c, rect, &mut h.ctx());
+            buf
+        };
+        let mut plain = view(&src, &dir);
+        let blocks = crate::markdown::parse::parse(&src).blocks.len();
+        assert!(blocks > 10);
+        let lines = src.split('\n').count();
+        // Exactly at every limit (blocks counted at all levels are more
+        // than the top-level ones; find the smallest budget that fits).
+        let mut n = blocks;
+        while parse_within(&src, &budget(src.len(), lines, n)).is_err() {
+            n += 1;
+        }
+        let mut tight = view_with(&src, &dir, budget(src.len(), lines, n));
+        assert!(!tight.over_budget());
+        assert_eq!(pixels(&mut plain, &mut h), pixels(&mut tight, &mut h));
+        let over = view_with(&src, &dir, budget(src.len(), lines, n - 1));
+        assert!(over.over_budget());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_stays_refused_while_over_budget() {
+        let dir = tmpdir("budget-toggle");
+        let mut v = view_with(&twenty(), &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 600, 400);
+        let rect = v.last_rect;
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        assert!(v.handle(&ctrl('v', true), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        // A remembered position in preview or side by side mode.
+        let pos = |mode| ViewPos {
+            mode,
+            ptop: 3,
+            ..ViewPos::default()
+        };
+        for mode in [0, 2] {
+            v.restore_position(pos(mode));
+            assert!(shows_too_large(&v));
+            assert_eq!(v.position().unwrap().mode, 1);
+        }
+        // Hidden and shown again: still the source, nothing rebuilt.
+        v.on_hide();
+        assert!(!v.has_caches());
+        render(&mut v, &mut h, 600, 400);
+        assert!(shows_too_large(&v) && v.layout.is_none());
+        // Go to Heading still finds the headings (by a line scan).
+        let hs = v.headings().unwrap();
+        assert_eq!(hs.len(), 20);
+        assert_eq!(hs[5], (1, "x".to_string(), 5));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn growing_over_the_budget_switches_to_source_and_back() {
+        use crate::editor::buffer::Pos;
+        let dir = tmpdir("budget-grow");
+        let mut v = view_with("# a\n\ntext\n", &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        let rect = Rect::new(0, 0, 800, 500);
+        // Side by side, caret on the last line.
+        assert!(v.handle(&ctrl('v', true), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Split);
+        render(&mut v, &mut h, 800, 500);
+        assert!(v.layout.is_some());
+        let at = Pos::new(3, 0);
+        v.editor
+            .doc
+            .replace_ranges(vec![(at, at, "# b\n".repeat(12))]);
+        v.editor.text_changed(3);
+        v.editor.goto_line(2);
+        let before = v.snapshot().unwrap();
+        // The live preview refreshes at the next draw, which finds the
+        // document over the budget: the source takes the whole view.
+        render(&mut v, &mut h, 800, 500);
+        assert!(shows_too_large(&v));
+        assert!(v.layout.is_none() && v.md.blocks.is_empty());
+        assert_eq!(v.snapshot().unwrap(), before, "text and carets kept");
+        assert_eq!(v.last_rect, rect);
+        // Shrunk again: the preview comes back when asked for.
+        let end = v.editor.doc.buf.end();
+        v.editor.doc.replace_ranges(vec![(at, end, String::new())]);
+        v.editor.text_changed(3);
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Preview);
+        assert!(!v.over_budget());
+        assert!(!v.status().iter().any(|s| s == TOO_LARGE));
+        render(&mut v, &mut h, 800, 500);
+        assert!(v.layout.is_some());
+        // Undo in the preview brings the big text back: source again.
+        assert!(v.handle(&ctrl('z', false), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        assert!(v.text().unwrap().contains(&"# b\n".repeat(12)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reloading_into_an_over_budget_document() {
+        let dir = tmpdir("budget-reload");
+        let mut v = view_with("# small\n", &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 600, 400);
+        assert!(v.layout.is_some());
+        std::fs::write(dir.join("doc.md"), twenty()).unwrap();
+        assert!(v.reload(&mut h.ctx()));
+        assert!(shows_too_large(&v));
+        render(&mut v, &mut h, 600, 400);
+        assert!(v.layout.is_none());
+        assert_eq!(v.text().unwrap(), twenty());
+        // And back to a small file: the preview is available again.
+        std::fs::write(dir.join("doc.md"), "# small again\n").unwrap();
+        assert!(v.reload_discarding(&mut h.ctx()));
+        let rect = v.last_rect;
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Preview);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn layout_stops_at_its_element_budget() {
+        let doc = crate::markdown::parse::parse(&"para\n\n".repeat(100));
+        let mut h = Harness::new();
+        let images = HashMap::new();
+        let fonts = &mut h.fonts;
+        let mut lctx = LayoutCtx {
+            images: &images,
+            sans: fonts.sans.clone(),
+            mono: fonts.mono.clone(),
+            fonts: &mut fonts.system,
+            k: 1.0,
+            max_elements: 5,
+        };
+        let l = layout(&doc, &mut lctx, 600.0);
+        assert!(l.over_budget);
+        assert!(l.elements.len() <= 6, "{}", l.elements.len());
+        lctx.max_elements = 1000;
+        let l = layout(&doc, &mut lctx, 600.0);
+        assert!(!l.over_budget);
+        assert_eq!(l.elements.len(), 100);
     }
 
     #[test]

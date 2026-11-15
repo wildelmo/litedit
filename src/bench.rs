@@ -123,7 +123,30 @@ pub fn run(out: &Path, mut app: App) -> std::io::Result<()> {
     ));
     key(&mut app, "escape");
 
-    // 3. Wrapped markdown, 50k lines of prose.
+    // 3. Markdown preview of a document just under the preview budget
+    // (about 1 MB of short paragraphs and headings).
+    let near = dir.join("near-limit.md");
+    let doc: String = (0..12_000)
+        .map(|i| {
+            let h = if i % 40 == 0 { "## Section\n\n" } else { "" };
+            format!("{h}Paragraph {i} with enough words to wrap around the right edge.\n\n")
+        })
+        .collect();
+    std::fs::write(&near, &doc)?;
+    app.open(&near);
+    let t = Instant::now();
+    frame(&mut app, &mut buf, w, h);
+    rows.push((
+        "markdown preview near the size limit, first frame".into(),
+        format!(
+            "{:.0} ms ({:.2} MB)",
+            ms(t.elapsed()),
+            doc.len() as f64 / 1e6
+        ),
+    ));
+
+    // 4. Wrapped markdown, 50k lines of prose: over the preview budget, so
+    // it opens in source view.
     let md = dir.join("big.md");
     let prose: String = (0..50_000).map(|i| format!("Paragraph {i} with enough words to wrap around the right edge of the editor at least once.\n")).collect();
     std::fs::write(&md, &prose)?;
@@ -131,18 +154,16 @@ pub fn run(out: &Path, mut app: App) -> std::io::Result<()> {
     let t = Instant::now();
     frame(&mut app, &mut buf, w, h);
     rows.push((
-        "open 50k-line markdown preview, first frame".into(),
+        "open 50k-line markdown (too large to preview), first frame".into(),
         format!("{:.0} ms", ms(t.elapsed())),
     ));
-    key(&mut app, "ctrl+e");
-    frame(&mut app, &mut buf, w, h);
     let s = keystrokes(&mut app, 40, &mut buf, w, h);
     rows.push((
         "keystroke → frame, wrapped markdown source".into(),
         format!("avg {:.1} / p95 {:.1} / max {:.1} ms", s.avg, s.p95, s.max),
     ));
 
-    // 4. Quick open index and find in folder on a large folder.
+    // 5. Quick open index and find in folder on a large folder.
     let tree = dir.join("tree");
     let n_files = 25_000;
     for i in 0..n_files {

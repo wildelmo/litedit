@@ -1006,3 +1006,41 @@ fn a_refused_command_keeps_the_colours() {
     assert_eq!(done(&app), before);
     std::fs::remove_dir_all(dir).ok();
 }
+
+/// Markdown over the whole-document preview budget opens quickly in source
+/// view with a notice, whether it is big in bytes or only in blocks.
+#[test]
+fn markdown_too_large_to_preview_opens_in_source() {
+    use crate::view::markdown::TOO_LARGE;
+    let dir = tmp_dir("md-budget");
+    // A 60k-item list in 240 KB (only the block count is over), and 1.2 MB
+    // of headings (over in bytes and lines too).
+    let blocks = dir.join("blocks.md");
+    std::fs::write(&blocks, "- x\n".repeat(60_000)).unwrap();
+    let bytes = dir.join("bytes.md");
+    std::fs::write(&bytes, "# x\n".repeat(300_000)).unwrap();
+    let mut app = new_app();
+    for p in [&blocks, &bytes] {
+        let t = std::time::Instant::now();
+        app.open(p);
+        render_hash(&mut app, 800, 600);
+        let took = t.elapsed();
+        assert!(
+            took < Duration::from_secs(5),
+            "{} took {took:?}",
+            p.display()
+        );
+        let status = app.status_text();
+        assert!(status.starts_with("Markdown source"), "{status}");
+        assert!(status.contains(TOO_LARGE), "{status}");
+        // Ctrl+E keeps the source; editing works as in any file.
+        key(&mut app, "ctrl+e");
+        key(&mut app, "ctrl+end");
+        type_text(&mut app, "end");
+        render_hash(&mut app, 800, 600);
+        let status = app.status_text();
+        assert!(status.contains(TOO_LARGE), "{status}");
+        assert!(app.view_text().ends_with("\nend"));
+    }
+    std::fs::remove_dir_all(dir).ok();
+}

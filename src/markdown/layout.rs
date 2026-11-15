@@ -117,6 +117,9 @@ pub struct Layout {
     pub offsets: Vec<(usize, f32)>,
     /// Some text is not shown (very long code blocks are shortened).
     pub truncated: bool,
+    /// Layout stopped at `LayoutCtx::max_elements`: the document is too
+    /// big to preview and this layout is incomplete.
+    pub over_budget: bool,
 }
 
 /// What layout knows about an image source.
@@ -136,6 +139,9 @@ pub struct LayoutCtx<'a> {
     pub mono: String,
     /// Physical pixels per logical pixel, including zoom.
     pub k: f32,
+    /// Layout stops once it has made this many elements (see
+    /// `parse::Budget::max_elements`).
+    pub max_elements: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -272,6 +278,7 @@ struct Out {
     anchors: Vec<(String, f32)>,
     offsets: Vec<(usize, f32)>,
     truncated: bool,
+    over_budget: bool,
 }
 
 pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
@@ -287,6 +294,7 @@ pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
         anchors: Vec::new(),
         offsets: Vec::new(),
         truncated: false,
+        over_budget: false,
     };
     let y = layout_blocks(
         &doc.blocks,
@@ -304,6 +312,7 @@ pub fn layout(doc: &MdDoc, ctx: &mut LayoutCtx, view_width: f32) -> Layout {
         anchors: out.anchors,
         offsets: out.offsets,
         truncated: out.truncated,
+        over_budget: out.over_budget,
     }
 }
 
@@ -320,6 +329,10 @@ fn layout_blocks(
 ) -> f32 {
     let gap = ctx.px(14.0);
     for (i, block) in blocks.iter().enumerate() {
+        if out.elements.len() > ctx.max_elements {
+            out.over_budget = true;
+            break;
+        }
         if i > 0 {
             y += if depth > 0 && matches!(block.kind, BlockKind::List { .. }) {
                 ctx.px(4.0)

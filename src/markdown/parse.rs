@@ -13,6 +13,51 @@ use pulldown_cmark::{
 /// hostile file cannot make layout recurse without bound.
 pub const MAX_DEPTH: usize = 24;
 
+/// Whole-document preview budget (D-011 limits are per block). A document
+/// over any of these opens in source view; see `Budget`.
+pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
+pub const MAX_PREVIEW_LINES: usize = 100_000;
+pub const MAX_PREVIEW_BLOCKS: usize = 30_000;
+
+/// How much document the preview will take on. `bytes` and `lines` are
+/// checked on the source before parsing; `blocks` counts block-level
+/// elements while parsing (paragraphs, headings, code blocks, quotes,
+/// lists and list items, footnotes, tables, table rows and cells, rules,
+/// images), at every nesting level, and parsing stops at the first one
+/// over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budget {
+    pub bytes: usize,
+    pub lines: usize,
+    pub blocks: usize,
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            bytes: MAX_PREVIEW_BYTES,
+            lines: MAX_PREVIEW_LINES,
+            blocks: MAX_PREVIEW_BLOCKS,
+        }
+    }
+}
+
+impl Budget {
+    /// Most layout elements a document within this budget can need (a
+    /// block makes at most a few; long code blocks one per chunk of
+    /// lines). Layout stops past this, as a second line of defence.
+    pub fn max_elements(&self) -> usize {
+        self.blocks
+            .saturating_mul(3)
+            .saturating_add(self.lines / 16)
+            .saturating_add(64)
+    }
+}
+
+/// The document is too big to preview (`parse_within` stopped early).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverBudget;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
     pub bold: bool,
@@ -194,6 +239,9 @@ struct Builder {
     html: Option<(String, usize)>,
     links: Vec<String>,
     in_metadata: bool,
+    /// Block-level elements seen so far, and the most allowed.
+    blocks: usize,
+    max_blocks: usize,
 }
 
 fn heading_level(l: HeadingLevel) -> u8 {
@@ -276,8 +324,10 @@ pub fn html_to_text(html: &str) -> String {
 }
 
 impl Builder {
-    fn new() -> Self {
+    fn new(max_blocks: usize) -> Self {
         Self {
+            blocks: 0,
+            max_blocks,
             stack: vec![Container::Root(Vec::new())],
             pushed: Vec::new(),
             inline: None,
@@ -460,7 +510,36 @@ impl Builder {
         }
     }
 
+    /// Whether the document went over its block budget (parsing stops).
+    fn over(&self) -> bool {
+        self.blocks > self.max_blocks
+    }
+
     fn event(&mut self, ev: Event, offset: usize) {
+        if matches!(
+            ev,
+            Event::Rule
+                | Event::Start(
+                    Tag::Paragraph
+                        | Tag::Heading { .. }
+                        | Tag::BlockQuote(_)
+                        | Tag::CodeBlock(_)
+                        | Tag::HtmlBlock
+                        | Tag::List(_)
+                        | Tag::Item
+                        | Tag::FootnoteDefinition(_)
+                        | Tag::Table(_)
+                        | Tag::TableHead
+                        | Tag::TableRow
+                        | Tag::TableCell
+                        | Tag::Image { .. }
+                )
+        ) {
+            self.blocks += 1;
+            if self.over() {
+                return;
+            }
+        }
         if self.in_metadata {
             if matches!(ev, Event::End(TagEnd::MetadataBlock(_))) {
                 self.in_metadata = false;
@@ -720,18 +799,95 @@ impl Builder {
     }
 }
 
+/// Parse with no whole-document budget (tests and small inputs).
+#[cfg(test)]
 pub fn parse(src: &str) -> MdDoc {
+    let unlimited = Budget {
+        bytes: usize::MAX,
+        lines: usize::MAX,
+        blocks: usize::MAX,
+    };
+    parse_within(src, &unlimited).expect("no budget")
+}
+
+/// Parse `src` unless it is over `budget`: too many bytes or lines (checked
+/// first, nothing is parsed), or too many block-level elements (parsing
+/// stops at the first one over, so nothing past the budget is built).
+pub fn parse_within(src: &str, budget: &Budget) -> Result<MdDoc, OverBudget> {
+    parse_counted(src, budget).0
+}
+
+/// `parse_within`, plus how many block-level elements were seen (tests
+/// check that parsing stopped right at the budget).
+fn parse_counted(src: &str, budget: &Budget) -> (Result<MdDoc, OverBudget>, usize) {
+    if src.len() > budget.bytes {
+        return (Err(OverBudget), 0);
+    }
+    let lines = src.bytes().filter(|b| *b == b'\n').count() + 1;
+    if lines > budget.lines {
+        return (Err(OverBudget), 0);
+    }
     let opts = Options::ENABLE_TABLES
         | Options::ENABLE_FOOTNOTES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_GFM
         | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
-    let mut b = Builder::new();
+    let mut b = Builder::new(budget.blocks);
     for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
         b.event(ev, range.start);
+        if b.over() {
+            return (Err(OverBudget), b.blocks);
+        }
     }
-    b.finish()
+    let seen = b.blocks;
+    (Ok(b.finish()), seen)
+}
+
+/// ATX headings (`# Title`) found by scanning lines, skipping fenced code:
+/// Go to Heading for a document too large to parse. (level, text, line).
+pub fn scan_headings<'a>(lines: impl IntoIterator<Item = &'a str>) -> Vec<(u8, String, usize)> {
+    let mut out = Vec::new();
+    let mut fence: Option<(u8, usize)> = None;
+    for (i, line) in lines.into_iter().enumerate() {
+        let t = line.trim_start_matches(' ');
+        if line.len() - t.len() > 3 {
+            continue;
+        }
+        let fc = t.bytes().next().unwrap_or(0);
+        if fc == b'`' || fc == b'~' {
+            let n = t.bytes().take_while(|b| *b == fc).count();
+            if n >= 3 {
+                match fence {
+                    None => fence = Some((fc, n)),
+                    Some((c, m)) if c == fc && n >= m && t[n..].trim().is_empty() => fence = None,
+                    _ => {}
+                }
+                continue;
+            }
+        }
+        if fence.is_some() {
+            continue;
+        }
+        let level = t.bytes().take_while(|b| *b == b'#').count();
+        if !(1..=6).contains(&level) {
+            continue;
+        }
+        let rest = &t[level..];
+        if !(rest.is_empty() || rest.starts_with([' ', '\t'])) {
+            continue;
+        }
+        let rest = rest.trim();
+        let rest = rest.trim_end_matches('#');
+        let text = rest.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !text.is_empty() {
+            out.push((level as u8, text, i));
+            if out.len() >= 5000 {
+                break;
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -854,6 +1010,110 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    fn budget(bytes: usize, lines: usize, blocks: usize) -> Budget {
+        Budget {
+            bytes,
+            lines,
+            blocks,
+        }
+    }
+
+    #[test]
+    fn budget_bytes_and_lines_are_checked_before_parsing() {
+        let src = "# a\n\nsome text\n";
+        let roomy = budget(1000, 1000, 1000);
+        assert_eq!(parse_within(src, &roomy), Ok(parse(src)));
+        assert_eq!(
+            parse_counted(src, &budget(src.len() - 1, 1000, 1000)),
+            (Err(OverBudget), 0)
+        );
+        assert!(parse_within(src, &budget(src.len(), 1000, 1000)).is_ok());
+        // Four lines (the last one empty).
+        assert_eq!(
+            parse_counted(src, &budget(1000, 3, 1000)),
+            (Err(OverBudget), 0)
+        );
+        assert!(parse_within(src, &budget(1000, 4, 1000)).is_ok());
+    }
+
+    #[test]
+    fn parsing_stops_at_the_block_budget() {
+        // Small in bytes, enormous in blocks: nothing past the budget is
+        // built.
+        let src = "# x\n".repeat(200_000);
+        let b = budget(usize::MAX, usize::MAX, 100);
+        assert_eq!(parse_counted(&src, &b), (Err(OverBudget), 101));
+        let exact = "# x\n".repeat(100);
+        let (r, seen) = parse_counted(&exact, &b);
+        assert_eq!(seen, 100);
+        assert_eq!(r.unwrap().blocks.len(), 100);
+        assert!(parse_within(&"# x\n".repeat(101), &b).is_err());
+    }
+
+    #[test]
+    fn nested_blocks_count() {
+        let unlimited = budget(usize::MAX, usize::MAX, usize::MAX);
+        let count = |src: &str| parse_counted(src, &unlimited).1;
+        // Three quotes and the paragraph inside.
+        assert_eq!(count("> > > x\n"), 4);
+        // List, two items, nested list and its item (tight: no paragraphs).
+        assert_eq!(count("- a\n- b\n  - c\n"), 5);
+        // Table, head, two rows, 2 × 3 cells.
+        assert_eq!(count("| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"), 10);
+        // Reference paragraph, footnote definition and its paragraph.
+        assert_eq!(count("x[^1]\n\n[^1]: note\n"), 3);
+        // Paragraph and two images.
+        assert_eq!(count("![a](a.png) ![b](b.png)\n"), 3);
+        // Containers flattened past MAX_DEPTH still count.
+        let deep = ">".repeat(100) + " x\n";
+        assert_eq!(count(&deep), 101);
+        assert!(parse_within(&deep, &budget(usize::MAX, usize::MAX, 100)).is_err());
+        for (src, n) in [("> > > x\n", 4), ("- a\n- b\n  - c\n", 5)] {
+            assert!(parse_within(src, &budget(usize::MAX, usize::MAX, n)).is_ok());
+            assert!(parse_within(src, &budget(usize::MAX, usize::MAX, n - 1)).is_err());
+        }
+    }
+
+    #[test]
+    fn default_budget_previews_ordinary_documents() {
+        let sample = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/sample.md"
+        ))
+        .unwrap();
+        assert_eq!(
+            parse_within(&sample, &Budget::default()),
+            Ok(parse(&sample))
+        );
+        // A long book: 940 paragraphs of ~1 KB plus chapter headings.
+        let para = "A sentence of ordinary prose that goes on for a while. ".repeat(18);
+        let book: String = (0..940)
+            .map(|i| {
+                let h = if i % 30 == 0 { "# Chapter\n\n" } else { "" };
+                format!("{h}{para}\n\n")
+            })
+            .collect();
+        assert!(book.len() > 900_000);
+        assert!(parse_within(&book, &Budget::default()).is_ok());
+    }
+
+    #[test]
+    fn scan_headings_skips_code_and_non_headings() {
+        let src = "# One\n#nope\n  ## Two ##\n```\n# not a heading\n````\n\
+                   ~~~md\n# also not\n```\n~~~\n    # indented code\n###### Six\n####### seven\n#\n";
+        let got = scan_headings(src.lines());
+        assert_eq!(
+            got,
+            vec![
+                (1, "One".to_string(), 0),
+                (2, "Two".to_string(), 2),
+                (6, "Six".to_string(), 11),
+            ]
+        );
+        let many = "# h\n".repeat(6000);
+        assert_eq!(scan_headings(many.lines()).len(), 5000);
     }
 
     #[test]

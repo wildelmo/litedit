@@ -220,7 +220,7 @@ fixed first (S5.0).
 - [x] S8.2 Line limit counts lone-CR line endings
 - [x] S8.3 Markdown pictures: one budget per document, one spelling per picture
 - [x] S8.4 Workspace restore: total size budget, one tab per file
-- [ ] S8.5 Markdown preview: budget for very large documents
+- [x] S8.5 Markdown preview: budget for very large documents
 - [x] S8.6 Links to network shares are not followed (a: gaps in the existing check; b: links, workspaces and tree entries)
 - [x] S8.7 GitHub Actions pinned to commits
 - [ ] S8.8 One-window pipe: another local user answering first (owner is handling this)
@@ -234,6 +234,17 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S8.5 Markdown preview size budget (sub-agent branch, reviewed
+  and merged). Files over 1 MiB, 100,000 lines or 30,000 blocks open in
+  source view with "This file is too large to preview; showing the source".
+  Bytes and lines are checked before parsing, the parser stops at the first
+  block over the budget, and layout has a backstop. The same rule holds for
+  edits, undo, reload, restore and headless runs; Ctrl+E previews again once
+  the file is small enough. Measured on Linux (release): one million
+  headings went from 8 s / 3.4 GB to 0.2 s in source; the worst file under
+  the limits takes about 1 s and under 500 MB (D-038, with the figures and
+  the choice of 1 MiB to review). Windows timings are not measured. This
+  closes the scan's findings except S8.8 and S8.9, which are with the owner.
 - 2026-11-15 — S8.4 + S8.6b (sub-agent branch, reviewed and merged, one
   correction). Restoring a session or a workspace opens each file once,
   however its path is spelled, and at most 512 MB of files: the active tab
