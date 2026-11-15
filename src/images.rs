@@ -34,6 +34,12 @@ pub enum ImgState {
     Loading,
     Ready(Arc<Decoded>),
     Failed(String),
+    /// Pixels were dropped while the tab was hidden; the natural size is
+    /// kept so the page layout doesn't change. `reloading`: asked again.
+    Unloaded {
+        natural: (u32, u32),
+        reloading: bool,
+    },
 }
 
 type Done = (PathBuf, Result<Decoded, String>);
@@ -86,6 +92,24 @@ impl ImageStore {
 
     /// Current state of `path`, starting a load if it was never requested.
     pub fn get(&mut self, path: &Path) -> ImgState {
+        if let Some(ImgState::Unloaded {
+            natural,
+            reloading: false,
+        }) = self.map.get(path)
+        {
+            // Shown again: decode in the background, keep the size meanwhile.
+            let natural = *natural;
+            let sent = self.worker().send(path.to_path_buf()).is_ok() && self.rx.is_some();
+            if sent {
+                self.in_flight += 1;
+            }
+            let s = ImgState::Unloaded {
+                natural,
+                reloading: sent,
+            };
+            self.map.insert(path.to_path_buf(), s.clone());
+            return s;
+        }
         if let Some(s) = self.map.get(path) {
             return s.clone();
         }
@@ -118,6 +142,31 @@ impl ImageStore {
 
     pub fn pending(&self) -> bool {
         self.in_flight > 0
+    }
+
+    /// Drop decoded pixels (the tab is hidden), remembering each image's
+    /// size. Returns how many images were unloaded.
+    pub fn unload(&mut self) -> usize {
+        let mut n = 0;
+        for s in self.map.values_mut() {
+            if let ImgState::Ready(d) = s {
+                *s = ImgState::Unloaded {
+                    natural: d.natural,
+                    reloading: false,
+                };
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// Decoded images currently held in memory (tests).
+    #[cfg(test)]
+    pub fn loaded(&self) -> usize {
+        self.map
+            .values()
+            .filter(|s| matches!(s, ImgState::Ready(_)))
+            .count()
     }
 
     /// Forget everything (after the document reloads, files may have changed).

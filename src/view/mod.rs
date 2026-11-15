@@ -75,6 +75,25 @@ pub trait View {
     /// Called when metrics change (DPI scale or zoom).
     fn metrics_changed(&mut self) {}
 
+    /// The tab is no longer on screen: free everything that can be rebuilt
+    /// (shaped text, laid-out previews, decoded images). Text, undo history,
+    /// scroll position and selections stay.
+    fn on_hide(&mut self) {
+        self.metrics_changed();
+    }
+
+    /// Did drawing start background work (e.g. decoding an image again)
+    /// that needs `tick` to be called until it finishes?
+    fn has_background_work(&self) -> bool {
+        false
+    }
+
+    /// Test hook: does this view hold rebuildable caches right now?
+    #[cfg(test)]
+    fn has_caches(&self) -> bool {
+        false
+    }
+
     /// Called after the palette changed: drop everything holding colours.
     fn theme_changed(&mut self) {
         self.metrics_changed();

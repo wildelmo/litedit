@@ -1697,6 +1697,9 @@ fn print_scene_hashes() {
 /// Render after `steps`, settling first.
 fn settled_hash(app: &mut App) -> u64 {
     app.settle(Duration::from_secs(5));
+    // Drawing can start background work (images decoded again).
+    render_hash(app, 1000, 700);
+    app.settle(Duration::from_secs(5));
     render_hash(app, 1000, 700)
 }
 
@@ -3300,4 +3303,45 @@ fn saving_over_a_file_that_became_unreadable_asks_first() {
     key(&mut app, "escape");
     assert_eq!(std::fs::read(&f).unwrap(), b"other program\0data\n");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn hidden_tabs_free_their_caches_and_come_back_identical() {
+    let mut app = new_app();
+    app.open(&fixture("sample.md")); // has an image
+    app.open(&fixture("sample.rs"));
+    app.open(&fixture("crlf.txt"));
+    settled_hash(&mut app);
+    // Visit each tab once and remember its picture.
+    key(&mut app, "alt+1");
+    let first = settled_hash(&mut app);
+    key(&mut app, "alt+2");
+    let second = settled_hash(&mut app);
+    assert_eq!(
+        app.tabs_with_caches(),
+        [false, true, false],
+        "only the visible tab holds caches"
+    );
+    // Back to each: exactly the same picture (scroll, colours, image).
+    key(&mut app, "alt+1");
+    assert_eq!(settled_hash(&mut app), first);
+    key(&mut app, "alt+2");
+    assert_eq!(settled_hash(&mut app), second);
+    assert_eq!(app.tabs_with_caches(), [false, true, false]);
+    // In a split, the tab shown on the other side stays ready.
+    key(&mut app, "ctrl+alt+right"); // sample.rs right
+    key(&mut app, "ctrl+1");
+    settled_hash(&mut app);
+    let c = app.tabs_with_caches();
+    assert_eq!(c.iter().filter(|x| **x).count(), 2, "{c:?}");
+    // Scrolled previews return to the same place.
+    key(&mut app, "alt+1");
+    for _ in 0..3 {
+        key(&mut app, "pagedown");
+    }
+    let scrolled = settled_hash(&mut app);
+    key(&mut app, "alt+2");
+    settled_hash(&mut app);
+    key(&mut app, "alt+1");
+    assert_eq!(settled_hash(&mut app), scrolled);
 }

@@ -1421,6 +1421,11 @@ impl View for CodeView {
         self.metrics_changed();
     }
 
+    #[cfg(test)]
+    fn has_caches(&self) -> bool {
+        !self.cache.is_empty()
+    }
+
     fn is_dirty(&self) -> bool {
         self.doc.is_dirty()
     }

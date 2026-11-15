@@ -186,12 +186,29 @@ fixed first (S5.0).
        setting, never markdown), convert indentation, LF/CRLF, F11 full screen
 - [x] S5.6 Full lite-xl command audit → docs/LITE-XL-COMPARISON.md
 
+## Epic 6 — Reader first (owner: reading files, many files, compare, small edits, small memory)
+
+- [x] S6.1 Hidden tabs free their rendered caches (30 viewed markdown tabs:
+       272 MB → 36 MB peak on Linux; 30 code tabs 69 → 55 MB)
+- [ ] S6.2 Go to heading (Ctrl+Shift+G): list of the document's headings
+- [ ] S6.3 Click a task checkbox in the preview to tick / untick it
+- [ ] S6.4 Find in the preview (Ctrl+F stays in the preview)
+- [ ] S6.5 Peek tab: single click in the tree reuses one temporary tab
+- [ ] S6.6 One window: a second launch opens its files in the running window
+- [ ] S6.7 "Open with" registration for markdown (explicit command)
+
 ---
 
 ## Progress log
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.1: View::on_hide; App::trim_hidden_tabs sweeps before every
+  frame (covers tab switch, split moves, closes, workspace restore; the tab
+  shown on the other side of a split is kept). Markdown drops layout, scaled
+  and decoded images (sizes kept → no jump; decoded again in the background
+  when shown, via View::has_background_work). Test with a cache hook,
+  mutation-checked; Windows CI gate: 12 viewed markdown tabs under 80 MB.
 - 2026-11-14 — Independent review of c8b735f..HEAD; fixed: (1) split view: a
   click on the other side that raised that tab's disk question could land on
   another tab and the answer went to it (now bound to its tab, click stops);

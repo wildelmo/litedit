@@ -230,6 +230,12 @@ pub fn screenshot(app: &mut App, size: (u32, u32), out: &Path) -> std::io::Resul
         let mut canvas = Canvas::new(&mut buf, w, h);
         app.render(&mut canvas);
     }
+    // Drawing can start background work (images); finish it and draw again.
+    if app.has_pending_work() {
+        app.settle(std::time::Duration::from_secs(10));
+        let mut canvas = Canvas::new(&mut buf, w, h);
+        app.render(&mut canvas);
+    }
     let mut rgb = Vec::with_capacity(buf.len() * 3);
     for p in &buf {
         rgb.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);

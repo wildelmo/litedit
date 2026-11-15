@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Much less memory with many tabs: tabs you aren't looking at free their
+  rendered previews and images (30 viewed markdown tabs: 272 MB → 36 MB in
+  a test) and rebuild instantly when you return.
 - More editing commands: Ctrl+Enter / Ctrl+Shift+Enter (new line below /
   above), Ctrl+J (join lines), Ctrl+Shift+Up/Down (add caret), upper / lower
   case, trim trailing whitespace (also on save, setting

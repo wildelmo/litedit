@@ -22,6 +22,9 @@ clone lives outside the repo; copy architecture/behaviour, credit in `NOTICE`.
   thread-local UI state: switch with `App::set_light` / settings, which call
   `View::theme_changed` / `metrics_changed` on every tab. Anything that caches
   colours must drop them in `theme_changed`.
+- **Hidden tabs hold no rebuildable caches.** Anything a view can rebuild
+  (shaped text, layouts, decoded images) must be freed in `View::on_hide`;
+  drawing that starts background work reports `has_background_work`.
 - **Headless modes never read user settings** (`--screenshot`, `--script`,
   `--bench`, tests); use `--theme light` or script `theme light`.
 - Markdown: `pulldown-cmark`. Syntax: `syntect` with fancy-regex (pure Rust).

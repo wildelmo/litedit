@@ -125,6 +125,8 @@ struct TabSlot {
     view: Option<Box<dyn View>>,
     /// Editor group: 0 = left (or only), 1 = right (split view).
     group: u8,
+    /// Its rebuildable caches were freed since it was last on screen.
+    trimmed: bool,
 }
 
 /// The editor group that doesn't have focus (split view).
@@ -176,6 +178,7 @@ impl App {
                 id: 1,
                 view: None,
                 group: 0,
+                trimmed: false,
             }],
             active: 0,
             next_tab_id: 2,
@@ -588,6 +591,7 @@ impl App {
                 id,
                 view: Some(view),
                 group: self.focused_group(),
+                trimmed: false,
             },
         );
         self.activate(at);
@@ -2891,10 +2895,41 @@ impl App {
         }
     }
 
+    /// Free the rebuildable caches of every tab that is not on screen (not
+    /// active, and not the tab shown on the other side of a split). Runs
+    /// before each frame, so it covers every way a tab gets hidden.
+    fn trim_hidden_tabs(&mut self) {
+        let other = if self.is_split() {
+            self.shown_tab(1 - self.focused_group())
+        } else {
+            None
+        };
+        for i in 0..self.tabs.len() {
+            let on_screen = i == self.active || Some(i) == other;
+            if on_screen {
+                self.tabs[i].trimmed = false;
+            } else if !self.tabs[i].trimmed {
+                if let Some(v) = self.tabs[i].view.as_mut() {
+                    v.on_hide();
+                }
+                self.tabs[i].trimmed = true;
+            }
+        }
+    }
+
+    /// (index, holds caches) for every tab (tests).
+    #[cfg(test)]
+    pub fn tabs_with_caches(&self) -> Vec<bool> {
+        (0..self.tabs.len())
+            .map(|i| self.tab_view(i).has_caches())
+            .collect()
+    }
+
     pub fn render(&mut self, canvas: &mut Canvas) {
         if (canvas.width() as u32, canvas.height() as u32) != self.size {
             self.size = (canvas.width().max(1) as u32, canvas.height().max(1) as u32);
         }
+        self.trim_hidden_tabs();
         let layout = self.layout();
         canvas.set_clip(canvas.bounds());
         canvas.fill_rect(canvas.bounds(), theme::p().background);
@@ -3133,6 +3168,14 @@ impl App {
             m.render(canvas, all, &mut ctx);
         }
         canvas.set_clip(canvas.bounds());
+        // Drawing may have started background work (an image decoded again
+        // after its tab was hidden): keep ticking until it is done.
+        let other_busy = other_view
+            .and_then(|(_, i)| self.tabs[i].view.as_ref())
+            .is_some_and(|v| v.has_background_work());
+        if self.view.has_background_work() || other_busy {
+            self.pending = true;
+        }
     }
 }
 

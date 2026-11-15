@@ -200,6 +200,25 @@ jobs:
           if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
           Remove-Item $set -ErrorAction SilentlyContinue
 
+          # 6. Memory with many viewed markdown tabs: open 12 copies of the
+          #    roadmap and visit every tab (hidden tabs must free their
+          #    rendered previews).
+          $mdDir = Join-Path $env:RUNNER_TEMP "mdtabs"
+          New-Item -ItemType Directory -Force $mdDir | Out-Null
+          $mdArgs = @()
+          0..11 | ForEach-Object { $t = Join-Path $mdDir "doc$_.md"; Copy-Item ROADMAP.md $t; $mdArgs += "`"$t`"" }
+          $p = Start-Process -FilePath $exe -ArgumentList $mdArgs -PassThru
+          Start-Sleep -Seconds 3
+          [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 600
+          1..13 | ForEach-Object { $ws.SendKeys("^{TAB}"); Start-Sleep -Milliseconds 350 }
+          Start-Sleep -Seconds 1
+          $p.Refresh()
+          $mdPriv = if (-not $p.HasExited) { [math]::Round($p.PrivateMemorySize64 / 1MB, 1) } else { -1 }
+          $ok = ($mdPriv -gt 0) -and ($mdPriv -lt 80)
+          $rows += "| 12 markdown tabs, each viewed: private bytes (limit 80 MB) | $(if ($ok) {"PASS ($mdPriv MB)"} else {"FAIL ($mdPriv MB)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
           $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
           Write-Output $table
           $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY

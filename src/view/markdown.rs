@@ -160,6 +160,13 @@ impl MarkdownView {
                                 h: d.natural.1,
                                 path: p,
                             },
+                            // Pixels dropped while hidden: same size, so
+                            // nothing moves while it is decoded again.
+                            ImgState::Unloaded { natural, .. } => ImgInfo::Size {
+                                w: natural.0,
+                                h: natural.1,
+                                path: p,
+                            },
                             ImgState::Loading => ImgInfo::Note("loading…".into()),
                             ImgState::Failed(e) => ImgInfo::Note(e),
                         }
@@ -905,6 +912,25 @@ impl View for MarkdownView {
     fn theme_changed(&mut self) {
         self.layout = None;
         self.editor.theme_changed();
+    }
+
+    fn has_background_work(&self) -> bool {
+        self.images.pending()
+    }
+
+    fn on_hide(&mut self) {
+        self.layout = None;
+        self.scaled = HashMap::new();
+        self.images.unload();
+        self.editor.on_hide();
+    }
+
+    #[cfg(test)]
+    fn has_caches(&self) -> bool {
+        self.layout.is_some()
+            || !self.scaled.is_empty()
+            || self.images.loaded() > 0
+            || self.editor.has_caches()
     }
 
     fn is_dirty(&self) -> bool {
