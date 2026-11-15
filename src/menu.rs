@@ -30,6 +30,8 @@ pub enum MenuAction {
     /// (old, new)
     Compare(PathBuf, PathBuf),
     CompareWithSaved(u64),
+    /// Split view: the left file against the right file.
+    CompareSides,
     /// Editor menu: replay a key combo in the active view.
     Keys(&'static str),
     /// Workspace folders.

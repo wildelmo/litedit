@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Compare: the two sides of a split (Compare Left ↔ Right), Compare with
+  Clipboard, Alt+W ignores whitespace differences, and Enter or a
+  double-click on a line opens the file there.
 - Back / Forward (Alt+Left / Alt+Right) through the places you've been,
   reopening closed files. Files reopen at the caret and scroll position you
   left them at, also after a restart.

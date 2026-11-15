@@ -4,6 +4,11 @@
 //! highlighted more strongly. One scroll moves both sides. F7 / Shift+F7
 //! (or Alt+F5 / Shift+Alt+F5) jump to the next / previous change.
 //!
+//! Alt+W ignores whitespace: lines that differ only in indentation, trailing
+//! blanks or runs of spaces / tabs count as unchanged (the text shown stays
+//! the original). Double-click a row, or press Enter on the current change
+//! (Shift+Enter for the left side), to open that file at that line.
+//!
 //! The diff is recomputed when either file changes on disk.
 
 use std::collections::HashMap;
@@ -15,7 +20,7 @@ use cosmic_text::Buffer;
 use crate::canvas::{Canvas, Color, Rect};
 use crate::diff::{self, Kind, Model};
 use crate::doc::Document;
-use crate::input::{Cursor, Input, Key};
+use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::syntax::{LineHighlighter, find_syntax};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
@@ -31,6 +36,9 @@ pub struct Side {
     pub label: String,
     /// File to reload when it changes on disk (None for a snapshot).
     pub path: Option<PathBuf>,
+    /// The file a snapshot was taken from (an editor's unsaved text):
+    /// where "open this line" goes. Never read or reloaded.
+    pub origin: Option<PathBuf>,
     pub lines: Vec<String>,
     highlighter: LineHighlighter,
 }
@@ -54,16 +62,49 @@ impl Side {
 
     /// Text that isn't (only) on disk, e.g. an editor's unsaved buffer.
     /// `syntax_path` picks the colouring; the side is never reloaded.
-    pub fn from_text(text: &str, label: String, syntax_path: &Path) -> Self {
+    fn from_text(text: &str, label: String, syntax_path: &Path) -> Self {
         let lines = diff::lines(text);
         let first = lines.first().map(String::as_str).unwrap_or("");
         Self {
             highlighter: LineHighlighter::new(find_syntax(syntax_path, first)),
             label,
             path: None,
+            origin: None,
             lines,
         }
     }
+
+    /// [`Self::from_text`] with the size limit of files, for text of any
+    /// size (an unsaved buffer, the clipboard). `origin` is the file the
+    /// text belongs to, if any.
+    pub fn from_snapshot(
+        text: &str,
+        label: String,
+        syntax_path: &Path,
+        origin: Option<&Path>,
+    ) -> Result<Self, String> {
+        if text.len() > diff::MAX_BYTES {
+            return Err(format!(
+                "{label} is larger than {} MB",
+                diff::MAX_BYTES / (1024 * 1024)
+            ));
+        }
+        let mut side = Self::from_text(text, label, syntax_path);
+        side.origin = origin.map(Path::to_path_buf);
+        Ok(side)
+    }
+
+    /// The file "open this line" goes to.
+    fn file(&self) -> Option<&PathBuf> {
+        self.path.as_ref().or(self.origin.as_ref())
+    }
+}
+
+fn too_many_lines() -> String {
+    format!(
+        "Files with more than {} lines are not compared",
+        diff::MAX_LINES
+    )
 }
 
 struct CachedRow {
@@ -86,27 +127,121 @@ pub struct DiffView {
     last_rect: Rect,
     /// Set when a file is too large or unreadable on refresh.
     error: Option<String>,
+    /// Alt+W: lines that differ only in whitespace count as unchanged.
+    ignore_ws: bool,
+    /// No changes while ignoring whitespace, but the texts are not equal.
+    only_ws: bool,
+    /// Row height at the last render / input (to keep the place on Alt+W).
+    row_px: f32,
 }
 
 impl DiffView {
     pub fn new(old: Side, new: Side) -> Result<Self, String> {
         if old.lines.len() > diff::MAX_LINES || new.lines.len() > diff::MAX_LINES {
-            return Err(format!(
-                "Files with more than {} lines are not compared",
-                diff::MAX_LINES
-            ));
+            return Err(too_many_lines());
         }
-        let model = diff::compute(&old.lines, &new.lines, DIFF_BUDGET);
-        Ok(Self {
+        let mut v = Self {
             old,
             new,
-            model,
+            model: Model::default(),
             scroll: Scroll::default(),
             cache: [HashMap::new(), HashMap::new()],
             current: None,
             last_rect: Rect::new(0, 0, 0, 0),
             error: None,
-        })
+            ignore_ws: false,
+            only_ws: false,
+            row_px: 0.0,
+        };
+        v.rebuild();
+        Ok(v)
+    }
+
+    /// Diff the two sides as they are now, with the current options. Every
+    /// (re)computation goes through here.
+    fn rebuild(&mut self) {
+        self.model = diff::compute(
+            &self.old.lines,
+            &self.new.lines,
+            DIFF_BUDGET,
+            self.ignore_ws,
+        );
+        self.only_ws = self.ignore_ws && self.model.identical() && self.old.lines != self.new.lines;
+        // Cached rows hold the highlights of the previous diff.
+        self.cache = [HashMap::new(), HashMap::new()];
+        self.current = None;
+    }
+
+    /// Alt+W: switch "ignore whitespace", staying on the line at the top.
+    fn toggle_ignore_ws(&mut self) {
+        // (side, line, pixels scrolled into its row)
+        let rh = self.row_px;
+        let anchor = (rh > 0.0 && self.error.is_none())
+            .then(|| {
+                let top = (self.scroll.y / rh).floor().max(0.0) as usize;
+                let row = self.model.rows.get(top)?;
+                let at = row.new.map(|n| (1, n)).or(row.old.map(|o| (0, o)))?;
+                Some((at, self.scroll.y - top as f32 * rh))
+            })
+            .flatten();
+        self.ignore_ws = !self.ignore_ws;
+        self.rebuild();
+        if let Some(((s, line), within)) = anchor {
+            let want = Some(line);
+            let row = self
+                .model
+                .rows
+                .iter()
+                .position(|r| if s == 0 { r.old == want } else { r.new == want });
+            if let Some(r) = row {
+                self.scroll.y = r as f32 * rh + within;
+            }
+        }
+    }
+
+    /// The line of side `s` on row `r`. A filler row (nothing on that side)
+    /// stands for the nearest line above it, or the first line.
+    fn line_at(&self, s: usize, r: usize) -> usize {
+        self.model
+            .rows
+            .get(..=r)
+            .unwrap_or(&self.model.rows)
+            .iter()
+            .rev()
+            .find_map(|row| if s == 0 { row.old } else { row.new })
+            .unwrap_or(0)
+    }
+
+    /// Where "open this line" goes for row `r` of side `s`: (file, 1-based
+    /// line). None when that side has no file (the clipboard).
+    fn target(&self, s: usize, r: usize) -> Option<(PathBuf, usize)> {
+        if self.error.is_some() || r >= self.model.rows.len() {
+            return None;
+        }
+        let path = self.side(s).file()?.clone();
+        // The saved copy beside its own unsaved text: the open tab shows the
+        // unsaved text, so its line numbers are the ones that fit.
+        let other = self.side(1 - s);
+        let lines_of = if self.side(s).path.is_some()
+            && other.path.is_none()
+            && other.origin.as_ref() == Some(&path)
+        {
+            1 - s
+        } else {
+            s
+        };
+        Some((path, self.line_at(lines_of, r) + 1))
+    }
+
+    /// Ask the app to open row `r` of side `s` in a normal tab.
+    fn open_row(&self, s: usize, r: usize, ctx: &mut Ctx) -> bool {
+        match self.target(s, r) {
+            Some((path, line)) => {
+                ctx.requests.push(Request::OpenPathAt(path, line));
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn change_count(&self) -> usize {
@@ -162,10 +297,16 @@ impl DiffView {
 
     /// Re-read the files from disk and diff again (keeps the scroll).
     fn recompute(&mut self) -> bool {
+        // An earlier problem (file missing, too large) may be gone now.
+        let had_error = self.error.take().is_some();
         let mut changed = false;
         for side in [&mut self.old, &mut self.new] {
             if let Some(p) = side.path.clone() {
                 match Side::from_file(&p, side.label.clone()) {
+                    Ok(s) if s.lines.len() > diff::MAX_LINES => {
+                        self.error = Some(too_many_lines());
+                        return true;
+                    }
                     Ok(s) => {
                         if s.lines != side.lines {
                             *side = s;
@@ -180,12 +321,9 @@ impl DiffView {
             }
         }
         if changed {
-            self.error = None;
-            self.model = diff::compute(&self.old.lines, &self.new.lines, DIFF_BUDGET);
-            self.cache = [HashMap::new(), HashMap::new()];
-            self.current = None;
+            self.rebuild();
         }
-        changed
+        changed || had_error
     }
 
     fn side(&self, s: usize) -> &Side {
@@ -200,7 +338,14 @@ impl DiffView {
         let (Some(o), Some(n)) = (row.old, row.new) else {
             return Vec::new();
         };
-        let (a, b) = diff::inline_changes(&self.old.lines[o], &self.new.lines[n]);
+        let (Some(old), Some(new)) = (self.old.lines.get(o), self.new.lines.get(n)) else {
+            return Vec::new();
+        };
+        let (a, b) = if self.ignore_ws {
+            diff::inline_changes_ignoring_ws(old, new)
+        } else {
+            diff::inline_changes(old, new)
+        };
         if s == 0 { a } else { b }
     }
 
@@ -321,6 +466,7 @@ fn x_of(b: &Buffer, disp_byte: usize) -> f32 {
 impl View for DiffView {
     fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
         self.last_rect = rect;
+        self.row_px = Self::row_h(ctx);
         self.clamp(ctx);
         let pal = *theme::p();
         canvas.fill_rect(rect, pal.background);
@@ -364,17 +510,28 @@ impl View for DiffView {
             return;
         }
         if self.model.identical() {
-            let msg = "The two files are identical";
-            let w = ctx.text_width(msg, FontKind::Ui) as i32;
-            ctx.label(
-                canvas,
-                msg,
-                rect.x + (rect.w - w) / 2,
-                body_top + ctx.px(8.0) as i32,
-                pal.dim,
-                w + 4,
-                FontKind::Ui,
-            );
+            // In the right header, beside the name (not over the text).
+            let msg = if self.only_ws {
+                "The two files differ only in whitespace"
+            } else {
+                "The two files are identical"
+            };
+            let pad = ctx.px(theme::PADDING_X) as i32;
+            let lh = ctx.ui_metrics().line_height as i32;
+            let w = ctx.text_width(msg, FontKind::Ui) as i32 + 4;
+            let name_w = ctx.text_width(&self.new.label, FontKind::Ui) as i32;
+            let x = sides[1].right() - pad - w;
+            if x >= sides[1].x + pad + name_w + pad {
+                ctx.label(
+                    canvas,
+                    msg,
+                    x,
+                    rect.y + (hh - lh) / 2,
+                    pal.dim,
+                    w,
+                    FontKind::Ui,
+                );
+            }
         }
         let rh = Self::row_h(ctx);
         let first = (self.scroll.y / rh).floor().max(0.0) as usize;
@@ -426,9 +583,25 @@ impl View for DiffView {
     fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
         self.last_rect = rect;
         let rh = Self::row_h(ctx);
+        self.row_px = rh;
         let page = (rect.h as f32 - Self::header_h(ctx) - rh).max(rh);
         let before = (self.scroll.x, self.scroll.y);
         match input {
+            // Double-click a row: open that side's file at that line.
+            Input::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+                clicks: 2,
+            } => {
+                let top = rect.y as f32 + Self::header_h(ctx);
+                if *y < top || rh <= 0.0 {
+                    return false;
+                }
+                let r = ((*y - top + self.scroll.y) / rh).floor().max(0.0) as usize;
+                let s = usize::from(*x >= (rect.x + rect.w / 2) as f32);
+                return self.open_row(s, r, ctx);
+            }
             Input::Wheel { .. } => {
                 self.scroll.wheel(input, rh);
             }
@@ -439,6 +612,23 @@ impl View for DiffView {
             Input::Key { key, mods } => match key {
                 Key::F(7) => return self.jump(!mods.shift, ctx),
                 Key::F(5) if mods.alt => return self.jump(!mods.shift, ctx),
+                Key::Char('w') if mods.alt && !mods.ctrl && !mods.shift => {
+                    self.toggle_ignore_ws();
+                    self.clamp(ctx);
+                    return true;
+                }
+                // The current change in its file: the right side (the left
+                // one with Shift, or when the right side has no file).
+                Key::Enter if !mods.ctrl && !mods.alt => {
+                    let Some(&r) = self.current.and_then(|k| self.model.hunks.get(k)) else {
+                        return false;
+                    };
+                    return if mods.shift {
+                        self.open_row(0, r, ctx)
+                    } else {
+                        self.open_row(1, r, ctx) || self.open_row(0, r, ctx)
+                    };
+                }
                 Key::Down => self.scroll.y += rh,
                 Key::Up => self.scroll.y -= rh,
                 Key::PageDown | Key::Char(' ') => self.scroll.y += page,
@@ -472,6 +662,7 @@ impl View for DiffView {
 
     fn status(&self) -> Vec<String> {
         let mut v = vec![match self.change_count() {
+            0 if self.only_ws => "Only whitespace differs".to_string(),
             0 => "No changes".to_string(),
             1 => "1 change".to_string(),
             n => format!("{n} changes"),
@@ -479,10 +670,19 @@ impl View for DiffView {
         if let Some(k) = self.current {
             v.push(format!("Change {} of {}", k + 1, self.change_count()));
         }
+        if self.ignore_ws {
+            v.push("Ignoring whitespace (Alt+W)".into());
+        }
         if self.model.simplified {
             v.push("Simplified (files very different)".into());
         }
         v.push("F7 / Shift+F7: next / previous change".into());
+        if !self.ignore_ws {
+            v.push("Alt+W: ignore whitespace".into());
+        }
+        if self.old.file().is_some() || self.new.file().is_some() {
+            v.push("Enter / double-click: open file".into());
+        }
         v
     }
 
@@ -498,6 +698,28 @@ impl View for DiffView {
             .collect()
     }
 
+    fn run_command(&mut self, name: &str) -> bool {
+        if name != "ignore-whitespace" {
+            return false;
+        }
+        self.toggle_ignore_ws();
+        true
+    }
+
+    fn keeps_its_tab(&self) -> bool {
+        true
+    }
+
+    #[cfg(test)]
+    fn scroll_y(&self) -> f32 {
+        self.scroll.y
+    }
+
+    #[cfg(test)]
+    fn has_caches(&self) -> bool {
+        self.cache.iter().any(|c| !c.is_empty())
+    }
+
     fn metrics_changed(&mut self) {
         self.cache = [HashMap::new(), HashMap::new()];
     }
@@ -506,5 +728,154 @@ impl View for DiffView {
         self.old.highlighter.retheme();
         self.new.highlighter.retheme();
         self.metrics_changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view(old: &str, new: &str) -> DiffView {
+        let p = Path::new("x.txt");
+        DiffView::new(
+            Side::from_text(old, "old".into(), p),
+            Side::from_text(new, "new".into(), p),
+        )
+        .unwrap()
+    }
+
+    /// (new line, pixels into the row) at the top of the view.
+    fn top(v: &DiffView) -> (Option<usize>, f32) {
+        let r = (v.scroll.y / v.row_px).floor() as usize;
+        (v.model.rows[r].new, v.scroll.y - r as f32 * v.row_px)
+    }
+
+    #[test]
+    fn toggling_ignore_whitespace_keeps_the_top_line_in_place() {
+        // Lines 10..20 are re-indented *and* five lines were added before
+        // them, so the rows above the top line change with the option.
+        let old: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let new: String = (0..200)
+            .map(|i| match i {
+                5 => "added a\nadded b\nadded c\nline 5\n".to_string(),
+                10..20 => format!("\t line {i}  \n"),
+                150 => "line one-fifty\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        let mut v = view(&old, &new);
+        v.row_px = 20.0;
+        let strict_rows = v.model.rows.len();
+        assert_eq!(v.change_count(), 3);
+        for start_row in [0usize, 9, 40, 120] {
+            v.scroll.y = start_row as f32 * 20.0 + 7.0;
+            let before = top(&v);
+            v.toggle_ignore_ws();
+            assert!(v.ignore_ws);
+            assert_eq!(v.change_count(), 2);
+            assert_eq!(top(&v), before, "from row {start_row}, option on");
+            v.toggle_ignore_ws();
+            assert_eq!(top(&v), before, "from row {start_row}, option off again");
+            assert_eq!(v.model.rows.len(), strict_rows);
+        }
+        // Two changed rows become three (-p | a= | +q) when whitespace is
+        // ignored, so every row below moves down by one: the line at the
+        // top must move with it.
+        let old: String = (0..200)
+            .map(|i| match i {
+                30 => "p\n".to_string(),
+                31 => "  a\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        let new: String = (0..200)
+            .map(|i| match i {
+                30 => "a\n".to_string(),
+                31 => "q\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect();
+        let mut v = view(&old, &new);
+        v.row_px = 20.0;
+        assert_eq!(v.model.rows.len(), 200);
+        v.scroll.y = 40.0 * 20.0 + 3.0;
+        assert_eq!(top(&v), (Some(40), 3.0));
+        v.toggle_ignore_ws();
+        assert_eq!(v.model.rows.len(), 201);
+        assert_eq!(top(&v), (Some(40), 3.0));
+        assert_eq!(v.scroll.y, 41.0 * 20.0 + 3.0);
+        v.toggle_ignore_ws();
+        assert_eq!(v.scroll.y, 40.0 * 20.0 + 3.0);
+        // Never rendered (no row height yet): stays at the top, no panic.
+        let mut v = view(&old, &new);
+        v.toggle_ignore_ws();
+        assert_eq!(v.scroll.y, 0.0);
+    }
+
+    #[test]
+    fn toggle_drops_cached_rows_and_the_current_change() {
+        let mut v = view("a\n  b\nc\n", "a\nb\nC\n");
+        v.current = Some(1);
+        assert_eq!(v.change_count(), 1, "b and c changed, side by side");
+        assert!(!v.only_ws);
+        v.toggle_ignore_ws();
+        assert_eq!((v.change_count(), v.current), (1, None));
+        let mut w = view("a\n  b\n", "a\r\nb\t\r\n");
+        assert!(!w.model.identical() && !w.only_ws);
+        w.toggle_ignore_ws();
+        assert!(w.model.identical() && w.only_ws);
+        assert_eq!(w.status()[0], "Only whitespace differs");
+        // Truly identical text is not "only whitespace".
+        let mut same = view("a\nb\n", "a\r\nb\r\n");
+        same.toggle_ignore_ws();
+        assert!(same.model.identical() && !same.only_ws);
+        assert_eq!(same.status()[0], "No changes");
+    }
+
+    #[test]
+    fn rows_map_to_the_right_file_and_line() {
+        // Rows: a= | +X | +Y | b= | c= | -d | e=
+        let mut v = view("a\nb\nc\nd\ne\n", "a\nX\nY\nb\nc\ne\n");
+        assert_eq!(v.model.rows.len(), 7);
+        // Neither side has a file: nothing to open.
+        assert_eq!(v.target(0, 4), None);
+        v.old.path = Some(PathBuf::from("old.txt"));
+        v.new.origin = Some(PathBuf::from("new.txt"));
+        let at = |v: &DiffView, s, r| v.target(s, r).map(|(p, l)| (p.display().to_string(), l));
+        assert_eq!(at(&v, 0, 0), Some(("old.txt".into(), 1)));
+        assert_eq!(at(&v, 0, 4), Some(("old.txt".into(), 3)));
+        assert_eq!(at(&v, 1, 4), Some(("new.txt".into(), 5)));
+        assert_eq!(at(&v, 0, 5), Some(("old.txt".into(), 4)));
+        // Filler rows stand for the line above them.
+        assert_eq!(at(&v, 0, 2), Some(("old.txt".into(), 1)));
+        assert_eq!(at(&v, 1, 5), Some(("new.txt".into(), 5)));
+        // Past the last row: nothing.
+        assert_eq!(at(&v, 1, 7), None);
+        assert_eq!(at(&v, 0, usize::MAX), None);
+        // The saved copy beside its own unsaved text opens the tab that
+        // shows the unsaved text, so it uses that side's line numbers.
+        v.new.origin = Some(PathBuf::from("old.txt"));
+        assert_eq!(at(&v, 0, 4), Some(("old.txt".into(), 5)));
+        assert_eq!(at(&v, 1, 4), Some(("old.txt".into(), 5)));
+    }
+
+    #[test]
+    fn snapshots_are_capped_like_files_and_never_watched() {
+        let p = Path::new("x.rs");
+        let big = "x".repeat(diff::MAX_BYTES + 1);
+        let e = Side::from_snapshot(&big, "Clipboard".into(), p, None)
+            .err()
+            .unwrap();
+        assert_eq!(e, "Clipboard is larger than 20 MB");
+        let ok = Side::from_snapshot(&big[..diff::MAX_BYTES], "Clipboard".into(), p, Some(p));
+        let side = ok.ok().unwrap();
+        assert!(side.path.is_none() && side.origin.as_deref() == Some(p));
+        let v = DiffView::new(side, Side::from_text("x", "t".into(), p)).unwrap();
+        assert!(v.watched_paths().is_empty());
+        let many = "\n".repeat(diff::MAX_LINES + 5);
+        let side = Side::from_snapshot(&many, "Clipboard".into(), p, None)
+            .ok()
+            .unwrap();
+        assert!(DiffView::new(side, Side::from_text("x", "t".into(), p)).is_err());
     }
 }

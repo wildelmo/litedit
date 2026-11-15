@@ -25,6 +25,9 @@ pub enum Action {
     RevealInExplorer,
     ToggleTheme,
     CompareWithSaved,
+    /// Split view: the left file against the right file.
+    CompareSides,
+    CompareWithClipboard,
     SaveWorkspace,
     OpenWorkspace,
     AddFolder,
@@ -247,6 +250,22 @@ impl Palette {
             label: "View: Toggle Light / Dark Theme".into(),
             detail: String::new(),
             action: Action::ToggleTheme,
+        });
+        // Always listed: where they don't apply, the status bar says why.
+        items.push(Item {
+            label: "File: Compare Left ↔ Right".into(),
+            detail: String::new(),
+            action: Action::CompareSides,
+        });
+        items.push(Item {
+            label: "File: Compare with Clipboard".into(),
+            detail: String::new(),
+            action: Action::CompareWithClipboard,
+        });
+        items.push(Item {
+            label: "Compare: Ignore Whitespace (on / off)".into(),
+            detail: "Alt+W".into(),
+            action: Action::Command("ignore-whitespace"),
         });
         if has_file {
             items.push(Item {

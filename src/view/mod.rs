@@ -61,6 +61,12 @@ pub trait View {
         Vec::new()
     }
 
+    /// Opening a file never takes this view's place, even when it is the
+    /// only tab (a comparison; the start page and messages are replaced).
+    fn keeps_its_tab(&self) -> bool {
+        false
+    }
+
     /// The full text, for "Compare with Saved".
     fn text(&self) -> Option<String> {
         None

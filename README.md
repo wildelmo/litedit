@@ -54,6 +54,8 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
 | `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
 | Right-click a file → Select for Compare, then Compare with Selected | Side-by-side comparison (`F7` / `Shift+F7` next / previous change); tab menu or palette: Compare with Saved |
+| Palette: Compare Left ↔ Right / Compare with Clipboard | Compare the two sides of a split, or the file with the clipboard |
+| `Alt+W`, `Enter` / double-click (in a comparison) | Ignore whitespace differences; open the file at that line |
 | Tabs | Drag to reorder, wheel to scroll, middle-click to close, right-click for Close Others / Close All / Copy Path… |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (whole line when nothing is selected) |

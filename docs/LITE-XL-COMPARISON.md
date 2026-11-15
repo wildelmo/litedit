@@ -76,7 +76,7 @@ in litedit · ➕ litedit only
 | Log view | ❌ | Crash log file only |
 | Blinking caret | 🔁 steady | D-016 |
 | — | ➕ Markdown preview (default), side-by-side live preview | The reason litedit exists |
-| — | ➕ Compare two files / compare with saved | |
+| — | ➕ Compare two files / with saved / left ↔ right of a split / with the clipboard; ignore whitespace | |
 | — | ➕ Light theme switch | |
 
 ## Customisation

@@ -209,7 +209,7 @@ fixed first (S5.0).
        while loading; read-only lock for code files
 - [ ] S7.2 Image files open in a viewer tab
 - [x] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
-- [ ] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
+- [x] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
        jump to a change in the file, compare with the clipboard
 - [ ] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
        the status bar
@@ -220,6 +220,12 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.4 Compare extras (sub-agent branch, reviewed and merged):
+  Compare Left ↔ Right of a split (palette + tab menu), Alt+W ignores
+  whitespace (text shown is still the real text), Enter / double-click
+  opens the file at that line (Shift+Enter: left side), Compare with
+  Clipboard (clipboard = old side). Unsaved text is what gets compared; a
+  comparison never starts under an open question. 299 tests.
 - 2026-11-15 — S7.3 Back / Forward + remembered positions (sub-agent branch,
   reviewed and merged): `src/nav.rs` (100 places each way, adjacent
   duplicates collapsed, vanished files skipped), recorded on tab switches,

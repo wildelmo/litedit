@@ -538,6 +538,12 @@ impl App {
         self.clipboard.get()
     }
 
+    /// The active view's area (tests).
+    #[cfg(test)]
+    pub fn main_rect(&self) -> Rect {
+        self.layout().main
+    }
+
     /// Open a file (in a tab) or a folder (in the tree). Opening never
     /// discards anything: an already-open file is brought to the front,
     /// otherwise a new tab is added.
@@ -747,7 +753,7 @@ impl App {
     /// Add a view as a new tab after the active one (or replace the welcome
     /// screen) and show it.
     fn add_tab(&mut self, view: Box<dyn View>) {
-        if self.view.path().is_none() && self.tabs.len() == 1 {
+        if self.view.path().is_none() && self.tabs.len() == 1 && !self.view.keeps_its_tab() {
             self.view = view;
             self.tabs[0].peek = false;
             self.tabs[0].trimmed = false;
@@ -1206,6 +1212,8 @@ impl App {
             Outcome::Run(Action::Command(c)) => {
                 if self.view.run_command(c) {
                     self.pending = true;
+                } else if c == "ignore-whitespace" {
+                    self.notice = Some("Ignore Whitespace works in a comparison".into());
                 } else {
                     self.notice = Some("That command works in a text file".into());
                 }
@@ -1214,6 +1222,8 @@ impl App {
                 let id = self.tabs[self.active].id;
                 self.compare_with_saved(id);
             }
+            Outcome::Run(Action::CompareSides) => self.compare_sides(),
+            Outcome::Run(Action::CompareWithClipboard) => self.compare_with_clipboard(),
             Outcome::Run(Action::RevealInExplorer) => {
                 if let Some(p) = self.view.path() {
                     self.requests
@@ -1435,6 +1445,10 @@ impl App {
             }
             MenuAction::CompareWithSaved(id) => {
                 self.compare_with_saved(*id);
+                return;
+            }
+            MenuAction::CompareSides => {
+                self.compare_sides();
                 return;
             }
             MenuAction::RevealInTree(p) => {
@@ -1720,7 +1734,10 @@ impl App {
         let view = self.make_view(path);
         match old {
             // The start page: becomes the peek tab.
-            None if self.view.path().is_none() && self.tabs.len() == 1 => {
+            None if self.view.path().is_none()
+                && self.tabs.len() == 1
+                && !self.view.keeps_its_tab() =>
+            {
                 self.add_tab(view);
                 self.tabs[0].peek = true;
             }
@@ -2157,6 +2174,9 @@ impl App {
                 items.push(("Compare with Saved", MenuAction::CompareWithSaved(id)));
             }
             items.extend(self.compare_items(&p));
+            if self.split_files().is_some() {
+                items.push(("Compare Left ↔ Right", MenuAction::CompareSides));
+            }
             items.push(("Copy Path", MenuAction::CopyPath(p.clone())));
             items.push(("Reveal in File Tree", MenuAction::RevealInTree(p.clone())));
             items.push(("Show in Explorer", MenuAction::Reveal(p)));
@@ -2185,6 +2205,11 @@ impl App {
 
     /// Open a comparison tab (old on the left, new on the right).
     fn open_compare(&mut self, old: Result<Side, String>, new: Result<Side, String>) {
+        // Never switch tabs, or replace a question, while one is showing.
+        if self.nag.is_some() {
+            self.notice = Some("Answer the question above first, then compare again".into());
+            return;
+        }
         let view = old.and_then(|o| new.and_then(|n| DiffView::new(o, n)));
         match view {
             Ok(v) => {
@@ -2213,8 +2238,93 @@ impl App {
             return;
         };
         let name = display_name(&path);
-        let new = Side::from_text(&text, format!("{name} (unsaved)"), &path);
-        self.open_compare(Side::from_file(&path, format!("{name} (saved)")), Ok(new));
+        let new = Side::from_snapshot(&text, format!("{name} (unsaved)"), &path, Some(&path));
+        self.open_compare(Side::from_file(&path, format!("{name} (saved)")), new);
+    }
+
+    /// Split view with a file showing on each side: (left tab, right tab).
+    fn split_files(&self) -> Option<(usize, usize)> {
+        if !self.is_split() {
+            return None;
+        }
+        let (l, r) = (self.shown_tab(0)?, self.shown_tab(1)?);
+        (self.tab_view(l).path().is_some() && self.tab_view(r).path().is_some()).then_some((l, r))
+    }
+
+    /// What file tab `i` shows, as one side of a comparison: the file on
+    /// disk, or the tab's text when it has unsaved edits. Nothing is changed
+    /// in the tab.
+    fn tab_side(&self, i: usize, name: String) -> Result<Side, String> {
+        let v = self.tab_view(i);
+        let Some(path) = v.path().map(Path::to_path_buf) else {
+            return Err("not a file".into());
+        };
+        let unsaved = if v.is_dirty() { v.text() } else { None };
+        match unsaved {
+            Some(text) => {
+                Side::from_snapshot(&text, format!("{name} (unsaved)"), &path, Some(&path))
+            }
+            None => Side::from_file(&path, name),
+        }
+    }
+
+    /// "File: Compare Left ↔ Right": the file shown on the left of a split
+    /// (old) against the one shown on the right (new).
+    pub fn compare_sides(&mut self) {
+        if !self.is_split() {
+            self.notice = Some(
+                "Compare Left ↔ Right needs a split view (Ctrl+Alt+Right moves a tab to the other side)"
+                    .into(),
+            );
+            return;
+        }
+        let Some((l, r)) = self.split_files() else {
+            self.notice = Some("Compare Left ↔ Right needs a file on both sides".into());
+            return;
+        };
+        let name = |i: usize| {
+            self.tab_view(i)
+                .path()
+                .map(display_name)
+                .unwrap_or_default()
+        };
+        let (mut ln, mut rn) = (name(l), name(r));
+        if ln == rn {
+            // Same name in two folders: say which is which.
+            let with_folder = |i: usize| {
+                self.tab_view(i)
+                    .path()
+                    .and_then(Path::parent)
+                    .map(|d| format!("{}/{}", display_name(d), name(i)))
+                    .unwrap_or_else(|| name(i))
+            };
+            (ln, rn) = (with_folder(l), with_folder(r));
+        }
+        let (old, new) = (self.tab_side(l, ln), self.tab_side(r, rn));
+        self.open_compare(old, new);
+    }
+
+    /// "File: Compare with Clipboard": the clipboard's text (old) against
+    /// the whole current text of the active file (new), unsaved edits
+    /// included.
+    pub fn compare_with_clipboard(&mut self) {
+        let Some(path) = self
+            .view
+            .path()
+            .filter(|_| self.view.text().is_some())
+            .map(Path::to_path_buf)
+        else {
+            self.notice = Some("Compare with Clipboard works in a file tab".into());
+            return;
+        };
+        let clip = self.clipboard.get().unwrap_or_default();
+        if clip.is_empty() {
+            self.notice = Some("The clipboard has no text to compare".into());
+            return;
+        }
+        let old = Side::from_snapshot(&clip, "Clipboard".into(), &path, None);
+        let new = self.tab_side(self.active, display_name(&path));
+        self.open_compare(old, new);
     }
 
     /// Ctrl+N: name a new file in the current file's folder (or the tree's
