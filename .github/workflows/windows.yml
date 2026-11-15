@@ -248,6 +248,20 @@ jobs:
           $t = Title $p1
           $count = @(Get-Process litedit -ErrorAction SilentlyContinue).Count
           $handed = $exited -and ($t -like "one-b.txt*") -and ($count -eq 1)
+          # Several launches at once (Explorer opening a selection): the
+          # window serves them one after another, each in a moment, so all
+          # of them hand over and exit. A window that kept waiting on a
+          # launch that has already gone would leave the third one to give
+          # up and open its own window.
+          $oneC = Join-Path $env:RUNNER_TEMP "one-c.txt"; [IO.File]::WriteAllText($oneC, "third")
+          $oneD = Join-Path $env:RUNNER_TEMP "one-d.txt"; [IO.File]::WriteAllText($oneD, "fourth")
+          $many = @($oneA, $oneC, $oneD) | ForEach-Object { Start-Process -FilePath $exe -ArgumentList "`"$_`"" -PassThru }
+          $manyExited = $true
+          foreach ($m in $many) { if (-not $m.WaitForExit(8000)) { $manyExited = $false } }
+          Start-Sleep -Seconds 1
+          $countMany = @(Get-Process litedit -ErrorAction SilentlyContinue).Count
+          $handedMany = $manyExited -and ($countMany -eq 1)
+          if (-not $handedMany) { $many | Where-Object { -not $_.HasExited } | Stop-Process -Force }
           # A folder is not handed over: it gets its own window.
           $p3 = Start-Process -FilePath $exe -ArgumentList "`"$env:RUNNER_TEMP`"" -PassThru
           Start-Sleep -Seconds 3
@@ -255,8 +269,8 @@ jobs:
           $p4 = Start-Process -FilePath $exe -ArgumentList @("--new-window", "`"$oneA`"") -PassThru
           Start-Sleep -Seconds 3
           $p4.Refresh(); $newWin = -not $p4.HasExited
-          $ok = $handed -and $folderOwn -and $newWin
-          $rows += "| second launch opens in the running window | $(if ($ok) {'PASS'} else {"FAIL (exited=$exited title=$t count=$count folderOwn=$folderOwn newWindow=$newWin)"}) |"
+          $ok = $handed -and $handedMany -and $folderOwn -and $newWin
+          $rows += "| second launch opens in the running window | $(if ($ok) {'PASS'} else {"FAIL (exited=$exited title=$t count=$count threeAtOnce=$handedMany/$countMany folderOwn=$folderOwn newWindow=$newWin)"}) |"
           if (-not $ok) { $failed = $true }
           Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
 

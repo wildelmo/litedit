@@ -28,6 +28,22 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-039 One-window pipe: who may connect, and who a launch trusts
+The pipe is created owned by the current user with an access list that
+names only that user (`O:<user SID>D:P(A;;GA;;;<user SID>)`); nobody else
+can open it, even to read. The user is named explicitly so a window started
+as administrator stays reachable from normal launches. If the access list
+cannot be built, the window does not listen (launches open their own
+windows); there is no fallback to the Windows default. The pipe's name can
+be guessed, so a launch trusts the other end only by the pipe's owner: it
+reads the owner before writing anything and sends its file paths only if
+the owner is the same user. Only that user, or an administrator, can create
+an object owned by them. The window reads a launch's message within 1 s and
+waits at most 1 s more for it to hang up; the files open as soon as "ok"
+is written. Cost: if another account has taken the name, one window is off
+for you until they stop (each launch opens its own window; nothing leaks).
+Not verified on a real multi-user PC.
+
 ### D-038 Markdown preview: only up to 1 MiB, 100,000 lines, 30,000 blocks
 Larger markdown files open in source view with a status-bar notice; Ctrl+E
 previews again once the file is small enough. Blocks are counted at every

@@ -223,8 +223,8 @@ fixed first (S5.0).
 - [x] S8.5 Markdown preview: budget for very large documents
 - [x] S8.6 Links to network shares are not followed (a: gaps in the existing check; b: links, workspaces and tree entries)
 - [x] S8.7 GitHub Actions pinned to commits
-- [ ] S8.8 One-window pipe: another local user answering first (owner is handling this)
-- [ ] S8.9 One-window pipe: a silent client holding it (owner is handling this)
+- [x] S8.8 One-window pipe: a launch sends its files only to a pipe owned by the same user
+- [x] S8.9 One-window pipe: only the same user can connect; a silent launch is cut off after 1 s
 - [x] S8.10 Folder listing: bounded work per folder
 - [x] S8.11 Rename never replaces a dangling link
 
@@ -234,6 +234,21 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S8.8 + S8.9 One-window pipe (sub-agent, reviewed, one change
+  at review; the owner handed these back). The pipe that hands files to the
+  running window now opens only for the current user (before, other accounts
+  on the PC could read it and hold it). A later launch checks that the pipe
+  is owned by the same user before sending any file path, so another account
+  that created the name first gets nothing and the launch opens its own
+  window. The window no longer waits on a stuck launch: the message must
+  arrive within 1 s, and after "ok" it waits at most 1 s for the hang-up.
+  At review: files are handed to the window before that wait, not after.
+  If the access list cannot be built the window does not listen (D-039).
+  Linux: logic tested with a fake pipe. Windows: the new calls are
+  type-checked here (`cargo check --target x86_64-pc-windows-msvc`); CI's
+  one-window test, now also with three launches at once, is the behavioural
+  check. The hostile-account case itself has no automated test. This closes
+  all eleven findings of the scan.
 - 2026-11-15 — S8.1 follow-up, at the owner's request: screenshot names in
   `scripts/ci-shots.sh` may now contain dots and end in `.png` in any case
   (`markdown-1.5.png`, `x.PNG`); Windows device names (`con.png`,
