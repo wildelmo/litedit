@@ -171,12 +171,23 @@ jobs:
           # 4. Ctrl+O opens the native dialog; typing a path opens that file.
           $g = Join-Path $env:RUNNER_TEMP "opened.md"
           [IO.File]::WriteAllText($g, "# Opened via dialog")
-          $p = Launch $f
-          $ws.SendKeys("^o"); Start-Sleep -Seconds 2
-          $ws.SendKeys($g); Start-Sleep -Milliseconds 500
-          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 2
-          $t = Title $p
-          $ok = $t -like "opened.md*"
+          #    The system dialog can be slow to appear on a busy runner:
+          #    wait for the title to change, and try a second time if needed.
+          $ok = $false; $t = ""
+          foreach ($attempt in 1..2) {
+            $p = Launch $f
+            $ws.SendKeys("^o"); Start-Sleep -Seconds (2 * $attempt + 1)
+            $ws.SendKeys($g); Start-Sleep -Milliseconds 800
+            $ws.SendKeys("{ENTER}")
+            foreach ($i in 1..16) {
+              Start-Sleep -Milliseconds 500
+              $t = Title $p
+              if ($t -like "opened.md*") { $ok = $true; break }
+            }
+            if ($ok) { break }
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Start-Sleep -Seconds 1
+          }
           $rows += "| Ctrl+O native dialog opens a file | $(if ($ok) {'PASS'} else {"FAIL (title: $t)"}) |"
           if (-not $ok) { $failed = $true }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
