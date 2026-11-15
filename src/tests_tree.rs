@@ -1382,3 +1382,112 @@ fn tree_action_fuzz_never_loses_file_content() {
     assert!(refused > 0, "refused {refused}");
     cleanup(&ws);
 }
+
+// ---- from the independent review of Epic 7 ----
+
+#[test]
+fn a_folder_holding_a_workspace_folder_is_never_deleted_moved_or_renamed() {
+    let (mut app, ws, bin) = setup("nestedroot");
+    let p = |n: &str| ws.join(n);
+    // (A target above `docs`, so its row doesn't move when `docs` opens.)
+    std::fs::create_dir_all(p("aaa")).unwrap();
+    std::fs::create_dir_all(p("docs/inner")).unwrap();
+    std::fs::write(p("docs/inner/keep.txt"), "keep").unwrap();
+    app.handle(Input::FsChanged(vec![p("docs"), p("aaa")]));
+    app.add_folder(&p("docs/inner"));
+    render_hash(&mut app, 800, 600);
+    let before = contents(&ws);
+    let refused = |app: &mut App, done: &str| {
+        let m = app.nag_message().unwrap_or_default();
+        assert!(
+            m.starts_with(&format!(
+                "Nothing was {done}: docs contains the workspace folder inner"
+            )),
+            "{done}: {m:?} status {:?} sel {:?}",
+            app.status_text(),
+            app.tree_selection()
+        );
+        assert_eq!(app.nag_options(), ["OK"]);
+        key(app, "enter");
+        assert_eq!(app.nag_message(), None);
+    };
+    // Several entries: delete, and drag onto another folder.
+    click_tree(&mut app, &p("docs"), 1);
+    click_with(&mut app, &p("a.txt"), CTRL);
+    key(&mut app, "delete");
+    refused(&mut app, "deleted");
+    drag_rows(&mut app, &p("a.txt"), &p("aaa"));
+    refused(&mut app, "moved");
+    // The folder alone: delete, rename, drag.
+    click_tree(&mut app, &p("docs"), 1);
+    key(&mut app, "delete");
+    refused(&mut app, "deleted");
+    key(&mut app, "f2");
+    refused(&mut app, "renamed");
+    drag_rows(&mut app, &p("docs"), &p("aaa"));
+    refused(&mut app, "moved");
+    assert_eq!(contents(&ws), before);
+    assert!(contents(&bin).is_empty());
+    assert!(p("docs/inner/keep.txt").exists());
+    cleanup(&ws);
+}
+
+#[cfg(unix)]
+#[test]
+fn file_details_are_never_read_through_a_link() {
+    let (mut app, ws, _bin) = setup("linkstat");
+    let p = |n: &str| ws.join(n);
+    let outside = ws.parent().unwrap().join("outside.bin");
+    std::fs::write(&outside, vec![7u8; 12_698]).unwrap();
+    std::os::unix::fs::symlink(&outside, p("link.bin")).unwrap();
+    app.handle(Input::FsChanged(vec![p("link.bin")]));
+    render_hash(&mut app, 800, 600);
+    click_with(&mut app, &p("a.txt"), CTRL);
+    click_with(&mut app, &p("a.txt"), CTRL);
+    click_with(&mut app, &p("a.txt"), CTRL);
+    render_hash(&mut app, 800, 600);
+    assert!(
+        app.status_text().contains("5 bytes"),
+        "{}",
+        app.status_text()
+    );
+    click_with(&mut app, &p("a.txt"), CTRL);
+    click_with(&mut app, &p("link.bin"), CTRL);
+    render_hash(&mut app, 800, 600);
+    let s = app.status_text();
+    assert!(!s.contains("KB") && !s.contains("bytes"), "{s}");
+    cleanup(&ws);
+}
+
+#[test]
+fn a_quit_that_is_called_off_does_not_stop_a_running_copy() {
+    let (mut app, ws, _bin) = setup("quitcopy");
+    let p = |n: &str| ws.join(n);
+    app.set_copy_first_slice(Duration::ZERO);
+    let big: Vec<u8> = (0..2_000_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(p("big.bin"), &big).unwrap();
+    app.handle(Input::FsChanged(vec![p("big.bin")]));
+    // A file with unsaved edits, so closing asks first.
+    app.open(&p("a.txt"));
+    app.handle(Input::Text("x".into()));
+    right_click(&mut app, &p("big.bin"));
+    run_menu_item(&mut app, "Copy");
+    right_click(&mut app, &p("docs"));
+    run_menu_item(&mut app, "Paste");
+    app.tick(Duration::ZERO);
+    assert!(app.copy_running());
+    app.handle(Input::CloseRequested);
+    assert!(app.nag_message().is_some());
+    // Another launch sends a file: the window stays open after the answer.
+    app.open_from_other_launch(vec![p("d.txt")]);
+    key(&mut app, "d");
+    while app.nag_message().is_some() {
+        key(&mut app, "d");
+    }
+    assert!(!app.take_requests().contains(&Request::Quit));
+    assert!(app.copy_running(), "the copy goes on");
+    app.settle(Duration::from_secs(20));
+    assert!(!app.copy_running());
+    assert_eq!(std::fs::read(p("docs/big.bin")).unwrap(), big);
+    cleanup(&ws);
+}

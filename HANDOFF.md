@@ -1,4 +1,4 @@
-# Handoff — state of work when the session ended (2026-11-15)
+# Handoff — state of work (2026-11-15)
 
 Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 
@@ -16,20 +16,20 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 - Last fully green Windows CI run: commit `9395405` (all real-window tests
   pass, including one-window hand-over and the "Open with" registry test;
   exe 6.76 MB; one window 19 MB private; 12 viewed markdown tabs ≈ 22 MB).
-- Linux: 386 tests pass. The Windows target type-checks from Linux with
+- Linux: 393 tests pass. The Windows target type-checks from Linux with
   `cargo check --target x86_64-pc-windows-msvc`.
 
-## In flight when the session ended
+## Nothing is in flight
 
-### 1. Independent review of Epic 6 — done
+Epics 0–7 are on `main`. Epic 7 (S7.0–S7.5) was built on branches by
+sub-agents, reviewed, squash-merged, then reviewed again independently
+(two reviewers); every confirmed finding is fixed with a regression test.
+See the ROADMAP progress log. The `s7-*` branches on the remote are stale
+snapshots and can be deleted.
 
-Findings fixed as story S7.0 (see the ROADMAP progress log).
-
-### 2. Epic 7 — merged
-
-All five stories (S7.1–S7.5) were finished by sub-agents, reviewed, and
-squash-merged into `main`; see the ROADMAP progress log. The `s7-*` remote
-branches are stale snapshots and can be deleted.
+Not addressed (recorded, low risk): on Windows a tab opened under a
+differently-cased path is now matched to tree entries, but this could only
+be unit-tested from Linux (`fsops::is_under`).
 
 ## Open questions for the owner (also in DECISIONS.md)
 

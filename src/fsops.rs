@@ -310,13 +310,42 @@ pub fn free_copy_target(src: &Path, dir: &Path, is_dir: bool) -> Result<PathBuf,
 /// a folder and something in it are both chosen, only the folder is acted on.
 /// Order is kept.
 pub fn without_nested(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    for p in paths {
-        let nested = paths.iter().any(|q| q != p && p.starts_with(q));
-        if !nested && !out.contains(p) {
-            out.push(p.clone());
-        }
+    // One pass over each path's parents (a whole folder may be selected:
+    // comparing every pair would freeze the window).
+    let all: std::collections::HashSet<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let mut seen: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    paths
+        .iter()
+        .filter(|p| {
+            let nested = p.ancestors().skip(1).any(|a| all.contains(a));
+            !nested && seen.insert(p.as_path())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Is `p` at or under `base`? On Windows names differ only by case are the
+/// same file, however each path was typed.
+pub fn is_under(p: &Path, base: &Path) -> bool {
+    is_under_fold(p, base, cfg!(windows))
+}
+
+fn is_under_fold(p: &Path, base: &Path, fold: bool) -> bool {
+    if !fold {
+        return p.starts_with(base);
     }
+    let lower = |c: std::path::Component| c.as_os_str().to_string_lossy().to_lowercase();
+    let mut mine = p.components();
+    base.components()
+        .all(|b| mine.next().is_some_and(|m| lower(m) == lower(b)))
+}
+
+/// Where `p` (at or under `old`) is after `old` became `new`. Counts path
+/// parts instead of comparing them, so a different spelling of `old` (case
+/// on Windows) still gives the right place.
+pub fn rebase(p: &Path, old: &Path, new: &Path) -> PathBuf {
+    let mut out = new.to_path_buf();
+    out.extend(p.components().skip(old.components().count()));
     out
 }
 
@@ -765,6 +794,60 @@ mod tests {
         assert_eq!(human_bytes(532), "532 bytes");
         assert_eq!(human_bytes(12_698), "12.4 KB");
         assert_eq!(human_bytes(1 << 30), "1.0 GB");
+    }
+
+    #[test]
+    fn without_nested_is_quick_for_a_whole_folder_and_matches_the_simple_rule() {
+        let simple = |paths: &[PathBuf]| -> Vec<PathBuf> {
+            let mut out: Vec<PathBuf> = Vec::new();
+            for p in paths {
+                let nested = paths.iter().any(|q| q != p && p.starts_with(q));
+                if !nested && !out.contains(p) {
+                    out.push(p.clone());
+                }
+            }
+            out
+        };
+        let names = ["a", "b", "a/x", "a/x/y", "b/z", "c/d", "a", "ab", "c"];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        for _ in 0..500 {
+            let mut v = Vec::new();
+            for _ in 0..(seed % 7) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                v.push(PathBuf::from("/r").join(names[(seed % names.len() as u64) as usize]));
+            }
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            assert_eq!(without_nested(&v), simple(&v), "{v:?}");
+        }
+        let many: Vec<PathBuf> = (0..20_000)
+            .map(|i| PathBuf::from(format!("/r/dir/file{i}.txt")))
+            .collect();
+        let t = std::time::Instant::now();
+        assert_eq!(without_nested(&many).len(), 20_000);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn under_and_rebase_ignore_case_only_where_the_file_system_does() {
+        let (p, base) = (Path::new("/Work/Notes/b.md"), Path::new("/work/notes"));
+        assert!(is_under_fold(p, base, true));
+        assert!(!is_under_fold(p, base, false));
+        assert!(is_under_fold(base, base, true) && is_under_fold(base, base, false));
+        assert!(!is_under_fold(Path::new("/work/notes2/b.md"), base, true));
+        assert!(!is_under_fold(Path::new("/work"), base, true));
+        assert_eq!(
+            rebase(p, base, Path::new("/x/moved")),
+            PathBuf::from("/x/moved/b.md")
+        );
+        assert_eq!(rebase(base, base, Path::new("/x/n")), PathBuf::from("/x/n"));
     }
 
     #[test]

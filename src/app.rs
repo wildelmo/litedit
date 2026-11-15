@@ -913,10 +913,9 @@ impl App {
                         let name = self.view_name();
                         self.nag = Some(Nag::unsaved(&name, Pending::Quit));
                     }
-                    None => {
-                        self.cancel_copy();
-                        self.requests.push(Request::Quit)
-                    }
+                    // (A running tree copy is stopped when the window
+                    // really closes: this quit can still be called off.)
+                    None => self.requests.push(Request::Quit),
                 }
             }
         }
@@ -1280,14 +1279,30 @@ impl App {
         self.pending = true;
     }
 
+    /// The refusal for deleting / moving / renaming a folder that has a
+    /// workspace folder somewhere inside it: workspace folders are only ever
+    /// removed from the workspace by name, never as part of something else.
+    fn workspace_folder_refusal(&self, paths: &[PathBuf], done: &str) -> Option<String> {
+        let roots = self.tree.roots();
+        paths.iter().find_map(|p| {
+            let inside = roots
+                .iter()
+                .find(|r| r.as_path() != p.as_path() && crate::fsops::is_under(r, p))?;
+            Some(format!(
+                "Nothing was {done}: {} contains the workspace folder {}. Remove that folder from the workspace first.",
+                display_name(p),
+                display_name(inside)
+            ))
+        })
+    }
+
     /// Paths of tabs at or under `path`, with their dirty state.
     fn tabs_under(&self, path: &Path) -> Vec<(u64, PathBuf, bool)> {
         (0..self.tabs.len())
             .filter_map(|i| {
                 let v = self.tab_view(i);
                 let p = v.path()?.to_path_buf();
-                p.starts_with(path)
-                    .then(|| (self.tabs[i].id, p, v.is_dirty()))
+                crate::fsops::is_under(&p, path).then(|| (self.tabs[i].id, p, v.is_dirty()))
             })
             .collect()
     }
@@ -1304,12 +1319,7 @@ impl App {
     fn relocated(&mut self, old: &Path, new: &Path, open: &[(u64, PathBuf)]) {
         for (id, p) in open {
             self.remove_tab(*id);
-            let target = if p == old {
-                new.to_path_buf()
-            } else {
-                new.join(p.strip_prefix(old).unwrap_or(Path::new("")))
-            };
-            self.open(&target);
+            self.open(&crate::fsops::rebase(p, old, new));
         }
         self.after_fs_change(old);
         self.after_fs_change(new);
@@ -1321,6 +1331,10 @@ impl App {
         // Never replace a question that is already showing.
         if self.nag.is_some() {
             self.notice = Some("Answer the question above first, then move it again".into());
+            return;
+        }
+        if let Some(refusal) = self.workspace_folder_refusal(std::slice::from_ref(&from), "moved") {
+            self.nag = Some(Nag::error(refusal));
             return;
         }
         if self.tabs_under(&from).iter().any(|(_, _, dirty)| *dirty) {
@@ -1524,6 +1538,12 @@ impl App {
                 ))
             }
             MenuAction::Rename(p) => {
+                if let Some(refusal) =
+                    self.workspace_folder_refusal(std::slice::from_ref(p), "renamed")
+                {
+                    self.nag = Some(Nag::error(refusal));
+                    return;
+                }
                 if self.tabs_under(p).iter().any(|(_, _, dirty)| *dirty) {
                     self.nag = Some(Nag::error(format!(
                         "Save or close the open file(s) in {} before renaming.",
@@ -1538,6 +1558,12 @@ impl App {
                 ));
             }
             MenuAction::Delete(p) => {
+                if let Some(refusal) =
+                    self.workspace_folder_refusal(std::slice::from_ref(p), "deleted")
+                {
+                    self.nag = Some(Nag::error(refusal));
+                    return;
+                }
                 if self.tabs_under(p).iter().any(|(_, _, dirty)| *dirty) {
                     self.nag = Some(Nag::error(format!(
                         "Save or close the open file(s) in {} before deleting.",
@@ -1864,7 +1890,14 @@ impl App {
     }
 
     pub fn take_requests(&mut self) -> Vec<Request> {
-        std::mem::take(&mut self.requests)
+        let requests = std::mem::take(&mut self.requests);
+        // The window is told to close now (a quit asked for earlier can
+        // still be called off): stop a running tree copy, removing the
+        // file it was in the middle of writing.
+        if requests.contains(&Request::Quit) {
+            self.cancel_copy();
+        }
+        requests
     }
 
     pub fn has_pending_work(&self) -> bool {

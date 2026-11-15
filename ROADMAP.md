@@ -220,6 +220,16 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — Epic 7 independent review, part 2 (tree file operations,
+  image viewer): no way found to lose edits or overwrite a file; image
+  decoding survived 12,000 damaged files. Fixed: a folder with a workspace
+  folder somewhere inside it could be deleted / moved / renamed (now
+  refused, for one entry or many); file details in the status bar were
+  read through links (`symlink_metadata` now); a quit that was called off
+  silently stopped a running copy (the copy stops when the window really
+  closes: `take_requests`); selecting thousands of entries froze Delete
+  (`without_nested` was quadratic); open tabs are matched to tree paths
+  ignoring case on Windows (`fsops::is_under`, `rebase`). 393 tests.
 - 2026-11-15 — Epic 7 independent review, part 1 (editing / navigation /
   compare): no data loss found (4,000-file open-and-save fuzz matched the
   old decoder exactly; read-only lock and Back / Forward held). Fixed: a

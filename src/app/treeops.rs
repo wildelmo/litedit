@@ -351,7 +351,10 @@ impl App {
             self.notice = Some("Answer the question above first, then delete again".into());
             return;
         }
-        if let Some(refusal) = self.unsaved_refusal(&paths, "deleted") {
+        if let Some(refusal) = self
+            .workspace_folder_refusal(&paths, "deleted")
+            .or_else(|| self.unsaved_refusal(&paths, "deleted"))
+        {
             self.nag = Some(Nag::error(refusal));
             return;
         }
@@ -372,7 +375,10 @@ impl App {
     /// The answer was "Move to Recycle Bin".
     pub(super) fn recycle_many(&mut self, paths: Vec<PathBuf>) {
         // Things may have changed while the question was up.
-        if let Some(refusal) = self.unsaved_refusal(&paths, "deleted") {
+        if let Some(refusal) = self
+            .workspace_folder_refusal(&paths, "deleted")
+            .or_else(|| self.unsaved_refusal(&paths, "deleted"))
+        {
             self.nag = Some(Nag::error(refusal));
             return;
         }
@@ -426,7 +432,10 @@ impl App {
             self.notice = Some("Answer the question above first, then move them again".into());
             return;
         }
-        if let Some(refusal) = self.unsaved_refusal(&paths, "moved") {
+        if let Some(refusal) = self
+            .workspace_folder_refusal(&paths, "moved")
+            .or_else(|| self.unsaved_refusal(&paths, "moved"))
+        {
             self.nag = Some(Nag::error(refusal));
             return;
         }
@@ -447,7 +456,10 @@ impl App {
 
     /// The answer was "Move".
     pub(super) fn move_many(&mut self, paths: Vec<PathBuf>, dir: PathBuf) {
-        if let Some(refusal) = self.unsaved_refusal(&paths, "moved") {
+        if let Some(refusal) = self
+            .workspace_folder_refusal(&paths, "moved")
+            .or_else(|| self.unsaved_refusal(&paths, "moved"))
+        {
             self.nag = Some(Nag::error(refusal));
             return;
         }
@@ -675,7 +687,9 @@ impl App {
         {
             self.ops.stats += 1;
         }
-        let info = std::fs::metadata(path)
+        // Never through a link: its target may be anywhere (a network
+        // share would be contacted just by selecting the entry).
+        let info = std::fs::symlink_metadata(path)
             .ok()
             .filter(|m| m.is_file())
             .map(|m| (m.len(), m.modified().ok()));
