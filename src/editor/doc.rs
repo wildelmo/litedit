@@ -124,6 +124,13 @@ pub struct EditDoc {
     disk_meta: Option<(u64, std::time::SystemTime)>,
     /// Remembered column (in chars) for up/down movement.
     goal_col: Option<usize>,
+    /// Locked: every editing method below refuses (the text, the history
+    /// and the line-ending / indentation settings stay as they are). The
+    /// views also hide editing, but this is the one place that enforces it.
+    pub read_only: bool,
+    /// An edit was refused because of the lock since the view last cleared
+    /// this (it shows a notice).
+    pub refused: bool,
 }
 
 impl EditDoc {
@@ -140,6 +147,8 @@ impl EditDoc {
             version: 0,
             saved_state: Some(0),
             goal_col: None,
+            read_only: false,
+            refused: false,
             lossy: doc.lossy,
             disk_hash: text_hash(&doc.text),
             disk_meta: doc.meta,
@@ -239,8 +248,16 @@ impl EditDoc {
 
     // ---- low level ----------------------------------------------------
 
+    /// Is the document locked? Records that an edit was refused.
+    fn locked(&mut self) -> bool {
+        if self.read_only {
+            self.refused = true;
+        }
+        self.read_only
+    }
+
     fn apply(&mut self, ops: Vec<Op>, kind: GroupKind, sels_before: Vec<Sel>) {
-        if ops.is_empty() {
+        if ops.is_empty() || self.locked() {
             return;
         }
         let mut inverse = Vec::with_capacity(ops.len());
@@ -261,6 +278,9 @@ impl EditDoc {
         kind: GroupKind,
         mut f: impl FnMut(&Buffer, Sel) -> (Vec<Op>, Option<Pos>),
     ) {
+        if self.locked() {
+            return;
+        }
         let before = self.sels.clone();
         let mut order_idx: Vec<usize> = (0..self.sels.len()).collect();
         order_idx.sort_by_key(|&i| std::cmp::Reverse(self.sels[i].range().0));
@@ -293,6 +313,9 @@ impl EditDoc {
 
     /// Type or paste text at every selection (replacing selected text).
     pub fn insert_text(&mut self, text: &str) {
+        if self.locked() {
+            return;
+        }
         let chunk = Chunk::typed(text, self.buf.default_eol());
         let typing = chunk.lines.len() == 1
             && text.chars().count() == 1
@@ -322,6 +345,9 @@ impl EditDoc {
 
     /// Enter: new line keeping the current line's indentation.
     pub fn newline(&mut self) {
+        if self.locked() {
+            return;
+        }
         let eol = self.buf.default_eol();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
@@ -350,11 +376,17 @@ impl EditDoc {
 
     /// Backspace (or Ctrl+Backspace for a word).
     pub fn backspace(&mut self, word: bool) {
+        if self.locked() {
+            return;
+        }
         self.delete(true, word);
     }
 
     /// Delete (or Ctrl+Delete for a word).
     pub fn delete_forward(&mut self, word: bool) {
+        if self.locked() {
+            return;
+        }
         self.delete(false, word);
     }
 
@@ -402,6 +434,9 @@ impl EditDoc {
 
     /// Tab: indent selected lines, or insert one indent at the caret.
     pub fn indent_lines(&mut self) {
+        if self.locked() {
+            return;
+        }
         let unit = self.indent.unit();
         if self.sels.iter().all(|s| s.anchor == s.head) {
             // No selection: insert an indent unit (spaces up to the next
@@ -442,6 +477,9 @@ impl EditDoc {
 
     /// Shift+Tab: remove one indent level from selected lines.
     pub fn outdent_lines(&mut self) {
+        if self.locked() {
+            return;
+        }
         let indent = self.indent;
         self.for_selected_lines(|buf, line| {
             let l = buf.line(line);
@@ -468,6 +506,9 @@ impl EditDoc {
     /// Apply per-line ops to every line touched by a selection, keeping the
     /// selections over the same text.
     fn for_selected_lines(&mut self, mut f: impl FnMut(&Buffer, usize) -> Vec<Op>) {
+        if self.locked() {
+            return;
+        }
         let before = self.sels.clone();
         let mut lines: Vec<usize> = Vec::new();
         for s in &self.sels {
@@ -499,6 +540,9 @@ impl EditDoc {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.locked() {
+            return false;
+        }
         match self.hist.undo(&mut self.buf) {
             Some(sels) => {
                 self.sels = sels.into_iter().map(|s| self.clamp_sel(s)).collect();
@@ -513,6 +557,9 @@ impl EditDoc {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.locked() {
+            return false;
+        }
         match self.hist.redo(&mut self.buf) {
             Some(sels) => {
                 self.sels = sels.into_iter().map(|s| self.clamp_sel(s)).collect();
@@ -688,6 +735,9 @@ impl EditDoc {
 
     /// Paste whole lines above each caret (after a line-mode copy).
     pub fn paste_lines(&mut self, text: &str) {
+        if self.locked() {
+            return;
+        }
         self.one_selection_per_line_block();
         let chunk = Chunk::typed(text, self.buf.default_eol());
         self.edit_each(GroupKind::Other, |_, sel| {
@@ -704,7 +754,7 @@ impl EditDoc {
     /// Replace several ranges (any order, non-overlapping) as ONE undo step.
     /// Used by replace / replace-all.
     pub fn replace_ranges(&mut self, mut edits: Vec<(Pos, Pos, String)>) {
-        if edits.is_empty() {
+        if edits.is_empty() || self.locked() {
             return;
         }
         edits.sort_by_key(|e| std::cmp::Reverse(e.0));
@@ -752,6 +802,9 @@ impl EditDoc {
     }
 
     pub fn delete_selection(&mut self) {
+        if self.locked() {
+            return;
+        }
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
             if a == b {
@@ -770,6 +823,9 @@ impl EditDoc {
 
     /// Remove the whole line under each caret (cut a line with no selection).
     pub fn delete_lines(&mut self) {
+        if self.locked() {
+            return;
+        }
         self.one_selection_per_line_block();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
@@ -956,6 +1012,9 @@ impl EditDoc {
 
     /// Alt+Up / Alt+Down: move the selected lines, keeping line endings.
     pub fn move_lines(&mut self, up: bool) {
+        if self.locked() {
+            return;
+        }
         let blocks = self.selected_blocks();
         let n = self.buf.line_count();
         if blocks.is_empty()
@@ -1027,6 +1086,9 @@ impl EditDoc {
     /// Ctrl+/: comment or uncomment the selected lines with `start` (and
     /// `end` for block-style languages like HTML).
     pub fn toggle_comment(&mut self, start: &str, end: Option<&str>) {
+        if self.locked() {
+            return;
+        }
         let blocks = self.selected_blocks();
         let lines: Vec<usize> = blocks.iter().flat_map(|&(a, b)| a..=b).collect();
         let body = |l: &str| l.trim_start().to_string();
@@ -1116,7 +1178,7 @@ impl EditDoc {
     /// Replace the whole text in one undo step (whole-document commands).
     /// Selections are kept where they were, clamped to the new text.
     fn replace_all(&mut self, new_text: &str) {
-        if self.buf.to_text() == new_text {
+        if self.locked() || self.buf.to_text() == new_text {
             return;
         }
         let before = self.sels.clone();
@@ -1162,6 +1224,9 @@ impl EditDoc {
 
     /// "Line Endings: LF / CRLF": every line ending becomes `eol`.
     pub fn set_line_endings(&mut self, eol: Eol) {
+        if self.locked() {
+            return;
+        }
         let text = self.buf.lines().join(eol.as_str());
         self.replace_all(&text);
         self.buf.set_default_eol(eol);
@@ -1169,11 +1234,17 @@ impl EditDoc {
 
     /// Remove spaces and tabs at the ends of lines.
     pub fn trim_trailing_whitespace(&mut self) {
+        if self.locked() {
+            return;
+        }
         self.map_lines(|l| l.trim_end_matches([' ', '\t']).to_string());
     }
 
     /// "Indentation: Convert to Spaces / Tabs" (leading whitespace only).
     pub fn convert_indentation(&mut self, to: Indent) {
+        if self.locked() {
+            return;
+        }
         let width = match self.indent {
             Indent::Spaces(n) => n,
             Indent::Tab => 4,
@@ -1204,6 +1275,9 @@ impl EditDoc {
     /// Upper / lower case the selections (the word at a caret if nothing is
     /// selected).
     pub fn change_case(&mut self, upper: bool) {
+        if self.locked() {
+            return;
+        }
         if self.sels.iter().all(Sel::is_empty) && self.sels.len() == 1 {
             let p = self.sels[0].head;
             self.select_word_at(p);
@@ -1241,6 +1315,9 @@ impl EditDoc {
     /// Ctrl+J: join the selected lines (or the line with the next one),
     /// with one space instead of the line break and leading indent.
     pub fn join_lines(&mut self) {
+        if self.locked() {
+            return;
+        }
         self.edit_each(GroupKind::Other, |buf, sel| {
             let (a, b) = sel.range();
             let last = b.line.max(a.line + 1).min(buf.line_count() - 1);
@@ -1276,6 +1353,9 @@ impl EditDoc {
     /// Ctrl+Enter / Ctrl+Shift+Enter: start a new line below / above the
     /// current one, keeping its indentation.
     pub fn new_line_beside(&mut self, above: bool) {
+        if self.locked() {
+            return;
+        }
         let eol = self.buf.default_eol();
         self.edit_each(GroupKind::Other, |buf, sel| {
             let line = sel.head.line;
@@ -1342,6 +1422,9 @@ impl EditDoc {
 
     /// Duplicate the current line(s) below.
     pub fn duplicate_lines(&mut self) {
+        if self.locked() {
+            return;
+        }
         self.one_selection_per_line_block();
         let eol = self.buf.default_eol();
         self.edit_each(GroupKind::Other, |buf, sel| {

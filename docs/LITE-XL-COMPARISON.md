@@ -79,6 +79,7 @@ in litedit · ➕ litedit only
 | — | ➕ Markdown preview (default), side-by-side live preview | The reason litedit exists |
 | — | ➕ Compare two files / with saved / left ↔ right of a split / with the clipboard; ignore whitespace | |
 | Image view (plugin-free: lite-xl has none built in) | ➕ Picture files open in a viewer tab | png, jpg, gif (first frame), webp, bmp |
+| — | ➕ Read-only lock for a tab | Palette: View: Toggle Read-Only |
 | — | ➕ Light theme switch | |
 
 ## Customisation

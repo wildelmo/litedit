@@ -758,7 +758,11 @@ impl MarkdownView {
     /// line and character position, and the edit only happens if the buffer
     /// really has `[ ]` / `[x]` there. One undo step.
     fn toggle_task(&mut self, offset: usize) -> bool {
-        if self.preview_stale() || self.editor.is_read_only() {
+        if self.editor.is_read_only() {
+            self.editor.doc.refused = true;
+            return false;
+        }
+        if self.preview_stale() {
             return false;
         }
         let text = &self.md_text;
@@ -1316,6 +1320,10 @@ impl View for MarkdownView {
 
     fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
         self.last_rect = rect;
+        if self.mode == Mode::Preview && matches!(input, Input::Key { .. } | Input::Text(_)) {
+            // (The source and split views clear it themselves.)
+            self.editor.doc.refused = false;
+        }
         if let Input::Key {
             key: Key::Char('e'),
             mods,
@@ -1446,6 +1454,12 @@ impl View for MarkdownView {
                         ),
                     });
                 }
+                if self.editor.is_read_only() {
+                    v.push("Read-only".to_string());
+                    if self.editor.doc.refused {
+                        v.push("Locked: nothing was changed (View: Toggle Read-Only)".into());
+                    }
+                }
                 v
             }
             Mode::Split => {
@@ -1491,7 +1505,7 @@ impl View for MarkdownView {
     }
 
     fn has_background_work(&self) -> bool {
-        self.images.pending()
+        self.images.pending() || (self.mode != Mode::Preview && self.editor.has_background_work())
     }
 
     fn on_hide(&mut self) {
@@ -1525,6 +1539,11 @@ impl View for MarkdownView {
     }
 
     #[cfg(test)]
+    fn highlight_probe(&self, line: usize) -> Option<(usize, Option<Vec<crate::syntax::Span>>)> {
+        self.editor.highlight_probe(line)
+    }
+
+    #[cfg(test)]
     fn has_caches(&self) -> bool {
         self.layout.is_some()
             || !self.scaled.is_empty()
@@ -1535,6 +1554,10 @@ impl View for MarkdownView {
 
     fn is_dirty(&self) -> bool {
         self.editor.is_dirty()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.editor.is_read_only()
     }
 
     fn text(&self) -> Option<String> {

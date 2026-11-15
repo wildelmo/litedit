@@ -210,6 +210,7 @@ impl Palette {
             ("Edit: Upper Case", "upper-case"),
             ("Edit: Lower Case", "lower-case"),
             ("Edit: Trim Trailing Whitespace", "trim-whitespace"),
+            ("View: Toggle Read-Only", "toggle-read-only"),
             ("Indentation: Convert to Spaces", "indent-spaces"),
             ("Indentation: Convert to Tabs", "indent-tabs"),
             ("Line Endings: LF (Unix)", "eol-lf"),

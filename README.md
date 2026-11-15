@@ -80,6 +80,7 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |
 | `Tab` / `Shift+Tab` | Indent / outdent |
 | `Alt+Z` | Toggle word wrap (on by default for markdown) |
+| Palette: View: Toggle Read-Only | Lock a text tab against edits |
 | `Ctrl+\` | Show / hide the file tree |
 | `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
 | `Ctrl+Shift+H` | Show / hide hidden files in the tree |

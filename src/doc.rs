@@ -66,14 +66,12 @@ impl Document {
                 lines / 1_000_000
             )));
         }
-        let (text, encoding) = decode(&bytes);
-        if looks_binary(&bytes, encoding) {
+        if looks_binary(&bytes) {
             return Err(io::Error::other(
                 "this looks like a binary file (an image, program or archive), not text",
             ));
         }
-        // The only reliable test: does it encode back to the same bytes?
-        let lossy = encoding == Encoding::Utf8Lossy || encode(&text, encoding) != bytes;
+        let (text, encoding, lossy) = decode_owned(bytes);
         Ok(Self {
             path: path.to_path_buf(),
             text,
@@ -118,9 +116,39 @@ pub fn is_reserved_name(path: &Path) -> bool {
 }
 
 /// NUL bytes in the first 8 KB of a file that isn't UTF-16: binary.
-fn looks_binary(bytes: &[u8], enc: Encoding) -> bool {
-    !matches!(enc, Encoding::Utf16Le | Encoding::Utf16Be)
+fn looks_binary(bytes: &[u8]) -> bool {
+    !(bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]))
         && bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+/// `decode` for a file just read, without a second copy of valid UTF-8
+/// (the common case: the bytes become the text), and without encoding the
+/// text back to learn whether it would save unchanged. Returns the text,
+/// the encoding and whether saving would not write back the same bytes.
+fn decode_owned(mut bytes: Vec<u8>) -> (String, Encoding, bool) {
+    let bom = bytes.starts_with(&[0xEF, 0xBB, 0xBF]);
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        // UTF-16 can be broken in ways only a round trip shows.
+        let (text, enc) = decode(&bytes);
+        let lossy = encode(&text, enc) != bytes;
+        return (text, enc, lossy);
+    }
+    if bom {
+        bytes.drain(..3);
+    }
+    let enc = if bom {
+        Encoding::Utf8Bom
+    } else {
+        Encoding::Utf8
+    };
+    match String::from_utf8(bytes) {
+        // Valid UTF-8 encodes back to exactly the bytes it came from.
+        Ok(text) => (text, enc, false),
+        Err(e) => {
+            let text = String::from_utf8_lossy(e.as_bytes()).into_owned();
+            (text, if bom { enc } else { Encoding::Utf8Lossy }, true)
+        }
+    }
 }
 
 pub fn decode(bytes: &[u8]) -> (String, Encoding) {
@@ -220,6 +248,54 @@ mod tests {
         let (s, e) = decode(&[0xFF, 0xFE, b'h', 0, b'i', 0]);
         assert_eq!(s, "hi");
         assert_eq!(e, Encoding::Utf16Le);
+    }
+
+    /// `decode_owned` is `decode` plus the round-trip test, without the copies.
+    #[test]
+    fn decode_owned_agrees_with_decode_and_a_round_trip() {
+        let samples: Vec<Vec<u8>> = vec![
+            b"".to_vec(),
+            b"plain\r\ntext\n".to_vec(),
+            "h\u{e9}llo \u{1F600}".as_bytes().to_vec(),
+            b"\xEF\xBB\xBFbom text".to_vec(),
+            b"\xEF\xBB\xBF".to_vec(),
+            b"\xEF\xBB\xBFbad \xFF byte".to_vec(),
+            b"ok \xFF\xFE\xFD done".to_vec(),
+            b"\xC3".to_vec(),
+            vec![0xFF, 0xFE, b'h', 0, b'i', 0],
+            vec![0xFF, 0xFE, b'h', 0, b'i'],
+            vec![0xFF, 0xFE, 0x00, 0xD8, b'x', 0],
+            vec![0xFE, 0xFF, 0, b'h', 0, b'i'],
+            vec![0xFE, 0xFF],
+        ];
+        for b in samples {
+            let (t, e) = decode(&b);
+            let lossy = e == Encoding::Utf8Lossy || encode(&t, e) != b;
+            assert_eq!(decode_owned(b.clone()), (t, e, lossy), "{b:?}");
+        }
+    }
+
+    #[test]
+    fn open_flags_lossy_files_and_not_clean_ones() {
+        let dir = std::env::temp_dir().join(format!("litedit-doc-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, bytes, lossy) in [
+            ("clean.txt", b"a\r\nb".to_vec(), false),
+            ("bom.txt", b"\xEF\xBB\xBFa".to_vec(), false),
+            ("bad.txt", b"a\xFFb".to_vec(), true),
+            ("bombad.txt", b"\xEF\xBB\xBFa\xFFb".to_vec(), true),
+        ] {
+            let p = dir.join(name);
+            std::fs::write(&p, &bytes).unwrap();
+            assert_eq!(Document::open(&p).unwrap().lossy, lossy, "{name}");
+        }
+        let utf16 = dir.join("u16.txt");
+        std::fs::write(&utf16, [0xFF, 0xFE, b'a', 0, b'b']).unwrap();
+        assert!(Document::open(&utf16).unwrap().lossy);
+        let nul = dir.join("nul.bin");
+        std::fs::write(&nul, b"ab\0cd").unwrap();
+        assert!(Document::open(&nul).is_err());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 ## 1.1.0 — unreleased
 
+- Big files: text is coloured only as far as you read, and loading takes
+  much less memory (a 100,000-line, 8 MB file: 60 MB → 37 MB at its peak).
+- Read-only lock: "View: Toggle Read-Only" in the command palette protects
+  a text tab from accidental edits (the status bar shows "Read-only").
 - File tree: select several entries (Ctrl+click, Shift+click, Shift+Up /
   Down, Ctrl+A) and delete or drag-move them with one confirmation; Copy,
   Paste and Duplicate (Ctrl+C / Ctrl+V / Ctrl+D in the tree) that never

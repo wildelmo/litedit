@@ -28,6 +28,12 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-033 Read-only lock: what it blocks and what it doesn't
+A locked tab refuses everything that changes its text, including undo and
+redo. Cut copies without removing. Save As, and reloading when another
+program changes the file, still work (they don't change what you see by
+accident). The lock is per tab and is not remembered after closing.
+
 ### D-032 Copying in the tree: litedit's own list, strict limits
 Ctrl+C in the tree remembers the entries inside litedit only (it does not
 put files on the Windows clipboard, so you can't paste them into Explorer

@@ -24,7 +24,9 @@ use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::syntax::{LineHighlighter, find_syntax};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
-use crate::view::code::{DisplayLine, MAX_DISPLAY_CHARS, shape_code_line};
+use crate::view::code::{
+    DisplayLine, HIGHLIGHT_MIN_AHEAD, HIGHLIGHT_SCREENS_AHEAD, MAX_DISPLAY_CHARS, shape_code_line,
+};
 use crate::view::{Scroll, Tick, View, draw_vscrollbar};
 
 /// Time allowed for the line diff before it settles for a coarser answer.
@@ -133,6 +135,9 @@ pub struct DiffView {
     only_ws: bool,
     /// Row height at the last render / input (to keep the place on Alt+W).
     row_px: f32,
+    /// Syntax-colour each side up to this line (exclusive): its last line
+    /// on screen plus a margin, set by every frame (like the code view).
+    want: [usize; 2],
 }
 
 impl DiffView {
@@ -152,6 +157,7 @@ impl DiffView {
             ignore_ws: false,
             only_ws: false,
             row_px: 0.0,
+            want: [HIGHLIGHT_MIN_AHEAD; 2],
         };
         v.rebuild();
         Ok(v)
@@ -328,6 +334,14 @@ impl DiffView {
 
     fn side(&self, s: usize) -> &Side {
         if s == 0 { &self.old } else { &self.new }
+    }
+
+    /// Is syntax colouring still owed for what is on screen?
+    fn highlight_pending(&self) -> bool {
+        (0..2).any(|s| {
+            let side = self.side(s);
+            side.highlighter.needs(self.want[s], side.lines.len())
+        })
     }
 
     /// Changed ranges for a line on side `s`, given its row.
@@ -547,6 +561,20 @@ impl View for DiffView {
             .max(3);
         let gutter_w =
             (ctx.text_width(&"9".repeat(digits), FontKind::Mono) + ctx.px(20.0)).round() as i32;
+        // Colour each side as far as its last line on screen, plus a margin.
+        let ahead = ((body_h.max(0) as f32 / rh.max(1.0)) as usize)
+            .saturating_mul(HIGHLIGHT_SCREENS_AHEAD)
+            .max(HIGHLIGHT_MIN_AHEAD);
+        let shown = self.model.rows.get(first..last.max(first)).unwrap_or(&[]);
+        for s in 0..2 {
+            let bottom = shown
+                .iter()
+                .rev()
+                .find_map(|r| if s == 0 { r.old } else { r.new });
+            if let Some(l) = bottom {
+                self.want[s] = l.saturating_add(1).saturating_add(ahead);
+            }
+        }
         let prev = canvas.clip();
         for (s, area) in sides.iter().enumerate() {
             let body = Rect::new(area.x, body_top, area.w, body_h);
@@ -648,12 +676,40 @@ impl View for DiffView {
 
     fn tick(&mut self, _ctx: &mut Ctx, budget: Duration) -> Tick {
         let half = budget / 2;
-        let a = self.old.highlighter.step(&self.old.lines, half);
-        let b = self.new.highlighter.step(&self.new.lines, half);
+        let before = (self.old.highlighter.done(), self.new.highlighter.done());
+        self.old
+            .highlighter
+            .step_to(&self.old.lines, self.want[0], half);
+        self.new
+            .highlighter
+            .step_to(&self.new.lines, self.want[1], half);
         Tick {
-            more: a || b,
-            redraw: true,
+            more: self.highlight_pending(),
+            redraw: before != (self.old.highlighter.done(), self.new.highlighter.done()),
         }
+    }
+
+    fn has_background_work(&self) -> bool {
+        self.highlight_pending()
+    }
+
+    fn on_hide(&mut self) {
+        self.metrics_changed();
+        self.old.highlighter.release_if_long();
+        self.new.highlighter.release_if_long();
+    }
+
+    /// Lines coloured so far (the further side), and the new side's colours
+    /// for `line` if that line was drawn with them.
+    #[cfg(test)]
+    fn highlight_probe(&self, line: usize) -> Option<(usize, Option<Vec<crate::syntax::Span>>)> {
+        let done = self.old.highlighter.done().max(self.new.highlighter.done());
+        let drawn = self.cache[1]
+            .get(&line)
+            .filter(|c| c.spans_drawn)
+            .and_then(|_| self.new.highlighter.spans(line))
+            .map(<[_]>::to_vec);
+        Some((done, drawn))
     }
 
     fn title(&self) -> String {

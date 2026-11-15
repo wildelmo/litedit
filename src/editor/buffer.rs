@@ -51,31 +51,31 @@ pub struct Chunk {
 }
 
 impl Chunk {
-    /// Parse text, keeping each ending as written.
+    /// Parse text, keeping each ending as written. Every line is copied
+    /// at its exact size (no growth slack: a big file has many lines).
     pub fn parse(text: &str) -> Chunk {
+        let bytes = text.as_bytes();
         let mut lines = Vec::new();
         let mut eols = Vec::new();
-        let mut cur = String::new();
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            match c {
-                '\r' if chars.peek() == Some(&'\n') => {
-                    chars.next();
-                    lines.push(std::mem::take(&mut cur));
-                    eols.push(Eol::CrLf);
-                }
-                '\r' => {
-                    lines.push(std::mem::take(&mut cur));
-                    eols.push(Eol::Cr);
-                }
-                '\n' => {
-                    lines.push(std::mem::take(&mut cur));
-                    eols.push(Eol::Lf);
-                }
-                c => cur.push(c),
-            }
+        let mut start = 0;
+        let mut i = 0;
+        // `\r` and `\n` are ASCII, so every cut is on a char boundary.
+        while let Some(off) = bytes
+            .get(i..)
+            .and_then(|r| r.iter().position(|&b| b == b'\r' || b == b'\n'))
+        {
+            let at = i + off;
+            let (eol, len) = match (bytes.get(at), bytes.get(at + 1)) {
+                (Some(b'\r'), Some(b'\n')) => (Eol::CrLf, 2),
+                (Some(b'\r'), _) => (Eol::Cr, 1),
+                _ => (Eol::Lf, 1),
+            };
+            lines.push(text.get(start..at).unwrap_or_default().to_owned());
+            eols.push(eol);
+            i = at + len;
+            start = i;
         }
-        lines.push(cur);
+        lines.push(text.get(start..).unwrap_or_default().to_owned());
         Chunk { lines, eols }
     }
 
@@ -142,7 +142,14 @@ impl Default for Buffer {
 
 impl Buffer {
     pub fn from_text(text: &str) -> Buffer {
-        let Chunk { lines, eols } = Chunk::parse(text);
+        let Chunk {
+            mut lines,
+            mut eols,
+        } = Chunk::parse(text);
+        // The vectors grew by doubling while parsing; a loaded file's
+        // buffer does not need the spare room (edits regrow it).
+        lines.shrink_to_fit();
+        eols.shrink_to_fit();
         let default_eol = dominant(&eols).unwrap_or_else(Eol::platform);
         Buffer {
             lines,
@@ -305,6 +312,58 @@ mod tests {
         ] {
             assert_eq!(Buffer::from_text(t).to_text(), t, "{t:?}");
         }
+    }
+
+    /// The original char-by-char parser, kept as the oracle.
+    fn parse_slowly(text: &str) -> Chunk {
+        let mut lines = Vec::new();
+        let mut eols = Vec::new();
+        let mut cur = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' if chars.peek() == Some(&'\n') => {
+                    chars.next();
+                    lines.push(std::mem::take(&mut cur));
+                    eols.push(Eol::CrLf);
+                }
+                '\r' => {
+                    lines.push(std::mem::take(&mut cur));
+                    eols.push(Eol::Cr);
+                }
+                '\n' => {
+                    lines.push(std::mem::take(&mut cur));
+                    eols.push(Eol::Lf);
+                }
+                c => cur.push(c),
+            }
+        }
+        lines.push(cur);
+        Chunk { lines, eols }
+    }
+
+    #[test]
+    fn parse_matches_the_char_by_char_oracle_and_is_exactly_sized() {
+        let alphabet = ["a", "é", "\u{1F600}", "\r", "\n", "\r\n", " ", "xyz"];
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        for _ in 0..3000 {
+            let mut t = String::new();
+            for _ in 0..(seed % 12) {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                t.push_str(alphabet[(seed % alphabet.len() as u64) as usize]);
+            }
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            assert_eq!(Chunk::parse(&t), parse_slowly(&t), "{t:?}");
+        }
+        let c = Chunk::parse("one\r\ntwo\rthree\nfour");
+        assert!(c.lines.iter().all(|l| l.capacity() == l.len()));
+        let b = Buffer::from_text(&"line of text\n".repeat(1000));
+        assert_eq!(b.lines.capacity(), b.lines.len());
+        assert_eq!(b.eols.capacity(), b.eols.len());
     }
 
     #[test]

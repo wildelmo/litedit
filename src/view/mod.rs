@@ -104,6 +104,11 @@ pub trait View {
         false
     }
 
+    /// Is editing locked ("View: Toggle Read-Only")?
+    fn is_read_only(&self) -> bool {
+        false
+    }
+
     /// Test hook: window coordinates of the centre of each task checkbox.
     #[cfg(test)]
     fn checkboxes(&self) -> Vec<(f32, f32)> {
@@ -114,6 +119,13 @@ pub trait View {
     #[cfg(test)]
     fn scroll_y(&self) -> f32 {
         0.0
+    }
+
+    /// Test hook: how many lines are syntax-coloured so far, and the spans
+    /// `line` was last drawn with (None: not drawn, or drawn uncoloured).
+    #[cfg(test)]
+    fn highlight_probe(&self, _line: usize) -> Option<(usize, Option<Vec<crate::syntax::Span>>)> {
+        None
     }
 
     /// Test hook: does this view hold rebuildable caches right now?

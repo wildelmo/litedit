@@ -205,7 +205,7 @@ fixed first (S5.0).
 ## Epic 7 — Reader first, second batch (built by sub-agents, integrated on main)
 
 - [x] S7.0 Fix confirmed findings from the independent review of Epic 6
-- [ ] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
+- [x] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
        while loading; read-only lock for code files
 - [x] S7.2 Image files open in a viewer tab
 - [x] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
@@ -220,6 +220,18 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.1 Big files + read-only lock (sub-agent branch, reviewed
+  and merged): syntax colouring runs only as far as the view (or a jump
+  target) needs, in compact span blocks; hidden code / compare tabs drop
+  colours past 2000 lines. Load path: valid UTF-8 becomes the text without
+  a copy and without the re-encode check (exact by construction; UTF-16 and
+  invalid files still round-trip), lines copied at exact size. Measured
+  (Linux release, 100k lines / 8 MB): just opened 59.6 → 36.7 MB peak,
+  after Ctrl+End 60.6 → 43.7 MB. "View: Toggle Read-Only": every editing
+  path is refused at `EditDoc` and at the view (typing, paste, cut,
+  replace, multi-cursor, undo / redo, line commands, checkbox clicks);
+  status shows "Read-only". Fixed on the way: moving lines in a locked
+  file panicked. 386 tests.
 - 2026-11-15 — S7.5 Tree multi-select + copy (sub-agent branch, reviewed and
   merged): Ctrl / Shift+click, Shift+Up/Down, Ctrl+A; Delete and drag-move
   act on the selection with one question (count + first names), never on a

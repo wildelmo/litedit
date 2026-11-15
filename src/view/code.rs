@@ -31,6 +31,11 @@ use crate::view::{DiskState, Scroll, Tick, View, ViewPos, draw_vscrollbar};
 /// beyond the cut still works; the caret is drawn at the cut (D-015).
 pub const MAX_DISPLAY_CHARS: usize = 4000;
 pub const TAB_WIDTH: usize = 4;
+/// Syntax colouring runs this many screens past the last visible line (and
+/// never fewer than `HIGHLIGHT_MIN_AHEAD` lines), so ordinary scrolling
+/// stays coloured while a big file is only coloured as far as it is read.
+pub const HIGHLIGHT_SCREENS_AHEAD: usize = 3;
+pub const HIGHLIGHT_MIN_AHEAD: usize = 200;
 
 /// A source line prepared for display, with a byte-offset mapping.
 pub struct DisplayLine {
@@ -188,6 +193,9 @@ pub struct CodeView {
     scroll: Scroll,
     cache: HashMap<usize, CachedLine>,
     highlighter: LineHighlighter,
+    /// Highlight up to this line (exclusive): the last line on screen plus
+    /// a margin. Set by every frame, and by `tick` ahead of the frame.
+    hl_want: usize,
     /// (font size, char width) — recomputed when the font size changes.
     char_w: Option<(f32, f32)>,
     longest: (u64, usize),
@@ -198,7 +206,6 @@ pub struct CodeView {
     dragging: bool,
     /// Scroll so the caret is visible at the next render.
     reveal_caret: bool,
-    pub read_only: bool,
     /// Text of the last line-mode copy (pasting it inserts whole lines).
     line_clip: Option<String>,
     caret_screen: Option<Rect>,
@@ -238,6 +245,7 @@ impl CodeView {
             scroll: Scroll::default(),
             cache: HashMap::new(),
             highlighter,
+            hl_want: HIGHLIGHT_MIN_AHEAD,
             char_w: None,
             longest: (u64::MAX, 0),
             view_w: 0.0,
@@ -246,7 +254,6 @@ impl CodeView {
             visible: (0, usize::MAX),
             dragging: false,
             reveal_caret: false,
-            read_only: false,
             line_clip: None,
             caret_screen: None,
             find: None,
@@ -572,6 +579,40 @@ impl CodeView {
         }
     }
 
+    /// Lines of highlighting to keep ready below the last visible one.
+    fn highlight_ahead(&self, ctx: &Ctx) -> usize {
+        let screen = (self.view_h / ctx.code_metrics().line_height.max(1.0)) as usize;
+        screen
+            .saturating_mul(HIGHLIGHT_SCREENS_AHEAD)
+            .max(HIGHLIGHT_MIN_AHEAD)
+    }
+
+    /// How far highlighting should reach for what the next frame will show,
+    /// worked out without drawing: the scroll position, plus a jump that is
+    /// still pending (the caret is revealed by the next frame after
+    /// Ctrl+End, find or go to line).
+    fn highlight_target(&self, ctx: &Ctx) -> usize {
+        let lh = ctx.code_metrics().line_height.max(1.0);
+        let bottom_row = ((self.scroll.y.max(0.0) + self.view_h) / lh).ceil() as usize;
+        let mut line = self.rows.line_of_row(bottom_row).0;
+        if self.reveal_caret {
+            let head = self
+                .doc
+                .sels
+                .last()
+                .map_or(self.doc.primary().head, |s| s.head);
+            line = line.max(head.line);
+        }
+        line.saturating_add(1)
+            .saturating_add(self.highlight_ahead(ctx))
+    }
+
+    /// Is syntax colouring still owed for what is (about to be) on screen?
+    fn highlight_pending(&self) -> bool {
+        self.highlighter
+            .needs(self.hl_want, self.doc.buf.line_count())
+    }
+
     fn page_lines(&self, ctx: &Ctx) -> usize {
         let lh = ctx.code_metrics().line_height;
         ((self.view_h / lh) as usize).saturating_sub(2).max(1)
@@ -597,10 +638,9 @@ impl CodeView {
     fn handle_key(&mut self, key: &Key, mods: crate::input::Mods, ctx: &mut Ctx) -> bool {
         let shift = mods.shift;
         let edit_from = self.first_sel_line().saturating_sub(1);
-        let ro = self.read_only;
         let page = self.page_lines(ctx);
         let lh = ctx.code_metrics().line_height;
-        let mut mv = |v: &mut Self, m: Move| {
+        let mv = |v: &mut Self, m: Move| {
             v.doc.move_carets(m, shift);
             v.reveal_caret = true;
         };
@@ -636,7 +676,7 @@ impl CodeView {
             (Key::Down, false, false) => mv(self, Move::Down),
             (Key::Up, true, false) if !shift => self.scroll.y -= lh,
             (Key::Down, true, false) if !shift => self.scroll.y += lh,
-            (Key::Up | Key::Down, false, true) if !ro => {
+            (Key::Up | Key::Down, false, true) => {
                 self.doc.move_lines(*key == Key::Up);
                 self.after_edit(edit_from.saturating_sub(1));
             }
@@ -647,11 +687,11 @@ impl CodeView {
                 self.doc.select_next_occurrence();
                 self.reveal_caret = true;
             }
-            (Key::Enter, true, false) if !ro => {
+            (Key::Enter, true, false) => {
                 self.doc.new_line_beside(shift);
                 self.after_edit(edit_from);
             }
-            (Key::Char('j'), true, false) if !ro && !shift => {
+            (Key::Char('j'), true, false) if !shift => {
                 self.doc.join_lines();
                 self.after_edit(edit_from);
             }
@@ -662,7 +702,7 @@ impl CodeView {
             (Key::Char('l'), true, false) if shift => {
                 self.doc.select_all_occurrences();
             }
-            (Key::Char('/'), true, false) if !ro => {
+            (Key::Char('/'), true, false) => {
                 match crate::syntax::comment_tokens(self.highlighter.name()) {
                     Some((start, end)) => {
                         self.doc.toggle_comment(start, end);
@@ -686,11 +726,11 @@ impl CodeView {
                 let line = self.doc.primary().head.line;
                 self.doc.select_line_at(line);
             }
-            (Key::Enter, false, false) if !ro => {
+            (Key::Enter, false, false) => {
                 self.doc.newline();
                 self.after_edit(edit_from);
             }
-            (Key::Tab, false, false) if !ro => {
+            (Key::Tab, false, false) => {
                 if shift {
                     self.doc.outdent_lines()
                 } else {
@@ -698,20 +738,20 @@ impl CodeView {
                 }
                 self.after_edit(edit_from);
             }
-            (Key::Backspace, ctrl, false) if !ro => {
+            (Key::Backspace, ctrl, false) => {
                 self.doc.backspace(ctrl);
                 self.after_edit(edit_from);
             }
-            (Key::Delete, ctrl, false) if !ro && !shift => {
+            (Key::Delete, ctrl, false) if !shift => {
                 self.doc.delete_forward(ctrl);
                 self.after_edit(edit_from);
             }
-            (Key::Char('z'), true, false) if !ro && !shift => {
+            (Key::Char('z'), true, false) if !shift => {
                 if self.doc.undo() {
                     self.after_edit(0);
                 }
             }
-            (Key::Char('y'), true, false) | (Key::Char('z'), true, false) if !ro => {
+            (Key::Char('y'), true, false) | (Key::Char('z'), true, false) => {
                 if self.doc.redo() {
                     self.after_edit(0);
                 }
@@ -721,9 +761,7 @@ impl CodeView {
                 self.line_clip = line_mode.then(|| t.clone());
                 ctx.clipboard.set(t);
             }
-            (Key::Char('x'), true, false) | (Key::Delete, false, false)
-                if !ro && (mods.ctrl || shift) =>
-            {
+            (Key::Char('x'), true, false) | (Key::Delete, false, false) if mods.ctrl || shift => {
                 let (t, line_mode) = self.doc.copy_text();
                 self.line_clip = line_mode.then(|| t.clone());
                 ctx.clipboard.set(t);
@@ -734,9 +772,7 @@ impl CodeView {
                 }
                 self.after_edit(edit_from);
             }
-            (Key::Char('v'), true, false) | (Key::Insert, false, false)
-                if !ro && (mods.ctrl || shift) =>
-            {
+            (Key::Char('v'), true, false) | (Key::Insert, false, false) if mods.ctrl || shift => {
                 if let Some(t) = ctx.clipboard.get().filter(|t| !t.is_empty()) {
                     let all_carets = self.doc.sels.iter().all(|s| s.is_empty());
                     if all_carets && self.line_clip.as_deref() == Some(t.as_str()) {
@@ -747,19 +783,19 @@ impl CodeView {
                     self.after_edit(edit_from);
                 }
             }
-            (Key::Char('d'), true, false) if !ro && shift => {
+            (Key::Char('d'), true, false) if shift => {
                 self.doc.duplicate_lines();
                 self.after_edit(edit_from);
             }
-            (Key::Char('k'), true, false) if !ro && shift => {
+            (Key::Char('k'), true, false) if shift => {
                 self.doc.delete_lines();
                 self.after_edit(edit_from);
             }
-            (Key::Char(']'), true, false) if !ro => {
+            (Key::Char(']'), true, false) => {
                 self.doc.indent_lines();
                 self.after_edit(edit_from);
             }
-            (Key::Char('['), true, false) if !ro => {
+            (Key::Char('['), true, false) => {
                 self.doc.outdent_lines();
                 self.after_edit(edit_from);
             }
@@ -800,8 +836,11 @@ impl CodeView {
         if self.wrap {
             v.push("Wrap".into());
         }
-        if self.read_only {
-            v.push("read-only".into());
+        if self.doc.read_only {
+            v.push("Read-only".into());
+            if self.doc.refused {
+                v.push("Locked: nothing was changed (View: Toggle Read-Only)".into());
+            }
         }
         v
     }
@@ -826,7 +865,18 @@ impl CodeView {
     }
 
     pub fn is_read_only(&self) -> bool {
-        self.read_only
+        self.doc.read_only
+    }
+
+    /// Lock or unlock editing (the palette's "Toggle Read-Only").
+    pub fn set_read_only(&mut self, on: bool) {
+        self.doc.read_only = on;
+        self.doc.refused = false;
+        if on && let Some(f) = self.find.as_mut() {
+            // No replace row on a locked document.
+            f.replace = None;
+            self.find_focus = true;
+        }
     }
 
     /// The text was edited from outside (the markdown preview): refresh
@@ -837,9 +887,6 @@ impl CodeView {
 
     /// Undo / redo from outside (the markdown preview).
     pub fn undo_redo(&mut self, redo: bool) -> bool {
-        if self.read_only {
-            return false;
-        }
         let done = if redo {
             self.doc.redo()
         } else {
@@ -928,6 +975,10 @@ impl CodeView {
 
     /// Replace the current match (if the selection is one) and go to the next.
     fn replace_one(&mut self) {
+        if self.doc.read_only {
+            self.doc.refused = true;
+            return;
+        }
         let Some(f) = self.find.as_mut() else { return };
         let (a, b) = self.doc.primary().range();
         let is_match = a.line == b.line
@@ -945,6 +996,10 @@ impl CodeView {
 
     /// Replace every match as one undo step.
     fn replace_all(&mut self) {
+        if self.doc.read_only {
+            self.doc.refused = true;
+            return;
+        }
         let Some(f) = self.find.as_mut() else { return };
         let all = f.all(&self.doc.buf);
         let stopped = f.stopped;
@@ -983,7 +1038,11 @@ impl CodeView {
                     self.open_find(false);
                     return Some(true);
                 }
-                (Key::Char('h'), true, false, false) if !self.read_only => {
+                (Key::Char('h'), true, false, false) => {
+                    if self.doc.read_only {
+                        self.doc.refused = true;
+                        return Some(true);
+                    }
                     self.open_find(true);
                     return Some(true);
                 }
@@ -1050,8 +1109,8 @@ impl CodeView {
         };
         match ev {
             BarEvent::Changed if !on_replace => self.find_incremental(),
-            BarEvent::Submit { .. } if ctrl_enter && !self.read_only => self.replace_all(),
-            BarEvent::Submit { .. } if on_replace && !self.read_only => self.replace_one(),
+            BarEvent::Submit { .. } if ctrl_enter => self.replace_all(),
+            BarEvent::Submit { .. } if on_replace => self.replace_one(),
             BarEvent::Submit { back } => {
                 self.find_step(back);
             }
@@ -1212,6 +1271,7 @@ impl CodeView {
             (self.rows.line_of_row(last_row - 1).0 + 1).min(line_count)
         };
         self.visible = (first, last);
+        self.hl_want = last.saturating_add(self.highlight_ahead(ctx));
         if self.cache.len() > 4 * (last - first + 1) + 64 {
             let keep = first.saturating_sub(64)..last + 64;
             self.cache.retain(|k, _| keep.contains(k));
@@ -1377,12 +1437,13 @@ impl CodeView {
             self.scroll.y,
             self.doc.version(),
             self.doc.sels.clone(),
+            self.doc.refused,
         );
         match input {
             Input::Wheel { .. } => {
                 self.scroll.wheel(input, lh);
             }
-            Input::Text(t) if !self.read_only => {
+            Input::Text(t) => {
                 let from = self.first_sel_line();
                 self.doc.insert_text(t);
                 self.after_edit(from.saturating_sub(1));
@@ -1441,6 +1502,7 @@ impl CodeView {
                 self.scroll.y,
                 self.doc.version(),
                 self.doc.sels.clone(),
+                self.doc.refused,
             )
     }
 }
@@ -1456,14 +1518,18 @@ impl View for CodeView {
     }
 
     fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        // The "locked" notice lasts until the next key or typing.
+        let clear = matches!(input, Input::Key { .. } | Input::Text(_))
+            && std::mem::take(&mut self.doc.refused);
         let (edit, bar) = self.split(rect, ctx);
-        if let Some(r) = self.handle_find(input, edit, bar, ctx) {
-            return r;
-        }
-        self.handle_editor(input, edit, ctx)
+        let redraw = match self.handle_find(input, edit, bar, ctx) {
+            Some(r) => r,
+            None => self.handle_editor(input, edit, ctx),
+        };
+        redraw || clear
     }
 
-    fn tick(&mut self, _ctx: &mut Ctx, budget: Duration) -> Tick {
+    fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
         if std::mem::take(&mut self.find_count_stale) {
             // Recount now that the frame is out; next render shows it.
             self.find_count = None;
@@ -1472,12 +1538,24 @@ impl View for CodeView {
                 redraw: true,
             };
         }
+        // Colour only as far as the view shows (lite-xl does the same).
+        // The target follows the scroll position and any pending jump, so
+        // it is right even when this runs before the frame.
+        self.hl_want = self.highlight_target(ctx);
         let before = self.highlighter.done();
-        let more = self.highlighter.step(self.doc.buf.lines(), budget);
+        self.highlighter
+            .step_to(self.doc.buf.lines(), self.hl_want, budget);
         let after = self.highlighter.done();
         let (first, last) = self.visible;
         let redraw = after > before && before < last && after > first;
-        Tick { more, redraw }
+        Tick {
+            more: self.highlight_pending(),
+            redraw,
+        }
+    }
+
+    fn has_background_work(&self) -> bool {
+        self.highlight_pending()
     }
 
     fn title(&self) -> String {
@@ -1521,6 +1599,11 @@ impl View for CodeView {
         self.char_w = None;
     }
 
+    fn on_hide(&mut self) {
+        self.metrics_changed();
+        self.highlighter.release_if_long();
+    }
+
     fn theme_changed(&mut self) {
         self.highlighter.retheme();
         self.metrics_changed();
@@ -1544,8 +1627,18 @@ impl View for CodeView {
         self.restore_editor_pos(pos);
     }
 
+    #[cfg(test)]
+    fn highlight_probe(&self, line: usize) -> Option<(usize, Option<Vec<Span>>)> {
+        let drawn = self.cache.get(&line).and_then(|c| c.spans.clone());
+        Some((self.highlighter.done(), drawn))
+    }
+
     fn is_dirty(&self) -> bool {
         self.doc.is_dirty()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.doc.read_only
     }
 
     fn text(&self) -> Option<String> {
@@ -1555,9 +1648,12 @@ impl View for CodeView {
     fn run_command(&mut self, name: &str) -> bool {
         use crate::editor::buffer::Eol;
         use crate::editor::doc::Indent;
-        if self.read_only {
-            return false;
+        if name == "toggle-read-only" {
+            self.set_read_only(!self.doc.read_only);
+            return true;
         }
+        // Editing commands on a locked document are refused by the
+        // document itself (and flagged, so a notice shows).
         match name {
             "upper-case" => self.doc.change_case(true),
             "lower-case" => self.doc.change_case(false),
@@ -1574,6 +1670,10 @@ impl View for CodeView {
             "eol-lf" => self.doc.set_line_endings(Eol::Lf),
             "eol-crlf" => self.doc.set_line_endings(Eol::CrLf),
             _ => return false,
+        }
+        if self.doc.read_only {
+            // Refused: nothing changed, so nothing to recolour or redraw.
+            return true;
         }
         self.after_edit(0);
         self.cache.clear();

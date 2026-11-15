@@ -16,7 +16,7 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 - Last fully green Windows CI run: commit `9395405` (all real-window tests
   pass, including one-window hand-over and the "Open with" registry test;
   exe 6.76 MB; one window 19 MB private; 12 viewed markdown tabs ≈ 22 MB).
-- Linux: 247 tests pass. The Windows target type-checks from Linux with
+- Linux: 386 tests pass. The Windows target type-checks from Linux with
   `cargo check --target x86_64-pc-windows-msvc`.
 
 ## In flight when the session ended
@@ -25,28 +25,11 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 
 Findings fixed as story S7.0 (see the ROADMAP progress log).
 
-### 2. Epic 7 — five feature branches (work in progress, NOT reviewed, NOT merged)
+### 2. Epic 7 — merged
 
-Each was being built by a sub-agent from `main` at `23fe4a4`, following
-`docs/AGENT-RULES.md`. The branches were pushed as snapshots; they may not
-compile or pass tests. Treat them as drafts: finish, test, review, then
-merge one at a time (expect small conflicts in `src/app.rs`, `src/main.rs`,
-`src/palette.rs`).
-
-| Branch | Story | Brief |
-|---|---|---|
-| `s7-bigfile` | S7.1 | Highlight only as far as the view needs (not the whole file); lower the memory peak while loading; read-only lock ("View: Toggle Read-Only", status shows it). Measured before: 6.9 MB/100k-line file = 59 MB peak just opened, 72 MB fully coloured (Linux release). |
-| `s7-image` | S7.2 | `src/view/image.rs`: png/jpg/gif/webp/bmp open in a viewer tab (fit / actual size, pan, status with size); pixels freed in `on_hide`; reload on disk change. |
-| `s7-nav` | S7.3 | Back / Forward (Alt+Left / Alt+Right) over a bounded location history; remember each file's position on close/reopen and across restarts (workspace + session files, old files must still load). |
-| `s7-compare` | S7.4 | Compare Left ↔ Right of a split; ignore-whitespace toggle (Alt+W); double-click / Enter opens the file at that line; compare with clipboard. |
-| `s7-tree` | S7.5 | Tree multi-select (Ctrl/Shift+click), multi delete / move with one confirmation, copy / paste / duplicate (never overwrite, bounded, no symlink following), file size + age in the status bar. |
-
-Integration checklist per branch: read the diff; `cargo fmt`; `cargo test`;
-`cargo clippy`; `cargo check --target x86_64-pc-windows-msvc`; mutation-check
-its key tests; update `ROADMAP.md` (Epic 7 checkboxes + progress log),
-`CHANGELOG.md`, `README.md` key table, `docs/LITE-XL-COMPARISON.md`,
-`DECISIONS.md` if a choice was made; commit on `main`; push; confirm Windows
-CI. Finish with an independent review of the whole Epic 7 diff.
+All five stories (S7.1–S7.5) were finished by sub-agents, reviewed, and
+squash-merged into `main`; see the ROADMAP progress log. The `s7-*` remote
+branches are stale snapshots and can be deleted.
 
 ## Open questions for the owner (also in DECISIONS.md)
 

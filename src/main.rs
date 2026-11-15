@@ -38,6 +38,8 @@ mod workspace;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_bigfile;
+#[cfg(test)]
 mod tests_compare;
 #[cfg(test)]
 mod tests_image;

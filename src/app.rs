@@ -503,6 +503,14 @@ impl App {
         self.view.scroll_y()
     }
 
+    #[cfg(test)]
+    pub fn highlight_probe(
+        &self,
+        line: usize,
+    ) -> Option<(usize, Option<Vec<crate::syntax::Span>>)> {
+        self.view.highlight_probe(line)
+    }
+
     /// Which tabs are peek tabs (tests).
     #[cfg(test)]
     pub fn peek_tabs(&self) -> Vec<bool> {
@@ -940,7 +948,22 @@ impl App {
         let name = self.view_name();
         // Setting `trim_trailing_whitespace` (off by default, like lite-xl);
         // never for markdown, where two trailing spaces mean a line break.
-        if self.trim_on_save && self.view.is_dirty() && !self.view.path().is_some_and(is_markdown) {
+        if self.view.is_read_only() && !self.view.is_dirty() {
+            // Locked and nothing changed: there is nothing to write (and
+            // a read-only file must never be rewritten by accident).
+            self.notice = Some(format!(
+                "{name} is read-only and unchanged; nothing to save"
+            ));
+            if let Some(p) = then {
+                self.perform(p);
+            }
+            return true;
+        }
+        if self.trim_on_save
+            && self.view.is_dirty()
+            && !self.view.is_read_only()
+            && !self.view.path().is_some_and(is_markdown)
+        {
             self.view.run_command("trim-whitespace");
         }
         if !overwrite && self.view.disk_state() == DiskState::Differs {
