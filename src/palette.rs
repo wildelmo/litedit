@@ -30,6 +30,8 @@ pub enum Action {
     AddFolder,
     /// A named editing command run by the active view.
     Command(&'static str),
+    /// Add / remove litedit in "Open with" for markdown files.
+    OpenWith(bool),
     /// Go to the heading on this 0-based source line.
     Heading(usize),
 }
@@ -214,6 +216,16 @@ impl Palette {
                 action: Action::Command(cmd),
             });
         }
+        items.push(Item {
+            label: "Preferences: Add litedit to \"Open with\" for Markdown…".into(),
+            detail: String::new(),
+            action: Action::OpenWith(true),
+        });
+        items.push(Item {
+            label: "Preferences: Remove litedit from \"Open with\"…".into(),
+            detail: String::new(),
+            action: Action::OpenWith(false),
+        });
         items.push(Item {
             label: "File: Save Workspace As…".into(),
             detail: String::new(),

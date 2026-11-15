@@ -3668,3 +3668,37 @@ fn files_from_another_launch_open_as_tabs_and_wait_for_open_questions() {
     assert_eq!(app.tree_roots().len(), 1);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn open_with_commands_ask_first_and_report_the_result() {
+    let mut app = new_app();
+    run_command(&mut app, "add litedit to");
+    let q = app.nag_message().unwrap_or_default();
+    assert!(
+        q.contains("Open with") && q.contains("only your Windows user settings"),
+        "{q}"
+    );
+    assert!(
+        app.take_requests().is_empty(),
+        "nothing happens before the answer"
+    );
+    key(&mut app, "escape");
+    assert!(app.take_requests().is_empty());
+    run_command(&mut app, "add litedit to");
+    key(&mut app, "enter");
+    assert_eq!(app.take_requests(), vec![Request::OpenWith(true)]);
+    // The window reports back: the user is told what Windows still needs.
+    app.open_with_done(true, Ok(()));
+    assert!(app.nag_message().unwrap_or_default().contains("Always"));
+    key(&mut app, "enter");
+    app.open_with_done(true, Err("access denied".into()));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("access denied")
+    );
+    key(&mut app, "enter");
+    run_command(&mut app, "remove litedit from");
+    key(&mut app, "enter");
+    assert_eq!(app.take_requests(), vec![Request::OpenWith(false)]);
+}

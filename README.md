@@ -28,7 +28,10 @@ litedit.exe notes\todo.md
 litedit.exe C:\path\to\folder
 ```
 
-or drag a file or folder onto the window. If litedit is already running, opening
+or drag a file or folder onto the window. To open markdown files with a
+double-click, run **Preferences: Add litedit to "Open with" for Markdown…** from
+the command palette (`Ctrl+Shift+P`), then pick litedit once in Explorer's
+"Open with" → "Always". If litedit is already running, opening
 another file adds a tab to the running window (`--new-window` starts a second one).
 
 ## Keys

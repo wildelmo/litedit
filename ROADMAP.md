@@ -199,7 +199,8 @@ fixed first (S5.0).
        title); double-click, Enter, editing, moving it across or "Keep Open" keeps it
 - [x] S6.6 One window: a second launch opens its files in the running window
        (D-030; `--new-window`, `single_window` setting)
-- [ ] S6.7 "Open with" registration for markdown (explicit command)
+- [x] S6.7 "Open with" registration for markdown (explicit command with a
+       confirmation; current user only; a remove command; D-006 updated)
 
 ---
 
@@ -207,6 +208,10 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.7 Open with: assoc.rs (pure list of registry entries with
+  tests; Windows register / unregister under HKCU\Software\Classes), palette
+  commands with a confirmation showing the exe path, result message tells the
+  user the one Explorer step Windows requires. CI checks the registry.
 - 2026-11-15 — S6.6 one window: single.rs (pure message encode/parse with
   fuzz test; Windows named-pipe client with a 1.5 s timeout and listener
   thread with no unwraps), UserEvent::OpenPaths, App::open_from_other_launch

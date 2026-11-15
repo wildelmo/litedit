@@ -180,6 +180,13 @@ litedit will not register itself as the `.md` handler. Doing it silently is
 the kind of system change users dislike; it can be added as an explicit,
 optional action later (S4.5). You can still right-click → Open with → litedit.
 
+Updated in 1.1: the command palette has "Preferences: Add litedit to "Open
+with" for Markdown…" (asks first, shows the program path, changes only your
+user's settings) and a matching Remove. Windows does not allow a program to
+make itself the default app, so after adding, choose litedit once in
+Explorer: right-click a .md file → Open with → Choose another app → litedit →
+Always.
+
 ### D-005 Remote images are never loaded
 Markdown images with `http(s)://` URLs show a placeholder with the alt text.
 Fetching them would make the editor touch the network (tracking pixels, IP

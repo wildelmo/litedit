@@ -106,6 +106,8 @@ pub enum Request {
     AddFolderDialog,
     /// F11.
     ToggleFullscreen,
+    /// Add (true) or remove (false) litedit in "Open with" for markdown.
+    OpenWith(bool),
     /// Open a local file in litedit (handled by the app itself).
     OpenPath(PathBuf),
     /// Show a file in the reusable "peek" tab (single click in the tree).

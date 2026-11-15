@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- "Open with": a command adds litedit to Windows' "Open with" list for
+  markdown files (and one removes it). It asks first and only changes your
+  user's settings; you then pick litedit once in Explorer → Always.
 - One window: opening a file while litedit is already running adds a tab to
   the running window instead of starting another copy (`--new-window` or
   `single_window = off` for the old behaviour).

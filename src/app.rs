@@ -918,6 +918,7 @@ impl App {
                 self.view.reload_discarding(&mut ctx);
                 self.pending = true;
             }
+            NagAction::OpenWith(add) => self.requests.push(Request::OpenWith(add)),
             NagAction::MoveInto(from, dir) => {
                 // Re-check: things may have changed while the question was up.
                 if self.tabs_under(&from).iter().any(|(_, _, dirty)| *dirty) {
@@ -1012,6 +1013,32 @@ impl App {
             }
             Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
             Outcome::Run(Action::AddFolder) => self.requests.push(Request::AddFolderDialog),
+            Outcome::Run(Action::OpenWith(add)) => {
+                let exe = std::env::current_exe()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "litedit".into());
+                self.nag = Some(if add {
+                    Nag::new(
+                        format!(
+                            "Add {exe} to \"Open with\" for .md files? (Changes only your Windows user settings.)"
+                        ),
+                        vec![
+                            ("Add", NagAction::OpenWith(true)),
+                            ("Cancel", NagAction::Dismiss),
+                        ],
+                        false,
+                    )
+                } else {
+                    Nag::new(
+                        "Remove litedit from \"Open with\" for .md files?".into(),
+                        vec![
+                            ("Remove", NagAction::OpenWith(false)),
+                            ("Cancel", NagAction::Dismiss),
+                        ],
+                        false,
+                    )
+                });
+            }
             Outcome::Run(Action::Heading(line)) => {
                 self.view.goto_heading(line);
                 self.focus = Focus::Main;
@@ -2340,6 +2367,22 @@ impl App {
             self.pending = true;
         }
         redraw
+    }
+
+    /// Result of adding / removing litedit in "Open with" (from the window).
+    pub fn open_with_done(&mut self, add: bool, result: Result<(), String>) {
+        match result {
+            Ok(()) if add => {
+                self.nag = Some(Nag::new(
+                    "Added. To make litedit the default: right-click a .md file in Explorer → Open with → Choose another app → litedit → Always.".into(),
+                    vec![("OK", NagAction::Dismiss)],
+                    false,
+                ));
+            }
+            Ok(()) => self.notice = Some("Removed litedit from \"Open with\"".into()),
+            Err(e) => self.nag = Some(Nag::error(format!("Could not change \"Open with\": {e}"))),
+        }
+        self.pending = true;
     }
 
     /// Files from a later launch of litedit (one window). They open as tabs;

@@ -93,6 +93,15 @@ impl Runner {
                         redraw = true;
                     }
                 }
+                Request::OpenWith(add) => {
+                    let result = if add {
+                        crate::assoc::register().map(|_| ())
+                    } else {
+                        crate::assoc::unregister()
+                    };
+                    self.app.open_with_done(add, result);
+                    redraw = true;
+                }
                 Request::ToggleFullscreen => {
                     let full = window.fullscreen().is_some();
                     window.set_fullscreen(if full {

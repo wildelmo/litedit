@@ -35,6 +35,8 @@ pub enum NagAction {
     Overwrite(Option<Pending>),
     /// Show the file on disk next to the unsaved text.
     CompareWithDisk,
+    /// Add / remove litedit in Windows' "Open with" list (confirmed).
+    OpenWith(bool),
     /// Move an entry into a folder (tree drag and drop).
     MoveInto(std::path::PathBuf, std::path::PathBuf),
     Dismiss,

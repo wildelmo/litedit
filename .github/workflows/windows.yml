@@ -245,6 +245,30 @@ jobs:
           if (-not $ok) { $failed = $true }
           Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
 
+          # 8. "Open with" registration: the palette command (after its
+          #    confirmation) writes the current user's registry; remove undoes it.
+          $cmdKey = "HKCU:\Software\Classes\litedit.md\shell\open\command"
+          $p = Launch $f
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("add litedit to"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 700
+          $before = Test-Path $cmdKey
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $cmd = if (Test-Path $cmdKey) { (Get-Item $cmdKey).GetValue("") } else { "" }
+          $progids = (Get-Item "HKCU:\Software\Classes\.md\OpenWithProgids" -ErrorAction SilentlyContinue)
+          $listed = ($null -ne $progids) -and ($progids.GetValueNames() -contains "litedit.md")
+          $added = (-not $before) -and ($cmd -eq "`"$exe`" `"%1`"") -and $listed
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("remove litedit from"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 700
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $removed = -not (Test-Path $cmdKey)
+          $ok = $added -and $removed
+          $rows += "| Open with: add (after confirmation) and remove | $(if ($ok) {'PASS'} else {"FAIL (before=$before cmd=$cmd listed=$listed removed=$removed)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
           $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
           Write-Output $table
           $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
