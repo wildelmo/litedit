@@ -20,7 +20,8 @@ pub type Entry = (String, String, String);
 /// Everything "Add" writes for the program at `exe`. None if the path
 /// can't be quoted safely in a command line.
 pub fn entries(exe: &str) -> Option<Vec<Entry>> {
-    if exe.is_empty() || exe.contains(['"', '\n', '\r', '\0']) || exe.len() > 1024 {
+    // `%` would be expanded by the shell inside the command line.
+    if exe.is_empty() || exe.contains(['"', '%', '\n', '\r', '\0']) || exe.len() > 1024 {
         return None;
     }
     let command = format!("\"{exe}\" \"%1\"");
@@ -221,6 +222,7 @@ mod tests {
         // A path that could break out of the quotes is refused.
         assert!(entries("C:\\a\" & calc & \"\\litedit.exe").is_none());
         assert!(entries("").is_none());
+        assert!(entries(r"C:\tools\%L\litedit.exe").is_none());
     }
 
     #[test]

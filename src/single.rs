@@ -108,6 +108,10 @@ pub fn forwardable(paths: &[PathBuf]) -> bool {
         && paths
             .iter()
             .all(|p| p.is_file() && !crate::workspace::is_workspace_file(p))
+        // The running window must accept every path exactly as sent
+        // (network shares, `\\?\` paths and odd names are dropped by
+        // `parse`): otherwise this launch opens its own window.
+        && parse(&encode(paths)).as_deref() == Some(paths)
 }
 
 /// The pipe's name for this user and session.
@@ -141,10 +145,29 @@ pub fn try_forward(paths: &[PathBuf]) -> bool {
         .name("litedit-forward".into())
         .spawn(move || {
             let ok = (|| -> std::io::Result<bool> {
-                let mut pipe = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&name)?;
+                use std::os::windows::fs::OpenOptionsExt;
+                // SECURITY_IDENTIFICATION: whoever answers on the pipe can
+                // see who we are but can never act as us.
+                const SECURITY_IDENTIFICATION: u32 = 0x0001_0000;
+                const ERROR_PIPE_BUSY: i32 = 231;
+                let mut tries = 0;
+                let mut pipe = loop {
+                    match std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .security_qos_flags(SECURITY_IDENTIFICATION)
+                        .open(&name)
+                    {
+                        Ok(p) => break p,
+                        // Another launch is being served (several files
+                        // opened at once from Explorer): wait briefly.
+                        Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && tries < 25 => {
+                            tries += 1;
+                            std::thread::sleep(Duration::from_millis(40));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
                 pipe.write_all(&msg)?;
                 pipe.flush()?;
                 let mut ack = [0u8; 3];
@@ -229,7 +252,9 @@ pub fn listen(deliver: impl Fn(Vec<PathBuf>) + Send + 'static) {
                         let take = (n as usize).min(buf.len());
                         msg.extend_from_slice(&buf[..take]);
                     }
-                    let paths = parse(&msg);
+                    // Confirm only when there is something to open; an empty
+                    // or rejected list makes the sender open its own window.
+                    let paths = parse(&msg).filter(|p| !p.is_empty());
                     if paths.is_some() {
                         let ack = b"ok\n";
                         let mut w = 0u32;
@@ -243,9 +268,7 @@ pub fn listen(deliver: impl Fn(Vec<PathBuf>) + Send + 'static) {
                         FlushFileBuffers(h);
                     }
                     DisconnectNamedPipe(h);
-                    if let Some(p) = paths
-                        && !p.is_empty()
-                    {
+                    if let Some(p) = paths {
                         deliver(p);
                     }
                 }
@@ -373,6 +396,14 @@ mod tests {
         std::fs::write(&f, "x").unwrap();
         std::fs::write(&w, "x").unwrap();
         assert!(forwardable(&[f.clone()]));
+        // A name the receiver would reject (it looks like a stream on
+        // Windows) must not be handed over and then silently dropped.
+        if cfg!(unix) {
+            let odd = d.join("a:b.md");
+            std::fs::write(&odd, "x").unwrap();
+            assert!(!forwardable(&[odd.clone()]));
+            assert!(!forwardable(&[f.clone(), odd]));
+        }
         assert!(!forwardable(&[]));
         assert!(!forwardable(&[d.clone()]), "a folder opens its own window");
         assert!(!forwardable(&[f.clone(), w]), "a workspace file too");

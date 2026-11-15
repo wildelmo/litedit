@@ -38,6 +38,12 @@ sent is a list of file paths. If the running window doesn't answer within
 files always open a new window (they would switch the running window's
 workspace). `litedit --new-window file` or `single_window = off` in settings
 gives the old behaviour.
+Known limits (accepted): another program running as you could create the
+pipe first and receive the file *paths* a launch sends (never file
+contents; it could already read your files). litedit lets such a program
+identify the sender but not act as it. A program that connects and then
+sends nothing delays hand-over for other launches until it disconnects;
+they open their own window after 1.5 s, so nothing is lost.
 
 ### D-028 Files with NUL bytes don't open as text
 A NUL byte in the first 8 KB (and no UTF-16 byte-order mark) means an image,

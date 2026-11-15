@@ -2,6 +2,12 @@
 
 ## 1.1.0 — unreleased
 
+- Fixes from an independent review of the features below: a file opened from
+  Explorer while litedit is running can no longer be silently dropped (odd
+  paths open in their own window instead); Space on a tree entry never types
+  into the file; a kept tab is never replaced by a single click; markdown
+  tabs you haven't looked at yet hold no images; Go to Heading reaches
+  headings inside lists and quotes; find in a huge preview stays fast.
 - "Open with": a command adds litedit to Windows' "Open with" list for
   markdown files (and one removes it). It asks first and only changes your
   user's settings; you then pick litedit once in Explorer → Always.

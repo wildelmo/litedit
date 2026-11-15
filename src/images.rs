@@ -147,14 +147,25 @@ impl ImageStore {
     /// Drop decoded pixels (the tab is hidden), remembering each image's
     /// size. Returns how many images were unloaded.
     pub fn unload(&mut self) -> usize {
+        // Take what has finished, then stop the worker: results of loads
+        // still running must not pile up unseen while the tab is hidden.
+        self.poll();
+        self.tx = None;
+        self.rx = None;
+        self.in_flight = 0;
+        self.map.retain(|_, s| !matches!(s, ImgState::Loading));
         let mut n = 0;
         for s in self.map.values_mut() {
-            if let ImgState::Ready(d) = s {
-                *s = ImgState::Unloaded {
-                    natural: d.natural,
-                    reloading: false,
-                };
-                n += 1;
+            match s {
+                ImgState::Ready(d) => {
+                    *s = ImgState::Unloaded {
+                        natural: d.natural,
+                        reloading: false,
+                    };
+                    n += 1;
+                }
+                ImgState::Unloaded { reloading, .. } => *reloading = false,
+                _ => {}
             }
         }
         n

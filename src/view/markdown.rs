@@ -114,7 +114,7 @@ impl MarkdownView {
         let md_text = crate::text::sanitize(&editor.doc.buf.to_text_lf()).into_owned();
         let md = parse(&md_text);
         let md_version = editor.doc.version();
-        let mut v = Self {
+        let v = Self {
             editor,
             md,
             md_text,
@@ -139,7 +139,8 @@ impl MarkdownView {
             layout_gen: 0,
             last_shape: None,
         };
-        v.request_images();
+        // Images are requested when the page is first laid out (drawn), so
+        // tabs that were never shown hold no decoded pictures.
         v
     }
 
@@ -397,7 +398,6 @@ impl MarkdownView {
         self.layout = None;
         self.last_shape = None;
         self.scaled.clear();
-        self.request_images();
     }
 
     fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) -> &Layout {
@@ -899,10 +899,15 @@ impl MarkdownView {
             .map(|(i, _)| i + 1)
             .filter(|_| line > 0)
             .unwrap_or(0);
+        // A block that starts anywhere on that line counts (a heading inside
+        // a list item or quote starts after the marker, not at column 0).
+        let line_end = self.md_text[byte.min(self.md_text.len())..]
+            .find('\n')
+            .map_or(self.md_text.len(), |i| byte + i);
         let y = l
             .offsets
             .iter()
-            .take_while(|(o, _)| *o <= byte)
+            .take_while(|(o, _)| *o <= line_end)
             .last()
             .map(|(_, y)| *y)
             .unwrap_or(0.0);
@@ -960,27 +965,39 @@ impl MarkdownView {
                 } => {
                     let (tx, ty) = (*x + dx, *y + dy);
                     // Find matches in this element (the current one stronger).
+                    // Only rows on screen are checked, and each row only
+                    // against the matches on its own text line (a long code
+                    // block with thousands of matches stays cheap to draw).
                     if !found.is_empty() {
                         let from = found.partition_point(|m| m.0 < ei);
-                        for (k, (_, a, b)) in
-                            found[from..].iter().take_while(|m| m.0 == ei).enumerate()
-                        {
-                            let current = found_current == Some(from + k);
+                        let to = from + found[from..].partition_point(|m| m.0 == ei);
+                        if from < to {
+                            let here = &found[from..to];
                             for run in buffer.layout_runs() {
-                                for (hx, hw) in run.highlight(*a, *b) {
-                                    canvas.fill_rect(
-                                        frect(
-                                            tx + hx,
-                                            ty + run.line_top,
-                                            hw.max(2.0),
-                                            run.line_height,
-                                        ),
-                                        if current {
-                                            theme::p().caret.with_alpha(110)
-                                        } else {
-                                            theme::p().find_match
-                                        },
-                                    );
+                                let top = ty + run.line_top;
+                                if top > rect.bottom() as f32 {
+                                    break;
+                                }
+                                if top + run.line_height < rect.y as f32 {
+                                    continue;
+                                }
+                                let l0 = here.partition_point(|m| m.1.line < run.line_i);
+                                for (k, (_, a, b)) in here[l0..]
+                                    .iter()
+                                    .take_while(|m| m.1.line == run.line_i)
+                                    .enumerate()
+                                {
+                                    let current = found_current == Some(from + l0 + k);
+                                    for (hx, hw) in run.highlight(*a, *b) {
+                                        canvas.fill_rect(
+                                            frect(tx + hx, top, hw.max(2.0), run.line_height),
+                                            if current {
+                                                theme::p().caret.with_alpha(110)
+                                            } else {
+                                                theme::p().find_match
+                                            },
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1413,6 +1430,7 @@ impl View for MarkdownView {
         self.layout.is_some()
             || !self.scaled.is_empty()
             || self.images.loaded() > 0
+            || self.images.pending()
             || self.editor.has_caches()
     }
 
@@ -1466,7 +1484,6 @@ impl View for MarkdownView {
         let n = self.editor.save_as(path, allow_lossy)?;
         self.layout = None;
         self.images.clear();
-        self.request_images();
         Ok(n)
     }
 

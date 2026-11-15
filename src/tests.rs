@@ -3702,3 +3702,154 @@ fn open_with_commands_ask_first_and_report_the_result() {
     key(&mut app, "enter");
     assert_eq!(app.take_requests(), vec![Request::OpenWith(false)]);
 }
+
+// ---- regressions from the independent review of Epic 6 (S7.0) ----
+
+#[test]
+fn space_in_the_tree_on_an_open_file_does_not_type_into_it() {
+    let (d, files) = many_files("s70space", 2);
+    let mut app = new_app();
+    app.open(&d);
+    app.open(&files[1]);
+    click_tree(&mut app, &files[0], 1); // peek f00, keyboard in the tree
+    key(&mut app, "down"); // select f01 (already open)
+    key(&mut app, "space");
+    app.handle(Input::Text(" ".into())); // the window delivers both
+    assert!(app.title().starts_with("f01.txt"), "{}", app.title());
+    assert_eq!(std::fs::read_to_string(&files[1]).unwrap(), "file 1\n");
+    assert!(app.tab_titles().iter().all(|t| !t.1), "nothing was edited");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_closed_peek_leaves_no_stale_peek_flag() {
+    let (d, files) = many_files("s70peek", 3);
+    let mut app = new_app();
+    app.open(&d);
+    click_tree(&mut app, &files[0], 1);
+    key(&mut app, "ctrl+w"); // back to the start page
+    app.handle(Input::Drop(files[1].clone())); // opened on purpose
+    click_tree(&mut app, &files[2], 1);
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert_eq!(names, ["f01.txt", "f02.txt"], "the dropped file is kept");
+    assert_eq!(app.peek_tabs(), [false, true]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn markdown_tabs_never_shown_hold_no_images() {
+    let d = tmp_dir("s70img");
+    let img = fixture("img/banner.png");
+    let mut paths = Vec::new();
+    for i in 0..4 {
+        let p = d.join(format!("n{i}.md"));
+        std::fs::write(&p, format!("# n{i}\n\n![b]({})\n", img.display())).unwrap();
+        paths.push(p);
+    }
+    let mut app = new_app();
+    for p in &paths {
+        app.open(p); // never drawn except the last
+    }
+    settled_hash(&mut app);
+    assert_eq!(app.tabs_with_caches(), [false, false, false, true]);
+    // A hidden tab reloading from disk doesn't start decoding either.
+    std::fs::write(&paths[0], format!("# changed\n\n![b]({})\n", img.display())).unwrap();
+    app.handle(Input::FsChanged(vec![paths[0].clone()]));
+    settled_hash(&mut app);
+    assert_eq!(app.tabs_with_caches(), [false, false, false, true]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn go_to_heading_inside_a_list_or_quote_lands_on_the_heading() {
+    let d = tmp_dir("s70head");
+    let f = d.join("doc.md");
+    let mut text = String::from("1. Step\n\n   ```\n");
+    for i in 0..120 {
+        text.push_str(&format!("   code {i}\n"));
+    }
+    text.push_str("   ```\n\n   ## Inner heading\n\n");
+    for i in 0..80 {
+        text.push_str(&format!("tail {i}\n\n"));
+    }
+    std::fs::write(&f, &text).unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    render_hash(&mut app, 800, 600);
+    key(&mut app, "ctrl+shift+g");
+    app.handle(Input::Text("inner".into()));
+    key(&mut app, "enter");
+    render_hash(&mut app, 800, 600);
+    let at_heading = app.view_scroll_y();
+    // The code block alone is ~120 lines tall: the heading is far below it.
+    assert!(
+        at_heading > 1500.0,
+        "scrolled past the code block: {at_heading}"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn files_from_another_launch_wait_for_the_palette_and_cancel_a_quit() {
+    let (d, files) = many_files("s70queue", 3);
+    let mut app = new_app();
+    app.open(&files[0]);
+    // Palette open: the command must run on the file it was opened for.
+    key(&mut app, "ctrl+shift+p");
+    app.handle(Input::Text("upper case".into()));
+    app.open_from_other_launch(vec![files[1].clone()]);
+    key(&mut app, "enter");
+    assert_eq!(std::fs::read_to_string(&files[1]).unwrap(), "file 1\n");
+    let names: Vec<String> = app.tab_titles().into_iter().map(|t| t.0).collect();
+    assert!(
+        names.contains(&"f01.txt".to_string()),
+        "it opens afterwards: {names:?}"
+    );
+    assert!(
+        !app.tab_titles().iter().any(|t| t.0 == "f01.txt" && t.1),
+        "f01 untouched"
+    );
+    // Closing with an unsaved file while another launch sends one: stay open.
+    key(&mut app, "alt+1");
+    app.handle(Input::Text("x".into()));
+    app.handle(Input::CloseRequested);
+    assert!(app.nag_message().is_some());
+    app.open_from_other_launch(vec![files[2].clone()]);
+    key(&mut app, "d"); // Don't save
+    while app.nag_message().is_some() {
+        key(&mut app, "d");
+    }
+    assert!(
+        !app.take_requests().contains(&Request::Quit),
+        "the new file is not lost"
+    );
+    assert!(app.tab_titles().iter().any(|t| t.0 == "f02.txt"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn find_in_preview_stays_fast_with_thousands_of_matches() {
+    let d = tmp_dir("s70find");
+    let f = d.join("big.md");
+    let mut text = String::from("```\n");
+    for _ in 0..3000 {
+        text.push_str(&"e ".repeat(150));
+        text.push('\n');
+    }
+    text.push_str("```\n");
+    std::fs::write(&f, &text).unwrap();
+    let mut app = new_app();
+    app.open(&f);
+    render_hash(&mut app, 800, 600);
+    key(&mut app, "ctrl+f");
+    app.handle(Input::Text("e".into()));
+    render_hash(&mut app, 800, 600);
+    let t = std::time::Instant::now();
+    for _ in 0..3 {
+        key(&mut app, "f3");
+        render_hash(&mut app, 800, 600);
+    }
+    let per = t.elapsed() / 3;
+    assert!(per < Duration::from_secs(2), "one redraw took {per:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

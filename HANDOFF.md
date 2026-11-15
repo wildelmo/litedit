@@ -16,19 +16,14 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 - Last fully green Windows CI run: commit `9395405` (all real-window tests
   pass, including one-window hand-over and the "Open with" registry test;
   exe 6.76 MB; one window 19 MB private; 12 viewed markdown tabs ≈ 22 MB).
-- Linux: 241 tests pass. The Windows target type-checks from Linux with
+- Linux: 247 tests pass. The Windows target type-checks from Linux with
   `cargo check --target x86_64-pc-windows-msvc`.
 
 ## In flight when the session ended
 
-### 1. Independent review of Epic 6 (not finished — no findings received)
+### 1. Independent review of Epic 6 — done
 
-A reviewer was examining `git diff c7764b0..a4cf07e` (hidden-tab memory, go
-to heading, checkbox clicks, find in preview, peek tab, one window, "Open
-with"). **Its findings were never received.** Re-run it: an adversarial
-review of that diff with no hints, then fix what it confirms (story S7.0)
-before merging Epic 7 branches. The two earlier reviews each found
-data-loss bugs, so do not skip this.
+Findings fixed as story S7.0 (see the ROADMAP progress log).
 
 ### 2. Epic 7 — five feature branches (work in progress, NOT reviewed, NOT merged)
 

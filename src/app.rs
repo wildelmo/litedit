@@ -604,6 +604,8 @@ impl App {
     fn add_tab(&mut self, view: Box<dyn View>) {
         if self.view.path().is_none() && self.tabs.len() == 1 {
             self.view = view;
+            self.tabs[0].peek = false;
+            self.tabs[0].trimmed = false;
             return;
         }
         let id = self.next_tab_id;
@@ -647,6 +649,9 @@ impl App {
         }
         self.disk_prompt.retain(|t| *t != id);
         if self.tabs.len() == 1 {
+            // The slot stays (it shows the start page): it is no longer a
+            // peek tab.
+            self.tabs[0].peek = false;
             self.view = if self.tree.root().is_some() {
                 Box::new(MessageView::folder_opened())
             } else {
@@ -1535,8 +1540,9 @@ impl App {
             return;
         }
         if let Some(i) = self.find_tab(path) {
+            // Already open: show it. The keyboard stays where it is (Space
+            // in the tree must not end up typed into the file).
             self.activate(i);
-            self.focus = Focus::Main;
             return;
         }
         let g = self.focused_group();
@@ -2403,8 +2409,21 @@ impl App {
     }
 
     fn drain_queued_opens(&mut self) {
-        if self.nag.is_some() || self.queued_opens.is_empty() {
+        // Wait while anything modal is open: a question, the palette (its
+        // command would land on the newly opened file) or a menu.
+        if self.queued_opens.is_empty()
+            || self.nag.is_some()
+            || self.palette.is_some()
+            || self.menu.is_some()
+        {
             return;
+        }
+        // Files arrived while the window was closing: stay open for them
+        // (the launch that sent them has already exited).
+        if self.requests.contains(&Request::Quit) {
+            self.requests.retain(|r| *r != Request::Quit);
+            self.quit_skip.clear();
+            self.notice = Some("A file was opened while closing; litedit stays open".into());
         }
         for p in std::mem::take(&mut self.queued_opens) {
             if p.is_file() {

@@ -204,7 +204,7 @@ fixed first (S5.0).
 
 ## Epic 7 — Reader first, second batch (built by sub-agents, integrated on main)
 
-- [ ] S7.0 Fix confirmed findings from the independent review of Epic 6
+- [x] S7.0 Fix confirmed findings from the independent review of Epic 6
 - [ ] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
        while loading; read-only lock for code files
 - [ ] S7.2 Image files open in a viewer tab
@@ -220,6 +220,18 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.0 Epic 6 review fixes (no lost edits or panics were found;
+  eight confirmed defects): a second launch no longer reports "sent" for a
+  path the window would drop (the sender checks the round trip, the listener
+  only acknowledges a non-empty parsed list); busy pipe is retried (1 s);
+  the client limits the server to identification-level impersonation; Space
+  in the tree never moves the keyboard into an open file; no stale peek flag
+  on the start-page slot; markdown tabs never shown decode no images and a
+  hidden tab stops its image worker; Go to Heading reaches headings inside
+  lists / quotes; find-in-preview highlight cost is per visible line; files
+  from another launch wait for an open palette / menu / question and cancel
+  a quit in progress; `%` in the exe path refuses "Open with". 6 regression
+  tests (247 total).
 - 2026-11-15 — S6.7 Open with: assoc.rs (pure list of registry entries with
   tests; Windows register / unregister under HKCU\Software\Classes), palette
   commands with a confirmation showing the exe path, result message tells the
