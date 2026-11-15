@@ -220,6 +220,14 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — Security scan triage, fix 1 of the findings (the one rated
+  high): `scripts/ci-shots.sh` took the file name of each screenshot from
+  the CI log, so a log line could make it write anywhere (`../`, absolute
+  paths). Names must now be plain `.png` names (letters, digits, `-`, `_`),
+  the destination must stay inside the output folder (a link there is
+  refused), the base64 is strict and at most 16 MiB per picture. Checked
+  with a stub `gh` and fake logs; not against a real run. The other ten
+  findings are triaged but not fixed yet.
 - 2026-11-15 — Epic 7 wrap-up: Windows smoke script now drives the picture
   tab, read-only lock, Back / Forward, Compare with Clipboard and tree
   Duplicate in the release exe; a 3000-entry tree delete is timed through
