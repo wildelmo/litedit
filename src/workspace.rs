@@ -15,6 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::view::ViewPos;
+
 pub const EXT: &str = "litedit-workspace";
 const HEADER: &str = "litedit-workspace 1";
 /// Bounds on what a (possibly hostile) file can ask for.
@@ -30,6 +32,9 @@ pub struct Workspace {
     pub tabs: Vec<(PathBuf, u8)>,
     /// Index into `tabs` of the file to show.
     pub active: usize,
+    /// Where the reader was in each tab (same order as `tabs`; missing or
+    /// None = at the top).
+    pub positions: Vec<Option<ViewPos>>,
 }
 
 pub fn is_workspace_file(p: &Path) -> bool {
@@ -92,10 +97,16 @@ impl Workspace {
             })
         };
         let mut w = Self::default();
+        // A `pos` line belongs to the tab line before it — only if that
+        // tab was accepted.
+        let mut pos_for: Option<usize> = None;
         for line in lines {
             let Some((k, v)) = line.split_once('\t') else {
                 continue;
             };
+            if matches!(k, "tab" | "tab-right") {
+                pos_for = None;
+            }
             match k {
                 "folder" if w.folders.len() < MAX_FOLDERS => {
                     if let Some(p) = resolve(v)
@@ -106,7 +117,14 @@ impl Workspace {
                 }
                 "tab" | "tab-right" if w.tabs.len() < MAX_TABS => {
                     if let Some(p) = resolve(v) {
+                        pos_for = Some(w.tabs.len());
                         w.tabs.push((p, u8::from(k == "tab-right")));
+                        w.positions.push(None);
+                    }
+                }
+                "pos" => {
+                    if let Some(slot) = pos_for.and_then(|i| w.positions.get_mut(i)) {
+                        *slot = Some(ViewPos::parse(v)).filter(|p| *p != ViewPos::default());
                     }
                 }
                 "active" => w.active = v.trim().parse().unwrap_or(0),
@@ -134,9 +152,13 @@ impl Workspace {
         for f in &self.folders {
             out.push_str(&format!("folder\t{}\n", show(f)));
         }
-        for (t, g) in &self.tabs {
+        for (i, (t, g)) in self.tabs.iter().enumerate() {
             let k = if *g == 1 { "tab-right" } else { "tab" };
             out.push_str(&format!("{k}\t{}\n", show(t)));
+            // Older versions ignore this line.
+            if let Some(p) = self.positions.get(i).copied().flatten() {
+                out.push_str(&format!("pos\t{}\n", p.to_text()));
+            }
         }
         out.push_str(&format!("active\t{}\n", self.active));
         out
@@ -177,6 +199,22 @@ mod tests {
                 (PathBuf::from("/other/lib/x.rs"), 0),
             ],
             active: 1,
+            positions: vec![
+                Some(ViewPos {
+                    line: 41,
+                    col: 7,
+                    top: 30,
+                    top_off: 500,
+                    ..ViewPos::default()
+                }),
+                None,
+                Some(ViewPos {
+                    ptop: 12,
+                    poff: 250_000,
+                    mode: 2,
+                    ..ViewPos::default()
+                }),
+            ],
         };
         let text = w.to_text(Some(base));
         assert!(text.contains("folder\t.\n"), "{text}");
@@ -185,6 +223,12 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("tab-right\tREADME.md"));
+        // Positions are their own lines: the tab lines are as before, so a
+        // path may contain anything and stays relative.
+        assert!(
+            text.contains("main.rs\npos\tl=41 c=7 t=30 o=500\ntab-right\tREADME.md\ntab\t"),
+            "{text}"
+        );
         assert_eq!(Workspace::parse(&text, Some(base)).unwrap(), w);
         // Moved elsewhere: relative entries follow the file.
         let moved = Workspace::parse(&text, Some(Path::new("/new"))).unwrap();
@@ -209,6 +253,51 @@ mod tests {
         assert_eq!(w.tabs.len(), MAX_TABS);
         assert!(w.active < w.tabs.len());
         assert!(Workspace::parse("something else", None).is_none());
+    }
+
+    #[test]
+    fn files_without_positions_still_load_and_hostile_positions_are_capped() {
+        // Written by a version that knew nothing about positions.
+        let old = format!("{HEADER}\nfolder\t.\ntab\ta.md\ntab-right\tb.md\nactive\t1\n");
+        let w = Workspace::parse(&old, Some(Path::new("/p"))).unwrap();
+        assert_eq!(w.tabs.len(), 2);
+        assert_eq!(w.positions, vec![None, None]);
+        assert_eq!(w.active, 1);
+        assert!(!w.to_text(Some(Path::new("/p"))).contains("pos\t"));
+
+        let mut t = format!("{HEADER}\n");
+        // Before any tab: belongs to nothing.
+        t.push_str("pos\tl=5\n");
+        t.push_str("tab\ta.md\n");
+        t.push_str(
+            "pos\tl=18446744073709551615 c=99999999999 t=4294967296 o=99999999999 p=-3 f=x m=9\n",
+        );
+        // A rejected tab's position must not land on the tab before it.
+        t.push_str("tab\tb.md\n");
+        t.push_str("tab\t\\\\evil\\share\\c.md\n");
+        t.push_str("pos\tl=77\n");
+        t.push_str("tab\td.md\n");
+        t.push_str("pos\t\n");
+        t.push_str("pos\tgarbage \u{0} = == l=\n");
+        let w = Workspace::parse(&t, Some(Path::new("/p"))).unwrap();
+        assert_eq!(w.tabs.len(), 3);
+        let a = w.positions[0].unwrap();
+        let cap = u32::MAX as usize;
+        assert_eq!((a.line, a.col, a.top), (cap, cap, cap));
+        assert_eq!((a.top_off, a.ptop, a.poff, a.mode), (1_000_000, 0, 0, 2));
+        assert_eq!(w.positions[1], None, "b.md has no position of its own");
+        assert_eq!(w.positions[2], None, "nothing usable: at the top");
+        // Past the tab limit nothing is kept, positions included.
+        for i in 0..1000 {
+            t.push_str(&format!("tab\tf{i}.md\npos\tl={i}\n"));
+        }
+        let w = Workspace::parse(&t, Some(Path::new("/p"))).unwrap();
+        assert_eq!(w.tabs.len(), MAX_TABS);
+        assert_eq!(w.positions.len(), MAX_TABS);
+        assert_eq!(
+            w.positions[MAX_TABS - 1].map(|p| p.line),
+            Some(MAX_TABS - 4)
+        );
     }
 
     #[test]

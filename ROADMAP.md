@@ -208,7 +208,7 @@ fixed first (S5.0).
 - [ ] S7.1 Big files: colour only as far as you've scrolled; lower memory peak
        while loading; read-only lock for code files
 - [ ] S7.2 Image files open in a viewer tab
-- [ ] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
+- [x] S7.3 Back / forward (Alt+Left / Alt+Right); files reopen where you left off
 - [ ] S7.4 Compare extras: compare the two sides of a split, ignore whitespace,
        jump to a change in the file, compare with the clipboard
 - [ ] S7.5 Tree: multi-select, copy / paste / duplicate; file size and date in
@@ -220,6 +220,15 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S7.3 Back / Forward + remembered positions (sub-agent branch,
+  reviewed and merged): `src/nav.rs` (100 places each way, adjacent
+  duplicates collapsed, vanished files skipped), recorded on tab switches,
+  opens, go to line / heading, `#heading` links, search results; nothing
+  moves under an open question. `ViewPos` (lines + fractions, never pixels)
+  via `View::position` / `restore_position`; in-session table capped at 500
+  files; optional `pos` lines in session / workspace files (old files load,
+  old versions ignore them, values capped). Also fixed: Ctrl+E in a preview
+  whose editor was never drawn scrolled the source too far. 271 tests.
 - 2026-11-15 — S7.0 Epic 6 review fixes (no lost edits or panics were found;
   eight confirmed defects): a second launch no longer reports "sent" for a
   path the window would drop (the sender checks the round trip, the listener

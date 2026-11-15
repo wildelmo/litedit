@@ -19,7 +19,7 @@ use crate::markdown::parse::{Block, BlockKind, Inline, MdDoc, parse};
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::code::CodeView;
-use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
+use crate::view::{DiskState, Scroll, Tick, View, ViewPos, draw_vscrollbar};
 use cosmic_text::Cursor;
 
 pub fn is_markdown(path: &Path) -> bool {
@@ -105,6 +105,16 @@ pub struct MarkdownView {
     /// Element count of the last layout of the current text (survives the
     /// layout being dropped while the tab is hidden).
     last_shape: Option<usize>,
+    /// A restored position: scroll the preview to this source line plus
+    /// millionths of its block. Applied at each draw until every image has
+    /// its size (the page still moves while they load) or the reader
+    /// scrolls.
+    restore_anchor: Option<(usize, u32)>,
+    /// The preview's position when its layout was last dropped (a hidden
+    /// tab still knows where it is).
+    anchor_memo: (usize, u32),
+    /// Where the preview was before a `#heading` link scrolled it.
+    jump_from: Option<ViewPos>,
 }
 
 impl MarkdownView {
@@ -138,6 +148,9 @@ impl MarkdownView {
             pfind: None,
             layout_gen: 0,
             last_shape: None,
+            restore_anchor: None,
+            anchor_memo: (0, 0),
+            jump_from: None,
         };
         // Images are requested when the page is first laid out (drawn), so
         // tabs that were never shown hold no decoded pictures.
@@ -384,6 +397,7 @@ impl MarkdownView {
         if y < self.scroll.y + vh * 0.1 || y > self.scroll.y + vh * 0.8 {
             self.scroll.y = (y - vh / 3.0).max(0.0);
             self.clamp();
+            self.restore_anchor = None;
         }
     }
 
@@ -392,10 +406,11 @@ impl MarkdownView {
         if self.editor.doc.version() == self.md_version {
             return;
         }
+        // Before the text is replaced: the position is in terms of it.
+        self.drop_layout();
         self.md_text = crate::text::sanitize(&self.editor.doc.buf.to_text_lf()).into_owned();
         self.md = parse(&self.md_text);
         self.md_version = self.editor.doc.version();
-        self.layout = None;
         self.last_shape = None;
         self.scaled.clear();
     }
@@ -578,6 +593,7 @@ impl MarkdownView {
             .map_or(*y, |r| *y + r.line_top);
         if top < self.scroll.y + 8.0 || top > self.scroll.y + view_h - 48.0 {
             self.scroll.y = (top - view_h / 3.0).max(0.0);
+            self.restore_anchor = None;
         }
     }
 
@@ -837,11 +853,14 @@ impl MarkdownView {
                 self.notice = None;
             }
             LinkTarget::Anchor(slug) => {
+                let from = self.position();
                 if let Some((_, l)) = &self.layout
                     && let Some((_, y)) = l.anchors.iter().find(|(s, _)| *s == slug)
                 {
                     self.scroll.y = (*y - ctx.px(12.0)).max(0.0);
                     self.clamp();
+                    self.restore_anchor = None;
+                    self.jump_from = from;
                 }
             }
             LinkTarget::File(p) => {
@@ -856,6 +875,9 @@ impl MarkdownView {
     }
 
     fn toggle_mode(&mut self, ctx: &mut Ctx) {
+        // The other view opens at the place this one shows, not at a
+        // position restored for it earlier.
+        self.restore_anchor = None;
         match self.mode {
             Mode::Preview => {
                 // Preview → source: keep the block at the top of the view.
@@ -873,6 +895,77 @@ impl MarkdownView {
                 self.mode = Mode::Preview;
             }
         }
+    }
+
+    /// Forget the layout (it is rebuilt at the next draw), remembering
+    /// where the preview was.
+    fn drop_layout(&mut self) {
+        if self.layout.is_some() {
+            self.anchor_memo = self.top_anchor();
+            self.layout = None;
+        }
+    }
+
+    /// Where blocks start: (source line, y), one entry per line, both
+    /// increasing; the first entry starts at y = 0 so the space above the
+    /// first block belongs to it.
+    fn line_marks(&self) -> Vec<(usize, f32)> {
+        let Some((_, l)) = &self.layout else {
+            return Vec::new();
+        };
+        let text = self.md_text.as_bytes();
+        let mut marks: Vec<(usize, f32)> = Vec::new();
+        let (mut at, mut line) = (0usize, 0usize);
+        for &(off, y) in &l.offsets {
+            let off = off.min(text.len());
+            if off < at {
+                (at, line) = (0, 0);
+            }
+            line += text[at..off].iter().filter(|b| **b == b'\n').count();
+            at = off;
+            match marks.last() {
+                None => marks.push((line, 0.0)),
+                Some(&(pl, py)) if line > pl && y > py => marks.push((line, y)),
+                _ => {}
+            }
+        }
+        marks
+    }
+
+    /// The preview's scroll position as (source line of the block at the
+    /// top, millionths of the way through it): the same place whatever the
+    /// width or zoom.
+    fn top_anchor(&self) -> (usize, u32) {
+        let marks = self.line_marks();
+        let y = self.scroll.y.max(0.0);
+        let Some(i) = marks.iter().rposition(|(_, my)| *my <= y) else {
+            return (0, 0);
+        };
+        let (line, start) = marks[i];
+        let end = marks.get(i + 1).map_or(self.content_height(), |m| m.1);
+        let span = end - start;
+        if span <= 0.0 {
+            return (line, 0);
+        }
+        let frac = ((y - start) / span).clamp(0.0, 1.0);
+        (line, (frac * 1_000_000.0).round() as u32)
+    }
+
+    /// Scroll to a `top_anchor` position. A line past the end (the file
+    /// shrank, or the value was made up) lands in the last block.
+    fn scroll_to_anchor(&mut self, (line, millionths): (usize, u32)) {
+        let marks = self.line_marks();
+        let Some(i) = marks
+            .iter()
+            .rposition(|(l, _)| *l <= line)
+            .or(if marks.is_empty() { None } else { Some(0) })
+        else {
+            return;
+        };
+        let start = marks[i].1;
+        let end = marks.get(i + 1).map_or(self.content_height(), |m| m.1);
+        let frac = millionths.min(ViewPos::MAX_POFF) as f32 / 1_000_000.0;
+        self.scroll.y = start + (end - start).max(0.0) * frac;
     }
 
     fn top_source_line(&self) -> usize {
@@ -929,6 +1022,12 @@ impl MarkdownView {
         self.ensure_layout(rect.w, ctx);
         if let Some(line) = self.pending_scroll_line.take() {
             self.scroll_to_source_line(line);
+        }
+        if let Some(a) = self.restore_anchor {
+            self.scroll_to_anchor(a);
+            if !self.images.pending() {
+                self.restore_anchor = None;
+            }
         }
         self.refresh_preview_find();
         self.reveal_preview_match(rect.h as f32);
@@ -1382,12 +1481,12 @@ impl View for MarkdownView {
     }
 
     fn metrics_changed(&mut self) {
-        self.layout = None;
+        self.drop_layout();
         self.editor.metrics_changed();
     }
 
     fn theme_changed(&mut self) {
-        self.layout = None;
+        self.drop_layout();
         self.editor.theme_changed();
     }
 
@@ -1396,7 +1495,7 @@ impl View for MarkdownView {
     }
 
     fn on_hide(&mut self) {
-        self.layout = None;
+        self.drop_layout();
         self.scaled = HashMap::new();
         self.images.unload();
         self.editor.on_hide();
@@ -1465,13 +1564,55 @@ impl View for MarkdownView {
             // The layout may not exist yet (hidden tab, resized window):
             // resolved at the next draw.
             self.pending_scroll_line = Some(line);
+            self.restore_anchor = None;
         }
+    }
+
+    fn position(&self) -> Option<ViewPos> {
+        let (ptop, poff) = match (self.pending_scroll_line, self.restore_anchor) {
+            // Jumps the next draw will resolve count as done.
+            (Some(line), _) => (line, 0),
+            (None, Some(a)) => a,
+            (None, None) if self.layout.is_some() => self.top_anchor(),
+            (None, None) => self.anchor_memo,
+        };
+        Some(ViewPos {
+            ptop,
+            poff,
+            mode: match self.mode {
+                Mode::Preview => 0,
+                Mode::Source => 1,
+                Mode::Split => 2,
+            },
+            ..self.editor.editor_pos()
+        })
+    }
+
+    fn restore_position(&mut self, pos: ViewPos) {
+        if self.position() == Some(pos) {
+            return;
+        }
+        self.mode = match pos.mode {
+            1 => Mode::Source,
+            2 => Mode::Split,
+            _ => Mode::Preview,
+        };
+        self.editor.restore_editor_pos(pos);
+        self.pending_scroll_line = None;
+        self.restore_anchor = Some((pos.ptop, pos.poff.min(ViewPos::MAX_POFF)));
+        // Side by side: the preview stays where it was, it doesn't jump to
+        // the caret at the next draw.
+        self.followed_line = self.editor.doc.primary().head.line;
+    }
+
+    fn take_jump_origin(&mut self) -> Option<ViewPos> {
+        self.jump_from.take()
     }
 
     fn run_command(&mut self, name: &str) -> bool {
         let done = self.editor.run_command(name);
         if done {
-            self.layout = None;
+            self.drop_layout();
         }
         done
     }
@@ -1482,7 +1623,7 @@ impl View for MarkdownView {
 
     fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
         let n = self.editor.save_as(path, allow_lossy)?;
-        self.layout = None;
+        self.drop_layout();
         self.images.clear();
         Ok(n)
     }
@@ -1651,6 +1792,10 @@ impl MarkdownView {
             _ => return false,
         }
         self.clamp();
+        if self.scroll.y != before {
+            // The reader moved on: stop holding a restored position.
+            self.restore_anchor = None;
+        }
         self.scroll.y != before
     }
 }

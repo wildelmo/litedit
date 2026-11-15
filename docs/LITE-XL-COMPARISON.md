@@ -57,6 +57,7 @@ in litedit · ➕ litedit only
 | Project search | 🔁 Ctrl+Shift+F | litedit: plain text only; lite-xl also regex and fuzzy |
 | — | ➕ All matches highlighted, match count, replace-all is one undo | |
 | — | ➕ Find in the rendered markdown preview, go to heading (outline) | |
+| — | ➕ Back / Forward (Alt+Left / Alt+Right); files reopen where you left off | |
 
 ## View
 

@@ -82,6 +82,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("File: Close Tab", "ctrl+w"),
     ("Go to File…", "ctrl+p"),
     ("Go to Line…", "ctrl+g"),
+    ("Go Back", "alt+left"),
+    ("Go Forward", "alt+right"),
     ("Markdown: Go to Heading…", "ctrl+shift+g"),
     ("Find", "ctrl+f"),
     ("Replace", "ctrl+h"),

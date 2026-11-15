@@ -13,6 +13,7 @@ use crate::input::parse_key_combo;
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::menu::{Menu, MenuAction, MenuResult};
 use crate::nag::{Nag, NagAction, Pending};
+use crate::nav::{History, Loc, Remembered};
 use crate::palette::{Action, Outcome, Palette, index_files};
 use crate::session::{Session, push_recent};
 use crate::settings::{self, Settings};
@@ -25,7 +26,7 @@ use crate::view::diff::{DiffView, Side};
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::search::SearchView;
-use crate::view::{DiskState, Tick, View};
+use crate::view::{DiskState, Tick, View, ViewPos};
 use crate::workspace::{self, Workspace};
 
 pub const MIN_ZOOM: f32 = 0.5;
@@ -121,6 +122,14 @@ pub struct App {
     /// Files handed over by another launch while a question was showing;
     /// opened once it is answered.
     queued_opens: Vec<PathBuf>,
+    /// Back / Forward history (Alt+Left / Alt+Right).
+    nav: History,
+    /// The tab the history last saw in front: (id, shows a file).
+    nav_tab: (u64, bool),
+    /// Where that tab was when it was closed (its view is gone).
+    nav_closed: Option<(u64, Loc)>,
+    /// Where the reader was in files closed during this run.
+    file_pos: Remembered,
 }
 
 struct TabSlot {
@@ -226,6 +235,10 @@ impl App {
             compare_with: None,
             workspace_store: None,
             queued_opens: Vec::new(),
+            nav: History::default(),
+            nav_tab: (1, false),
+            nav_closed: None,
+            file_pos: Remembered::default(),
             mods: crate::input::Mods::default(),
         }
     }
@@ -545,6 +558,138 @@ impl App {
             return;
         }
         self.open_now(path);
+        self.nav_sync();
+    }
+
+    // ---- back / forward --------------------------------------------------
+
+    /// Where the reader is now, if the active tab shows a file.
+    fn nav_here(&self) -> Option<Loc> {
+        self.nav_loc(self.active)
+    }
+
+    fn nav_loc(&self, i: usize) -> Option<Loc> {
+        let v = self.tab_view(i);
+        Some(Loc {
+            path: v.path()?.to_path_buf(),
+            pos: v.position()?,
+            peek: self.tabs.get(i).is_some_and(|t| t.peek),
+        })
+    }
+
+    fn nav_key(&self) -> (u64, bool) {
+        (
+            self.tabs.get(self.active).map_or(0, |t| t.id),
+            self.view.path().is_some(),
+        )
+    }
+
+    /// A jump inside the active tab may have happened since `before` was
+    /// taken (go to line, go to heading, a search result): if the reader
+    /// really moved, Back returns there.
+    fn nav_jumped(&mut self, before: Option<Loc>) {
+        if let Some(b) = before
+            && self.nav_here().is_none_or(|h| !h.same(&b))
+        {
+            self.nav.jumped(b);
+        }
+        self.nav_sync();
+    }
+
+    /// Notice that another tab came to the front (whatever did it: a click
+    /// on a tab, a link, the tree, quick open, closing a tab) and remember
+    /// the place that was left. Called after every input.
+    fn nav_sync(&mut self) {
+        // A `#heading` link scrolled the page.
+        if let Some(pos) = self.view.take_jump_origin()
+            && let Some(here) = self.nav_here()
+        {
+            let from = Loc {
+                pos,
+                ..here.clone()
+            };
+            if !from.same(&here) {
+                self.nav.jumped(from);
+            }
+        }
+        let now = self.nav_key();
+        let (old_id, had_file) = std::mem::replace(&mut self.nav_tab, now);
+        let left = match self.nav_closed.take() {
+            // It was closed (the last tab keeps its id for whatever is
+            // shown next, so the id alone can't tell).
+            Some((id, loc)) if id == old_id => Some(loc),
+            _ if had_file && old_id != now.0 => {
+                self.tab_index(old_id).and_then(|i| self.nav_loc(i))
+            }
+            _ => None,
+        };
+        if let Some(l) = left {
+            self.nav.jumped(l);
+        }
+    }
+
+    /// Alt+Left / Alt+Right: show the previous (next) place in the history,
+    /// reopening its file if the tab was closed. Places whose file is gone
+    /// are skipped. Uses the ordinary ways of showing a file, so no tab
+    /// with unsaved edits is ever replaced or closed, and nothing moves
+    /// while a question is showing.
+    pub fn navigate(&mut self, back: bool) {
+        if self.nag.is_some() {
+            return;
+        }
+        self.nav_sync();
+        let here = self.nav_here();
+        let open: Vec<PathBuf> = (0..self.tabs.len())
+            .filter_map(|i| self.tab_view(i).path().map(Path::to_path_buf))
+            .collect();
+        let target = self.nav.step(back, here.as_ref(), |l| {
+            open.contains(&l.path) || l.path.is_file()
+        });
+        let Some(loc) = target else {
+            self.notice = Some(
+                if back {
+                    "No earlier place to go back to"
+                } else {
+                    "No later place to go forward to"
+                }
+                .into(),
+            );
+            return;
+        };
+        if let Some(i) = self.find_tab(&loc.path) {
+            // An open tab is only brought to the front.
+            self.activate(i);
+            self.focus = Focus::Main;
+        } else if loc.peek && !workspace::is_workspace_file(&loc.path) {
+            // A peeked file comes back in the peek tab.
+            self.open_peek(&loc.path);
+        } else {
+            self.open_now(&loc.path);
+        }
+        if self.view.path() == Some(loc.path.as_path()) {
+            self.view.restore_position(loc.pos);
+        }
+        // This move is not a jump to remember.
+        self.nav_tab = self.nav_key();
+        self.nav_closed = None;
+        self.pending = true;
+    }
+
+    /// (back, forward) history lengths (tests).
+    #[cfg(test)]
+    pub fn nav_lens(&self) -> (usize, usize) {
+        self.nav.lens()
+    }
+
+    /// The active view's position (tests).
+    #[cfg(test)]
+    pub fn view_position(&self) -> Option<ViewPos> {
+        self.view.position()
+    }
+
+    #[cfg(test)]
+    pub fn restore_view_position(&mut self, pos: ViewPos) {
+        self.view.restore_position(pos);
     }
 
     // ---- tabs ------------------------------------------------------------
@@ -638,6 +783,14 @@ impl App {
     fn remove_tab(&mut self, id: u64) {
         self.session_dirty = true;
         let Some(i) = self.tab_index(id) else { return };
+        // Opening the file again continues where the reader was, and Back
+        // can return to a closed tab.
+        if let Some(loc) = self.nav_loc(i) {
+            self.file_pos.put(&loc.path, loc.pos);
+            if id == self.nav_tab.0 {
+                self.nav_closed = Some((id, loc));
+            }
+        }
         if let Some(p) = self.tab_view(i).path().map(Path::to_path_buf)
             && !self.tabs[i].peek
         {
@@ -1045,8 +1198,10 @@ impl App {
                 });
             }
             Outcome::Run(Action::Heading(line)) => {
+                let before = self.nav_here();
                 self.view.goto_heading(line);
                 self.focus = Focus::Main;
+                self.nav_jumped(before);
             }
             Outcome::Run(Action::Command(c)) => {
                 if self.view.run_command(c) {
@@ -1071,8 +1226,10 @@ impl App {
                 }
             }
             Outcome::GoToLine(n) => {
+                let before = self.nav_here();
                 self.view.goto_line(n);
                 self.focus = Focus::Main;
+                self.nav_jumped(before);
             }
         }
         self.pending = true;
@@ -1409,6 +1566,7 @@ impl App {
         if !self.owns_workspace {
             s.root = self.stored.root.clone();
             s.tabs = self.stored.tabs.clone();
+            s.positions = self.stored.positions.clone();
             s.active = self.stored.active;
         }
         s
@@ -1421,6 +1579,7 @@ impl App {
             folders: self.tree.roots().iter().skip(1).cloned().collect(),
             tabs: ws.tabs.iter().map(|(p, _)| p.clone()).collect(),
             groups: ws.tabs.iter().map(|(_, g)| *g).collect(),
+            positions: ws.positions.clone(),
             active: ws.active,
             recent: self.recent.clone(),
             tree_width: self.tree.width,
@@ -1447,7 +1606,7 @@ impl App {
             .enumerate()
             .map(|(i, t)| (t.clone(), s.groups.get(i).copied().unwrap_or(0)))
             .collect();
-        self.open_workspace_tabs(&tabs, s.active);
+        self.open_workspace_tabs(&tabs, &s.positions, s.active);
         self.tree.visible = s.tree_visible;
         self.focus = Focus::Main;
         self.session_dirty = false;
@@ -1517,6 +1676,15 @@ impl App {
     }
 
     fn make_view(&self, path: &Path) -> Box<dyn View> {
+        let mut view = self.make_view_at_top(path);
+        // Closed earlier in this run: continue where the reader was.
+        if let Some(pos) = self.file_pos.get(path) {
+            view.restore_position(pos);
+        }
+        view
+    }
+
+    fn make_view_at_top(&self, path: &Path) -> Box<dyn View> {
         match Document::open(path) {
             Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
             Ok(doc) => {
@@ -2123,6 +2291,8 @@ impl App {
                     w.active = w.tabs.len();
                 }
                 w.tabs.push((p.to_path_buf(), self.tabs[i].group));
+                let pos = self.tab_view(i).position();
+                w.positions.push(pos.filter(|p| *p != ViewPos::default()));
             }
         }
         w
@@ -2137,10 +2307,24 @@ impl App {
         }
     }
 
-    /// Open `tabs` (existing files only) on their sides; show `active`.
-    fn open_workspace_tabs(&mut self, tabs: &[(PathBuf, u8)], active: usize) {
-        for (p, _) in tabs.iter().filter(|(p, _)| p.is_file()) {
+    /// Open `tabs` (existing files only) on their sides, each where the
+    /// reader was (`positions`, by index); show `active`.
+    fn open_workspace_tabs(
+        &mut self,
+        tabs: &[(PathBuf, u8)],
+        positions: &[Option<ViewPos>],
+        active: usize,
+    ) {
+        for (k, (p, _)) in tabs.iter().enumerate().filter(|(_, (p, _))| p.is_file()) {
+            // A tab that is already open stays where its reader is.
+            let was_open = self.find_tab(p).is_some();
             self.open_now(p);
+            if !was_open
+                && let Some(pos) = positions.get(k).copied().flatten()
+                && self.view.path() == Some(p.as_path())
+            {
+                self.view.restore_position(pos);
+            }
         }
         // Sides: only when both sides end up with tabs.
         let right: Vec<usize> = tabs
@@ -2204,7 +2388,7 @@ impl App {
             self.tree.add_root(f);
         }
         self.tree.visible = true;
-        self.open_workspace_tabs(&w.tabs, w.active);
+        self.open_workspace_tabs(&w.tabs, &w.positions, w.active);
         if self.view.path().is_none() && self.tabs.len() == 1 {
             self.view = Box::new(MessageView::folder_opened());
             self.focus = Focus::Tree;
@@ -2325,6 +2509,12 @@ impl App {
 
     /// Handle one input event. Returns true if the window should redraw.
     pub fn handle(&mut self, input: Input) -> bool {
+        let redraw = self.handle_input(input);
+        self.nav_sync();
+        redraw
+    }
+
+    fn handle_input(&mut self, input: Input) -> bool {
         let redraw = self.handle_inner(&input);
         self.sync_nag_owner();
         // Requests the app handles itself (opening a file from a link or the tree).
@@ -2363,9 +2553,12 @@ impl App {
                 // Don't switch tabs under an open question.
                 return redraw;
             }
+            let before = self.nav_here();
             self.open(&p);
             if let Some(l) = line {
                 self.view.goto_line(l);
+                // One step back from a search result, even in this file.
+                self.nav_jumped(before);
             }
             return true;
         }
@@ -2667,6 +2860,13 @@ impl App {
                 mods,
             } if mods.ctrl && mods.alt && !mods.shift => {
                 return self.move_active_to(if *k == Key::Right { 1 } else { 0 });
+            }
+            Input::Key {
+                key: k @ (Key::Left | Key::Right),
+                mods,
+            } if mods.alt && !mods.ctrl && !mods.shift => {
+                self.navigate(*k == Key::Left);
+                return true;
             }
             Input::Key { key, mods } if mods.ctrl => {
                 let handled = match key {

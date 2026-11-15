@@ -18,6 +18,7 @@ mod links;
 mod markdown;
 mod menu;
 mod nag;
+mod nav;
 mod palette;
 mod platform;
 mod script;
@@ -36,6 +37,8 @@ mod workspace;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_nav;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

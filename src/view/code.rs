@@ -25,7 +25,7 @@ use crate::text::display_char;
 use crate::theme;
 use crate::ui::{Ctx, FontKind};
 use crate::view::wrap::{Rows, row_of, wrap_breaks};
-use crate::view::{DiskState, Scroll, Tick, View, draw_vscrollbar};
+use crate::view::{DiskState, Scroll, Tick, View, ViewPos, draw_vscrollbar};
 
 /// Lines longer than this are cut for display (minified files). Editing
 /// beyond the cut still works; the caret is drawn at the cut (D-015).
@@ -221,6 +221,12 @@ pub struct CodeView {
     rows: Rows,
     /// Remembered x for repeated visual up/down moves in wrap mode.
     goal_x: Option<f32>,
+    /// Line height and top padding last seen (to name the top line without
+    /// a `Ctx`).
+    seen: (f32, f32),
+    /// A restored position: put this line (plus thousandths of a row) at
+    /// the top at the next draw.
+    restore_top: Option<(usize, u32)>,
 }
 
 impl CodeView {
@@ -254,7 +260,61 @@ impl CodeView {
             wrap: false,
             rows: Rows::default(),
             goal_x: None,
+            seen: (0.0, 0.0),
+            restore_top: None,
         }
+    }
+
+    /// The line at the top of the view and how far the view is scrolled
+    /// past its first row (thousandths of a row). Jumps that the next draw
+    /// will resolve count as done.
+    fn scroll_anchor(&self) -> (usize, u32) {
+        if let Some(a) = self.restore_top {
+            return a;
+        }
+        let (lh, pad) = self.seen;
+        if lh <= 0.0 {
+            // Never drawn: at the top, or about to show a line.
+            return (self.goto_center.unwrap_or(0), 0);
+        }
+        let y = match self.goto_center {
+            Some(l) => (self.rows.first_row(l) as f32 * lh - self.view_h / 3.0).max(0.0),
+            None => self.scroll.y.max(0.0),
+        };
+        let row = ((y - pad).max(0.0) / lh).floor() as usize;
+        let line = self.rows.line_of_row(row).0;
+        let off = (y / lh - self.rows.first_row(line) as f32).max(0.0) * 1000.0;
+        (line, (off.round() as u32).min(ViewPos::MAX_TOP_OFF))
+    }
+
+    /// Caret and scroll position (the editor's part of a [`ViewPos`]).
+    pub fn editor_pos(&self) -> ViewPos {
+        let head = self.doc.primary().head;
+        let (top, top_off) = self.scroll_anchor();
+        ViewPos {
+            line: head.line,
+            col: head.col,
+            top,
+            top_off,
+            ..ViewPos::default()
+        }
+    }
+
+    /// Put the caret and the scroll position back (clamped to the text).
+    pub fn restore_editor_pos(&mut self, pos: ViewPos) {
+        let now = self.editor_pos();
+        if (now.line, now.col, now.top, now.top_off) == (pos.line, pos.col, pos.top, pos.top_off) {
+            return;
+        }
+        let caret = self.doc.buf.clamp(Pos::new(pos.line, pos.col));
+        if self.doc.primary().head != caret {
+            self.doc.set_caret(caret, false);
+        }
+        let last = self.doc.buf.line_count().saturating_sub(1);
+        self.restore_top = Some((pos.top.min(last), pos.top_off.min(ViewPos::MAX_TOP_OFF)));
+        // The remembered scroll position wins over showing the caret.
+        self.goto_center = None;
+        self.reveal_caret = false;
     }
 
     /// First line at the top of the view.
@@ -267,6 +327,13 @@ impl CodeView {
 
     /// Scroll so `line` is at the top (clamped on next render).
     pub fn scroll_to_line(&mut self, line: usize, ctx: &Ctx) {
+        if self.seen.0 <= 0.0 {
+            // Never drawn: the rows aren't wrapped to a width yet, so the
+            // first draw puts the line at the top.
+            self.restore_top = Some((line, 0));
+            return;
+        }
+        self.restore_top = None;
         self.scroll.y = self.rows.first_row(line) as f32 * ctx.code_metrics().line_height;
     }
 
@@ -1108,6 +1175,12 @@ impl CodeView {
         self.view_w = rect.w as f32;
         self.view_h = rect.h as f32;
         self.update_rows(ctx);
+        self.seen = (ctx.code_metrics().line_height, ctx.px(theme::PADDING_Y));
+        if let Some((line, off)) = self.restore_top.take() {
+            let line = line.min(self.doc.buf.line_count().saturating_sub(1));
+            let rows = self.rows.first_row(line) as f32 + off as f32 / 1000.0;
+            self.scroll.y = rows * self.seen.0;
+        }
         if let Some(l) = self.goto_center.take() {
             let lh = ctx.code_metrics().line_height;
             self.scroll.y = (self.rows.first_row(l) as f32 * lh - rect.h as f32 / 3.0).max(0.0);
@@ -1298,6 +1371,7 @@ impl CodeView {
         self.view_w = rect.w as f32;
         self.view_h = rect.h as f32;
         let lh = ctx.code_metrics().line_height;
+        self.seen = (lh, ctx.px(theme::PADDING_Y));
         let before = (
             self.scroll.x,
             self.scroll.y,
@@ -1455,6 +1529,19 @@ impl View for CodeView {
     #[cfg(test)]
     fn has_caches(&self) -> bool {
         !self.cache.is_empty()
+    }
+
+    #[cfg(test)]
+    fn scroll_y(&self) -> f32 {
+        self.scroll.y
+    }
+
+    fn position(&self) -> Option<ViewPos> {
+        Some(self.editor_pos())
+    }
+
+    fn restore_position(&mut self, pos: ViewPos) {
+        self.restore_editor_pos(pos);
     }
 
     fn is_dirty(&self) -> bool {

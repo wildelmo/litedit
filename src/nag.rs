@@ -102,6 +102,11 @@ impl Nag {
     pub fn handle(&mut self, input: &Input) -> Option<NagAction> {
         let n = self.options.len();
         match input {
+            // Alt+Left / Alt+Right are Back / Forward: not for the question.
+            Input::Key {
+                key: Key::Left | Key::Right,
+                mods,
+            } if mods.alt => {}
             Input::Key { key, .. } => match key {
                 Key::Left => self.selected = (self.selected + n - 1) % n,
                 Key::Right | Key::Tab => self.selected = (self.selected + 1) % n,

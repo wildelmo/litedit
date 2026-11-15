@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- Back / Forward (Alt+Left / Alt+Right) through the places you've been,
+  reopening closed files. Files reopen at the caret and scroll position you
+  left them at, also after a restart.
 - Fixes from an independent review of the features below: a file opened from
   Explorer while litedit is running can no longer be silently dropped (odd
   paths open in their own window instead); Space on a tree entry never types

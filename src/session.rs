@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::view::ViewPos;
+
 pub const MAX_RECENT: usize = 15;
 const HEADER: &str = "litedit-session 1";
 
@@ -18,6 +20,8 @@ pub struct Session {
     pub tabs: Vec<PathBuf>,
     /// Side of each tab (0 left, 1 right; missing = left).
     pub groups: Vec<u8>,
+    /// Where the reader was in each tab (missing or None = at the top).
+    pub positions: Vec<Option<ViewPos>>,
     pub active: usize,
     /// Most recent first; folders and files.
     pub recent: Vec<PathBuf>,
@@ -33,6 +37,7 @@ impl Default for Session {
             folders: Vec::new(),
             tabs: Vec::new(),
             groups: Vec::new(),
+            positions: Vec::new(),
             active: 0,
             recent: Vec::new(),
             tree_width: 260.0,
@@ -75,11 +80,16 @@ impl Session {
         if lines.next().map(str::trim) != Some(HEADER) {
             return s;
         }
+        // A `pos` line belongs to the tab line before it.
+        let mut pos_for: Option<usize> = None;
         for line in lines {
             let Some((k, v)) = line.split_once('\t') else {
                 continue;
             };
             let v = v.trim_end_matches('\r');
+            if matches!(k, "tab" | "tab-right") {
+                pos_for = None;
+            }
             match k {
                 "root" if !v.is_empty() => s.root = Some(PathBuf::from(v)),
                 "folder" if !v.is_empty() && s.folders.len() < 32 => {
@@ -88,6 +98,13 @@ impl Session {
                 "tab" | "tab-right" if !v.is_empty() => {
                     s.tabs.push(PathBuf::from(v));
                     s.groups.push(u8::from(k == "tab-right"));
+                    pos_for = Some(s.positions.len());
+                    s.positions.push(None);
+                }
+                "pos" => {
+                    if let Some(slot) = pos_for.and_then(|i| s.positions.get_mut(i)) {
+                        *slot = Some(ViewPos::parse(v)).filter(|p| *p != ViewPos::default());
+                    }
                 }
                 "active" => s.active = v.parse().unwrap_or(0),
                 "recent" if !v.is_empty() && s.recent.len() < MAX_RECENT => {
@@ -115,6 +132,7 @@ impl Session {
         }
         s.tabs.truncate(100);
         s.groups.truncate(100);
+        s.positions.truncate(100);
         s
     }
 
@@ -134,6 +152,10 @@ impl Session {
                 "tab"
             };
             out.push_str(&format!("{k}\t{}\n", clean(t)));
+            // Older versions ignore this line.
+            if let Some(p) = self.positions.get(i).copied().flatten() {
+                out.push_str(&format!("pos\t{}\n", p.to_text()));
+            }
         }
         out.push_str(&format!("active\t{}\n", self.active));
         for r in &self.recent {
@@ -168,6 +190,18 @@ mod tests {
         let s = Session {
             folders: Vec::new(),
             groups: vec![0, 1],
+            positions: vec![
+                None,
+                Some(ViewPos {
+                    line: 9,
+                    col: 2,
+                    top: 4,
+                    ptop: 30,
+                    poff: 500_000,
+                    mode: 1,
+                    ..ViewPos::default()
+                }),
+            ],
             root: Some(PathBuf::from("/notes")),
             tabs: vec![PathBuf::from("/notes/a.md"), PathBuf::from("/notes/b c.md")],
             active: 1,
@@ -183,6 +217,17 @@ mod tests {
             format!("{HEADER}\nunknown\tx\nzoom\tNaN\ntree_width\t-5\nnoTabHere\nactive\tbig\n");
         let p = Session::parse(&odd);
         assert_eq!((p.zoom, p.tree_width, p.active), (1.0, 100.0, 0));
+        // A session from a version without positions, and damaged positions.
+        let old = format!("{HEADER}\ntab\t/a.md\ntab-right\t/b.md\nactive\t1\n");
+        let p = Session::parse(&old);
+        assert_eq!((p.tabs.len(), p.positions.clone()), (2, vec![None, None]));
+        let odd = format!(
+            "{HEADER}\npos\tl=3\ntab\t/a.md\npos\tl=99999999999999999999999 t=18446744073709551615 m=200\ntab\t/b.md\npos\tnonsense\n"
+        );
+        let p = Session::parse(&odd);
+        let a = p.positions[0].unwrap();
+        assert_eq!((a.line, a.top, a.mode), (0, u32::MAX as usize, 2));
+        assert_eq!(p.positions[1], None);
     }
 
     #[test]
@@ -205,6 +250,7 @@ mod tests {
         let s = Session {
             folders: Vec::new(),
             groups: Vec::new(),
+            positions: Vec::new(),
             zoom: 1.5,
             ..Session::default()
         };

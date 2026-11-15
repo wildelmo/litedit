@@ -167,6 +167,93 @@ pub trait View {
     fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
         None
     }
+
+    /// Where the reader is in this file (None: nothing to come back to).
+    /// Must work for a hidden tab: no layout, no `Ctx`.
+    fn position(&self) -> Option<ViewPos> {
+        None
+    }
+
+    /// Go back to a remembered place. The text may have changed since (or
+    /// the value may come from a file someone else wrote): everything is
+    /// clamped. Scrolling is resolved at the next draw.
+    fn restore_position(&mut self, _pos: ViewPos) {}
+
+    /// The view just jumped within its file by itself (a `#heading` link):
+    /// where it was before, once.
+    fn take_jump_origin(&mut self) -> Option<ViewPos> {
+        None
+    }
+}
+
+/// A place in a file that survives the text being laid out again (another
+/// width or zoom, a restart): line numbers and fractions, never pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewPos {
+    /// Caret: 0-based line and byte column.
+    pub line: usize,
+    pub col: usize,
+    /// Editor: the line at the top of the view, and how far the view is
+    /// scrolled past that line's first row, in thousandths of a row.
+    pub top: usize,
+    pub top_off: u32,
+    /// Markdown preview: source line of the block at the top, and how far
+    /// through that block the view is, in millionths.
+    pub ptop: usize,
+    pub poff: u32,
+    /// Markdown: 0 preview, 1 source, 2 side by side.
+    pub mode: u8,
+}
+
+impl ViewPos {
+    /// Largest line / column accepted from a file.
+    const MAX_LINE: u64 = u32::MAX as u64;
+    pub const MAX_TOP_OFF: u32 = 1_000_000;
+    pub const MAX_POFF: u32 = 1_000_000;
+
+    /// One line of `name=number` words (zero values are left out).
+    pub fn to_text(self) -> String {
+        let fields: [(&str, u64); 7] = [
+            ("l", self.line as u64),
+            ("c", self.col as u64),
+            ("t", self.top as u64),
+            ("o", self.top_off as u64),
+            ("p", self.ptop as u64),
+            ("f", self.poff as u64),
+            ("m", self.mode as u64),
+        ];
+        fields
+            .iter()
+            .filter(|(_, v)| *v != 0)
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Read `to_text` output. Unknown words and bad numbers are ignored and
+    /// every value is capped (the file may be hand-made or hostile); the
+    /// view clamps to the actual text when the position is restored.
+    pub fn parse(text: &str) -> ViewPos {
+        let mut p = ViewPos::default();
+        for word in text.split_whitespace().take(32) {
+            let Some((k, v)) = word.split_once('=') else {
+                continue;
+            };
+            let Ok(n) = v.parse::<u64>() else { continue };
+            let index = n.min(Self::MAX_LINE) as usize;
+            match k {
+                "l" => p.line = index,
+                "c" => p.col = index,
+                "t" => p.top = index,
+                "o" => p.top_off = n.min(Self::MAX_TOP_OFF as u64) as u32,
+                "p" => p.ptop = index,
+                "f" => p.poff = n.min(Self::MAX_POFF as u64) as u32,
+                "m" => p.mode = n.min(2) as u8,
+                _ => {}
+            }
+        }
+        p
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,4 +313,37 @@ pub fn draw_vscrollbar(canvas: &mut Canvas, rect: Rect, scroll_y: f32, content_h
         Rect::new(rect.right() - sb_w - margin, thumb_y, sb_w, thumb_h),
         theme::p().scrollbar,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_pos_round_trips_and_caps_hostile_values() {
+        let p = ViewPos {
+            line: 12,
+            col: 4,
+            top: 3,
+            top_off: 250,
+            ptop: 40,
+            poff: 123_456,
+            mode: 2,
+        };
+        assert_eq!(p.to_text(), "l=12 c=4 t=3 o=250 p=40 f=123456 m=2");
+        assert_eq!(ViewPos::parse(&p.to_text()), p);
+        assert_eq!(ViewPos::default().to_text(), "");
+        assert_eq!(ViewPos::parse(""), ViewPos::default());
+        let hostile = ViewPos::parse(
+            "l=99999999999999999999 c=-5 t=18446744073709551615 o=4000000000 \
+             p=1e9 f=18446744073709551615 m=77 zz=1 l junk=== =3 c=7",
+        );
+        assert_eq!(hostile.line, 0, "too big for a number: ignored");
+        assert_eq!(hostile.col, 7, "the last good value wins");
+        assert_eq!(hostile.top, u32::MAX as usize);
+        assert_eq!(hostile.top_off, ViewPos::MAX_TOP_OFF);
+        assert_eq!(hostile.ptop, 0);
+        assert_eq!(hostile.poff, ViewPos::MAX_POFF);
+        assert_eq!(hostile.mode, 2);
+    }
 }
