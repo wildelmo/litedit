@@ -28,6 +28,17 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-030 One window: a second launch opens its files in the running window
+Double-clicking another file while litedit is open adds a tab to the open
+window instead of starting a second copy (less memory, tabs in one place).
+It works through a local named pipe on your PC — not the network: remote
+clients are rejected, only your own user can write to it, and the only thing
+sent is a list of file paths. If the running window doesn't answer within
+1.5 seconds the new launch just opens its own window. Folders and workspace
+files always open a new window (they would switch the running window's
+workspace). `litedit --new-window file` or `single_window = off` in settings
+gives the old behaviour.
+
 ### D-028 Files with NUL bytes don't open as text
 A NUL byte in the first 8 KB (and no UTF-16 byte-order mark) means an image,
 program or archive; opening it as text shows garbage and saving would damage

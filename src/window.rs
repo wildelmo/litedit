@@ -22,6 +22,8 @@ use crate::watch::FsWatcher;
 #[derive(Debug)]
 pub enum UserEvent {
     FsChanged(Vec<PathBuf>),
+    /// Files handed over by a later launch (one window).
+    OpenPaths(Vec<PathBuf>),
 }
 
 const DOUBLE_CLICK: Duration = Duration::from_millis(450);
@@ -246,6 +248,14 @@ impl ApplicationHandler<UserEvent> for Runner {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         let redraw = match event {
             UserEvent::FsChanged(paths) => self.app.handle(Input::FsChanged(paths)),
+            UserEvent::OpenPaths(paths) => {
+                self.app.open_from_other_launch(paths);
+                if let Some(g) = &self.gfx {
+                    g.window.set_minimized(false);
+                    g.window.focus_window();
+                }
+                true
+            }
         };
         self.after_input(event_loop, redraw);
     }
@@ -385,7 +395,7 @@ impl Runner {
     }
 }
 
-pub fn run(app: App) {
+pub fn run(app: App, single_window: bool) {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("event loop");
@@ -393,6 +403,12 @@ pub fn run(app: App) {
     let proxy = event_loop.create_proxy();
     let watcher =
         FsWatcher::new(move |paths| proxy.send_event(UserEvent::FsChanged(paths)).is_ok());
+    if single_window {
+        let proxy = event_loop.create_proxy();
+        crate::single::listen(move |paths| {
+            let _ = proxy.send_event(UserEvent::OpenPaths(paths));
+        });
+    }
     let mut app = app;
     app.set_clipboard(crate::clipboard::system());
     let mut runner = Runner {

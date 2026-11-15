@@ -22,6 +22,7 @@ mod platform;
 mod script;
 mod session;
 mod settings;
+mod single;
 mod syntax;
 mod text;
 mod theme;
@@ -51,6 +52,7 @@ struct Args {
     scale: f32,
     stats: Option<PathBuf>,
     light: bool,
+    new_window: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -63,6 +65,7 @@ fn parse_args() -> Result<Args, String> {
         scale: 1.0,
         stats: None,
         light: false,
+        new_window: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -94,6 +97,7 @@ fn parse_args() -> Result<Args, String> {
                     return Err("--scale out of range".into());
                 }
             }
+            "--new-window" => a.new_window = true,
             "--theme" => match it.next().as_deref() {
                 Some("light") => a.light = true,
                 Some("dark") => a.light = false,
@@ -164,6 +168,20 @@ fn main() {
         .as_deref()
         .map(|p| settings::Settings::load(p).0)
         .unwrap_or_default();
+    // One window: if litedit is already running, hand it the files and
+    // exit (before loading fonts, so it is instant). Only plain files are
+    // handed over; on any doubt this launch opens its own window.
+    let single = window_mode && user.single_window && !args.new_window;
+    if single {
+        let paths: Vec<PathBuf> = args
+            .paths
+            .iter()
+            .map(|p| app::resolve_arg_path(p))
+            .collect();
+        if single::forwardable(&paths) && single::try_forward(&paths) {
+            return;
+        }
+    }
     let fonts = Fonts::load_with(user.ui_font.as_deref(), user.code_font.as_deref());
     let font_ms = fonts.load_ms;
     let mut app = App::new(fonts, args.scale);
@@ -228,5 +246,5 @@ fn main() {
         return;
     }
 
-    window::run(app);
+    window::run(app, single);
 }

@@ -118,6 +118,9 @@ pub struct App {
     compare_with: Option<PathBuf>,
     /// Where per-folder workspaces are kept (window mode; None = off).
     workspace_store: Option<PathBuf>,
+    /// Files handed over by another launch while a question was showing;
+    /// opened once it is answered.
+    queued_opens: Vec<PathBuf>,
 }
 
 struct TabSlot {
@@ -222,6 +225,7 @@ impl App {
             closed: Vec::new(),
             compare_with: None,
             workspace_store: None,
+            queued_opens: Vec::new(),
             mods: crate::input::Mods::default(),
         }
     }
@@ -2291,6 +2295,7 @@ impl App {
         let redraw = self.handle_inner(&input);
         self.sync_nag_owner();
         // Requests the app handles itself (opening a file from a link or the tree).
+        self.drain_queued_opens();
         // Editing a peeked file keeps it open.
         if self.tabs[self.active].peek && self.view.is_dirty() {
             self.keep_tab(self.active);
@@ -2335,6 +2340,35 @@ impl App {
             self.pending = true;
         }
         redraw
+    }
+
+    /// Files from a later launch of litedit (one window). They open as tabs;
+    /// while a question is showing they wait, so its answer can't land on
+    /// the wrong tab and nothing is dropped.
+    pub fn open_from_other_launch(&mut self, paths: Vec<PathBuf>) {
+        for p in paths {
+            if p.is_file()
+                && !workspace::is_workspace_file(&p)
+                && !self.queued_opens.contains(&p)
+                && self.queued_opens.len() < 200
+            {
+                self.queued_opens.push(p);
+            }
+        }
+        self.drain_queued_opens();
+        self.pending = true;
+    }
+
+    fn drain_queued_opens(&mut self) {
+        if self.nag.is_some() || self.queued_opens.is_empty() {
+            return;
+        }
+        for p in std::mem::take(&mut self.queued_opens) {
+            if p.is_file() {
+                self.open(&p);
+            }
+        }
+        self.sync_nag_owner();
     }
 
     /// A question bar is about the tab that was active when it appeared;

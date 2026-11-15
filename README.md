@@ -28,7 +28,8 @@ litedit.exe notes\todo.md
 litedit.exe C:\path\to\folder
 ```
 
-or drag a file or folder onto the window.
+or drag a file or folder onto the window. If litedit is already running, opening
+another file adds a tab to the running window (`--new-window` starts a second one).
 
 ## Keys
 

@@ -197,7 +197,8 @@ fixed first (S5.0).
        Alt+C / Alt+R, count in the bar and status; Ctrl+H still goes to the source)
 - [x] S6.5 Peek tab: single click in the tree reuses one temporary tab (italic
        title); double-click, Enter, editing, moving it across or "Keep Open" keeps it
-- [ ] S6.6 One window: a second launch opens its files in the running window
+- [x] S6.6 One window: a second launch opens its files in the running window
+       (D-030; `--new-window`, `single_window` setting)
 - [ ] S6.7 "Open with" registration for markdown (explicit command)
 
 ---
@@ -206,6 +207,13 @@ fixed first (S5.0).
 
 Newest first. One line per meaningful step.
 
+- 2026-11-15 — S6.6 one window: single.rs (pure message encode/parse with
+  fuzz test; Windows named-pipe client with a 1.5 s timeout and listener
+  thread with no unwraps), UserEvent::OpenPaths, App::open_from_other_launch
+  queues files while a question shows. Windows target type-checked from
+  Linux (`cargo check --target x86_64-pc-windows-msvc`). CI: existing window
+  launches use --new-window; new real-window test for the hand-over, a folder
+  and --new-window.
 - 2026-11-15 — S6.5 peek tab: Request::PeekPath from tree single click /
   Space, TabSlot.peek, App::open_peek (new tab added before the old peek is
   removed; never replaces a dirty tab; blocked while a question shows; not

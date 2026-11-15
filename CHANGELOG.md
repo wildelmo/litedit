@@ -2,6 +2,9 @@
 
 ## 1.1.0 — unreleased
 
+- One window: opening a file while litedit is already running adds a tab to
+  the running window instead of starting another copy (`--new-window` or
+  `single_window = off` for the old behaviour).
 - Peek tab: a single click on a file in the tree shows it in one reusable
   tab (italic title) instead of opening a new tab each time. Double-click,
   Enter, editing it, or "Keep Open" in the tab menu keeps it.

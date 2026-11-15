@@ -30,6 +30,8 @@ pub struct Settings {
     pub ignore: Vec<String>,
     /// Remove trailing spaces when saving (not in markdown).
     pub trim_trailing_whitespace: bool,
+    /// Files opened while litedit is running go to the running window.
+    pub single_window: bool,
 }
 
 impl Default for Settings {
@@ -44,6 +46,7 @@ impl Default for Settings {
             wrap_code: false,
             ignore: Vec::new(),
             trim_trailing_whitespace: false,
+            single_window: true,
         }
     }
 }
@@ -70,6 +73,11 @@ wrap_code = off
 
 # Remove spaces at the ends of lines when saving (on/off; never in markdown).
 trim_trailing_whitespace = off
+
+# Opening a file while litedit is already running adds a tab to the running
+# window (on) or starts another window (off). `litedit --new-window file`
+# always starts another window.
+single_window = on
 
 # More file or folder names to hide from the tree, Ctrl+P and find in folder,
 # comma-separated (.git, node_modules and similar are always hidden).
@@ -141,6 +149,7 @@ impl Settings {
                     true
                 }
                 "wrap_code" => parse_bool(v).map(|b| s.wrap_code = b).is_some(),
+                "single_window" => parse_bool(v).map(|b| s.single_window = b).is_some(),
                 "trim_trailing_whitespace" => parse_bool(v)
                     .map(|b| s.trim_trailing_whitespace = b)
                     .is_some(),

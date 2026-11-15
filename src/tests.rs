@@ -3636,3 +3636,35 @@ fn a_lone_peek_tab_on_the_right_side_keeps_the_split() {
     assert_eq!(names.len(), 3, "{names:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn files_from_another_launch_open_as_tabs_and_wait_for_open_questions() {
+    let (d, files) = many_files("otherlaunch", 4);
+    let mut app = new_app();
+    app.open(&files[0]);
+    app.handle(Input::Text("edit ".into()));
+    // Normal case: they open, the last one in front.
+    app.open_from_other_launch(vec![files[1].clone(), files[2].clone()]);
+    let names = |app: &App| -> Vec<String> { app.tab_titles().into_iter().map(|t| t.0).collect() };
+    assert_eq!(names(&app), ["f00.txt", "f01.txt", "f02.txt"]);
+    assert!(app.title().starts_with("f02.txt"));
+    // A question is showing (closing the edited tab): files wait.
+    key(&mut app, "alt+1");
+    key(&mut app, "ctrl+w");
+    assert_eq!(
+        app.nag_message().as_deref(),
+        Some("Save changes to f00.txt?")
+    );
+    app.open_from_other_launch(vec![files[3].clone(), d.clone(), d.join("missing.txt")]);
+    assert_eq!(names(&app).len(), 3, "nothing opens under the question");
+    assert!(
+        app.title().contains("f00.txt"),
+        "the question still belongs to its tab"
+    );
+    key(&mut app, "escape"); // Cancel: f00 stays, the waiting file opens now
+    assert_eq!(names(&app), ["f00.txt", "f03.txt", "f01.txt", "f02.txt"]);
+    assert!(app.tab_titles()[0].1, "f00 keeps its edit");
+    // Folders and missing files were ignored.
+    assert_eq!(app.tree_roots().len(), 1);
+    let _ = std::fs::remove_dir_all(&d);
+}

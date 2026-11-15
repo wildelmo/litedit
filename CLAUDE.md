@@ -38,6 +38,10 @@ clone lives outside the repo; copy architecture/behaviour, credit in `NOTICE`.
 - File loading must tolerate CRLF, UTF-8 BOM, non-UTF-8 (lossy, never panic).
 - Links: only http/https/mailto go to `open`. Images: local only, size-limited.
 - No network, no plugins, no process spawning beyond the above.
+- The only inter-process channel is the one-window pipe (`src/single.rs`):
+  local named pipe, remote clients rejected, message = absolute file paths
+  only, parsed by a pure, bounded, fuzzed parser. Headless modes never use
+  it. Anything a later launch sends is treated like a dropped file.
 - Keep dependencies few; justify each new crate in the commit message.
 
 ## Commands

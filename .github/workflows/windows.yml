@@ -70,7 +70,7 @@ jobs:
           $stats = Get-Content out\stats.txt -Raw
 
           # Real window: open a file, let it settle, read memory.
-          $p = Start-Process -FilePath $exe -ArgumentList "ROADMAP.md" -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList @("--new-window", "ROADMAP.md") -PassThru
           Start-Sleep -Seconds 4
           $p.Refresh()
           $alive = -not $p.HasExited
@@ -82,7 +82,7 @@ jobs:
           # Ten tabs: open every fixture plus sources.
           $files = @(Get-ChildItem tests\fixtures -File | Select-Object -ExpandProperty FullName) + @("src\app.rs", "src\view\code.rs", "ROADMAP.md")
           $files = $files | Select-Object -First 10
-          $p10 = Start-Process -FilePath $exe -ArgumentList ($files | ForEach-Object { "`"$_`"" }) -PassThru
+          $p10 = Start-Process -FilePath $exe -ArgumentList (@("--new-window") + ($files | ForEach-Object { "`"$_`"" })) -PassThru
           Start-Sleep -Seconds 4
           $p10.Refresh()
           $ws10 = if (-not $p10.HasExited) { [math]::Round($p10.WorkingSet64 / 1MB, 1) } else { "n/a (exited)" }
@@ -130,7 +130,7 @@ jobs:
           $rows = @()
           $failed = $false
           function Launch($file) {
-            $p = Start-Process -FilePath $exe -ArgumentList "`"$file`"" -PassThru
+            $p = Start-Process -FilePath $exe -ArgumentList @("--new-window", "`"$file`"") -PassThru
             Start-Sleep -Seconds 3
             [void]$ws.AppActivate($p.Id)
             Start-Sleep -Milliseconds 600
@@ -205,7 +205,7 @@ jobs:
           #    rendered previews).
           $mdDir = Join-Path $env:RUNNER_TEMP "mdtabs"
           New-Item -ItemType Directory -Force $mdDir | Out-Null
-          $mdArgs = @()
+          $mdArgs = @("--new-window")
           0..11 | ForEach-Object { $t = Join-Path $mdDir "doc$_.md"; Copy-Item ROADMAP.md $t; $mdArgs += "`"$t`"" }
           $p = Start-Process -FilePath $exe -ArgumentList $mdArgs -PassThru
           Start-Sleep -Seconds 3
@@ -218,6 +218,32 @@ jobs:
           $rows += "| 12 markdown tabs, each viewed: private bytes (limit 80 MB) | $(if ($ok) {"PASS ($mdPriv MB)"} else {"FAIL ($mdPriv MB)"}) |"
           if (-not $ok) { $failed = $true }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+          # 7. One window: a second launch hands its file to the running
+          #    window and exits; --new-window starts another window.
+          Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          $oneA = Join-Path $env:RUNNER_TEMP "one-a.txt"; [IO.File]::WriteAllText($oneA, "first")
+          $oneB = Join-Path $env:RUNNER_TEMP "one-b.txt"; [IO.File]::WriteAllText($oneB, "second")
+          $p1 = Start-Process -FilePath $exe -ArgumentList "`"$oneA`"" -PassThru
+          Start-Sleep -Seconds 3
+          $p2 = Start-Process -FilePath $exe -ArgumentList "`"$oneB`"" -PassThru
+          $exited = $p2.WaitForExit(8000)
+          Start-Sleep -Seconds 1
+          $t = Title $p1
+          $count = @(Get-Process litedit -ErrorAction SilentlyContinue).Count
+          $handed = $exited -and ($t -like "one-b.txt*") -and ($count -eq 1)
+          # A folder is not handed over: it gets its own window.
+          $p3 = Start-Process -FilePath $exe -ArgumentList "`"$env:RUNNER_TEMP`"" -PassThru
+          Start-Sleep -Seconds 3
+          $p3.Refresh(); $folderOwn = -not $p3.HasExited
+          $p4 = Start-Process -FilePath $exe -ArgumentList @("--new-window", "`"$oneA`"") -PassThru
+          Start-Sleep -Seconds 3
+          $p4.Refresh(); $newWin = -not $p4.HasExited
+          $ok = $handed -and $folderOwn -and $newWin
+          $rows += "| second launch opens in the running window | $(if ($ok) {'PASS'} else {"FAIL (exited=$exited title=$t count=$count folderOwn=$folderOwn newWindow=$newWin)"}) |"
+          if (-not $ok) { $failed = $true }
+          Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
 
           $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
           Write-Output $table
