@@ -28,6 +28,53 @@ your installed fonts). **Question:** if either looks wrong, tell me what you
 see.
 
 ## Decided — review when convenient
+### D-043 Hidden files are shown by default, and searched when shown
+Names starting with a dot (`.docs`, `.github`, `.gitignore`) and files
+Windows marks hidden or system are listed in the tree unless you switch
+them off (Ctrl+Shift+H, View → Hidden Files); the choice is saved as
+`hidden_files` in settings. Ctrl+P and find in folder follow the same
+switch: what the tree shows is what they look through. Before, they never
+looked at hidden files. `.git`, `node_modules` and similar, and the names
+in the `ignore` setting, are left out either way. **If a large dot-folder
+gets in the way** (`.venv`, a tool's cache), add its name to `ignore`.
+
+### D-042 About shows the version and who built it; no update check
+Help → About litedit opens a tab with the version compiled into the
+program and three lines from `assets/branding.txt`: Created by, Company
+and Email. The file is embedded when litedit is built (edit it, then
+build); it is not read when the program runs, and a line left empty is not
+shown. The copy in the repository has the name only. The Windows file
+properties (`build.rs`) are separate. The owner's other app also checks a
+release page for a newer version; that was considered here and **dropped**:
+litedit makes no network requests at all, and that promise is worth more
+than an update notice. New versions are found on the releases page by hand.
+
+### D-041 The tree header names a workspace file, which is still a snapshot
+The header says FOLDER (one folder), FOLDERS (folders added but not saved
+as a workspace) or WORKSPACE · name (opened from, or saved as, a
+`.litedit-workspace` file). The file is not updated by itself: as before,
+each folder's tabs are remembered automatically, and the file changes only
+when you choose Save Workspace As… (which now suggests the same file).
+Writing to it on every change would surprise anyone who keeps it in git or
+shares it. The name is remembered across restarts; the file is not read
+again for that, and a missing file drops the name.
+
+### D-040 Menu bar: drawn by litedit, on by default, Alt+letter and F10
+A row at the top with File, Edit, View, Go and Help. It is drawn like the
+rest of the window, not the standard Windows menu bar, which stays light
+in the dark theme and is invisible to the screenshot tests. Almost every
+item replays its keyboard shortcut (as the command palette does), so a
+menu can't do something different from the keys. Alt + the first letter
+opens a menu; Alt+Z, Alt+W, Alt+C, Alt+R and Alt+digits keep their jobs,
+and AltGr (Ctrl+Alt) stays typing. Pressing Alt alone does nothing: telling
+an Alt tap from Alt+Tab needs a focus event the app doesn't get. Hiding the
+bar (View → Hide Menu Bar, `menu_bar = off`) is saved in settings; Alt+F
+and F10 still show it while a menu is open. Headless screenshots show the
+bar like the window does; most older unit tests start without it because
+they click at fixed positions. **To check on a real desktop:** Alt+F and
+F10 open the menu without a beep (winit keeps those keys from Windows'
+own menu handling; CI step 9 checks they arrive).
+
 ### D-039 One-window pipe: who may connect, and who a launch trusts
 The pipe is created owned by the current user with an access list that
 names only that user (`O:<user SID>D:P(A;;GA;;;<user SID>)`); nobody else

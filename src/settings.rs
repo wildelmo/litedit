@@ -32,6 +32,10 @@ pub struct Settings {
     pub trim_trailing_whitespace: bool,
     /// Files opened while litedit is running go to the running window.
     pub single_window: bool,
+    /// Show the menu bar (File, Edit, View, Go, Help).
+    pub menu_bar: bool,
+    /// Hidden files in the tree, Ctrl+P and find in folder.
+    pub hidden_files: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +51,8 @@ impl Default for Settings {
             ignore: Vec::new(),
             trim_trailing_whitespace: false,
             single_window: true,
+            menu_bar: true,
+            hidden_files: true,
         }
     }
 }
@@ -58,6 +64,9 @@ pub const TEMPLATE: &str = "\
 
 # dark or light
 theme = dark
+
+# The menu bar at the top (on/off). When off, Alt+F or F10 still opens it.
+menu_bar = on
 
 # Font sizes in pixels at 100% scaling (8 to 40). Ctrl+plus / Ctrl+minus zoom on top of these.
 ui_font_size = 15
@@ -78,6 +87,10 @@ trim_trailing_whitespace = off
 # window (on) or starts another window (off). `litedit --new-window file`
 # always starts another window.
 single_window = on
+
+# Hidden files (names that start with a dot, and files Windows marks hidden)
+# in the tree, Ctrl+P and find in folder (on/off). Ctrl+Shift+H switches it.
+hidden_files = on
 
 # More file or folder names to hide from the tree, Ctrl+P and find in folder,
 # comma-separated (.git, node_modules and similar are always hidden).
@@ -150,6 +163,8 @@ impl Settings {
                 }
                 "wrap_code" => parse_bool(v).map(|b| s.wrap_code = b).is_some(),
                 "single_window" => parse_bool(v).map(|b| s.single_window = b).is_some(),
+                "menu_bar" => parse_bool(v).map(|b| s.menu_bar = b).is_some(),
+                "hidden_files" => parse_bool(v).map(|b| s.hidden_files = b).is_some(),
                 "trim_trailing_whitespace" => parse_bool(v)
                     .map(|b| s.trim_trailing_whitespace = b)
                     .is_some(),
@@ -207,12 +222,17 @@ impl Settings {
     }
 }
 
-/// `text` with its `theme = …` line set to `light`/`dark`: the first active
-/// theme line is rewritten in place (keeping any trailing comment and the
-/// line ending); otherwise a line is appended. Everything else is kept
-/// byte for byte.
+/// `text` with its `theme = …` line set to `light`/`dark` (see `with_setting`).
+#[cfg(test)]
 pub fn with_theme(text: &str, light: bool) -> String {
-    let value = if light { "light" } else { "dark" };
+    with_setting(text, "theme", if light { "light" } else { "dark" })
+}
+
+/// `text` with its `key = …` line set to `value`: the first active line for
+/// `key` is rewritten in place (keeping any trailing comment and the line
+/// ending); otherwise a line is appended. Everything else is kept byte for
+/// byte.
+pub fn with_setting(text: &str, key_name: &str, value: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
     let mut done = false;
     for piece in text.split_inclusive('\n') {
@@ -222,7 +242,7 @@ pub fn with_theme(text: &str, light: bool) -> String {
             let key = code
                 .split_once('=')
                 .map(|(k, _)| k.trim().trim_start_matches('\u{feff}').to_ascii_lowercase());
-            if key.as_deref() == Some("theme") {
+            if key.as_deref() == Some(key_name) {
                 let eol = &piece[body.len()..];
                 let comment = &body[code.len()..];
                 let bom = if body.starts_with('\u{feff}') {
@@ -231,7 +251,7 @@ pub fn with_theme(text: &str, light: bool) -> String {
                     ""
                 };
                 let sep = if comment.is_empty() { "" } else { " " };
-                out.push_str(&format!("{bom}theme = {value}{sep}{comment}{eol}"));
+                out.push_str(&format!("{bom}{key_name} = {value}{sep}{comment}{eol}"));
                 done = true;
                 continue;
             }
@@ -243,7 +263,7 @@ pub fn with_theme(text: &str, light: bool) -> String {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push_str(eol);
         }
-        out.push_str(&format!("theme = {value}{eol}"));
+        out.push_str(&format!("{key_name} = {value}{eol}"));
     }
     out
 }
@@ -337,7 +357,7 @@ mod tests {
             !listed(&dir).contains(&name),
             "case-insensitive, like Windows"
         );
-        let idx = crate::palette::index_files(&dir);
+        let idx = crate::palette::index_files(&dir, true);
         assert!(
             idx.iter().all(|p| !p.to_string_lossy().contains(&name)),
             "{idx:?}"

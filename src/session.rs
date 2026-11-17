@@ -28,6 +28,8 @@ pub struct Session {
     pub tree_width: f32,
     pub tree_visible: bool,
     pub zoom: f32,
+    /// The workspace file the folders came from (only its name is shown).
+    pub workspace: Option<PathBuf>,
 }
 
 impl Default for Session {
@@ -43,6 +45,7 @@ impl Default for Session {
             tree_width: 260.0,
             tree_visible: true,
             zoom: 1.0,
+            workspace: None,
         }
     }
 }
@@ -119,6 +122,7 @@ impl Session {
                         .clamp(100.0, 2000.0)
                 }
                 "tree_visible" => s.tree_visible = v != "0",
+                "workspace" if !v.is_empty() => s.workspace = Some(PathBuf::from(v)),
                 "zoom" => {
                     s.zoom = v
                         .parse::<f32>()
@@ -144,6 +148,10 @@ impl Session {
         }
         for f in &self.folders {
             out.push_str(&format!("folder\t{}\n", clean(f)));
+        }
+        // Older versions ignore this line.
+        if let Some(w) = &self.workspace {
+            out.push_str(&format!("workspace\t{}\n", clean(w)));
         }
         for (i, t) in self.tabs.iter().enumerate() {
             let k = if self.groups.get(i) == Some(&1) {
@@ -209,6 +217,7 @@ mod tests {
             tree_width: 300.0,
             tree_visible: false,
             zoom: 1.2,
+            workspace: Some(PathBuf::from("/notes/notes.litedit-workspace")),
         };
         assert_eq!(Session::parse(&s.to_text()), s);
         assert_eq!(Session::parse("garbage"), Session::default());

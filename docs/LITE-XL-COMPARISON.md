@@ -22,7 +22,9 @@ in litedit · ➕ litedit only
 | — | ➕ Multi-select in the tree; copy / paste / duplicate | One confirmation; copies never overwrite |
 | — | ➕ Show in Explorer, Copy path, Find in folder from the tree | |
 | Auto-reload changed files | ✅ | litedit asks if you have unsaved edits (Keep / Compare / Reload) |
-| Toolbar above the tree (icons: new, open, find…) | ❌ | Everything is in the command palette / menus |
+| Toolbar above the tree (icons: new, open, find…) | ❌ | Everything is in the menu bar / command palette; the tree header opens a folder menu |
+| — | ➕ Menu bar (File, Edit, View, Go, Help) | Drawn in the theme; Alt+letter / F10 |
+| — | ➕ Close Folder and a start page with recent folders | |
 
 ## Editing
 

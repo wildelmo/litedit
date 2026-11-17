@@ -4,6 +4,7 @@
 mod app;
 mod assoc;
 mod bench;
+mod branding;
 mod canvas;
 mod clipboard;
 mod diff;
@@ -17,6 +18,7 @@ mod inputbar;
 mod links;
 mod markdown;
 mod menu;
+mod menubar;
 mod nag;
 mod nav;
 mod palette;
@@ -43,6 +45,8 @@ mod tests_bigfile;
 mod tests_compare;
 #[cfg(test)]
 mod tests_image;
+#[cfg(test)]
+mod tests_menus;
 #[cfg(test)]
 mod tests_nav;
 #[cfg(test)]

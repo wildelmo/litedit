@@ -31,6 +31,9 @@ pub fn fixtures() -> Vec<PathBuf> {
 
 pub fn new_app() -> App {
     let mut app = App::new(Fonts::load(), 1.0);
+    // Most tests click at fixed positions laid out without the menu bar;
+    // `tests_menus` covers the bar.
+    app.set_menu_bar(false);
     app.handle(Input::Resize(800, 600));
     app
 }
@@ -320,6 +323,8 @@ fn folder_tree_click_opens_files_and_keyboard_navigates() {
     std::fs::write(dir.join("notes/todo.md"), "# Todo\n\n- [ ] thing\n").unwrap();
     std::fs::write(dir.join("readme.txt"), "hello\n").unwrap();
     let mut app = new_app();
+    // Tree rows start below the tree header.
+    let hh = app.tree_header_height();
     app.open(&dir);
     assert_eq!(app.focus(), crate::app::Focus::Tree);
     render_hash(&mut app, 800, 600);
@@ -337,7 +342,7 @@ fn folder_tree_click_opens_files_and_keyboard_navigates() {
     key(&mut app, "ctrl+\\");
     // Mouse: click the readme row (third row) in the tree.
     let rh = (15.0f32 * 1.4).round() + 6.0;
-    let y = 7.0 + rh * 2.0 + rh / 2.0;
+    let y = hh + 7.0 + rh * 2.0 + rh / 2.0;
     app.handle(Input::MouseMove { x: 60.0, y });
     app.handle(Input::MouseDown {
         x: 60.0,
@@ -346,7 +351,7 @@ fn folder_tree_click_opens_files_and_keyboard_navigates() {
         clicks: 1,
     });
     // todo.md is expanded under notes, so row 3 is todo.md, row 4 readme.
-    let y4 = 7.0 + rh * 3.0 + rh / 2.0;
+    let y4 = hh + 7.0 + rh * 3.0 + rh / 2.0;
     app.handle(Input::MouseDown {
         x: 60.0,
         y: y4,
@@ -1270,10 +1275,12 @@ fn tree_context_menu_new_rename_delete() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("a.md"), "# A\n").unwrap();
     let mut app = new_app();
+    // Tree rows start below the tree header.
+    let hh = app.tree_header_height();
     app.open(&dir);
     render_hash(&mut app, 900, 600);
     let rh = (15.0f32 * 1.4).round() + 6.0;
-    let row_y = |i: f32| 7.0 + rh * i + rh / 2.0;
+    let row_y = |i: f32| hh + 7.0 + rh * i + rh / 2.0;
     let right_click = |app: &mut App, y: f32| {
         app.handle(Input::MouseMove { x: 60.0, y });
         app.handle(Input::MouseDown {
@@ -2026,11 +2033,13 @@ pub fn drag_fixture(tag: &str) -> PathBuf {
 fn dragging_a_file_onto_a_folder_asks_then_moves_and_keeps_the_tab() {
     let d = drag_fixture("move");
     let mut app = new_app();
+    // Tree rows start below the tree header.
+    let hh = app.tree_header_height();
     app.open(&d);
     app.open(&d.join("a.txt"));
     render_hash(&mut app, 800, 600);
     // Rows: root 19, docs 46, notes 73, a.txt 100.
-    drag(&mut app, (60.0, 100.0), (60.0, 46.0));
+    drag(&mut app, (60.0, 100.0 + hh), (60.0, 46.0 + hh));
     assert_eq!(app.nag_message().as_deref(), Some("Move a.txt into docs?"));
     assert!(d.join("a.txt").exists(), "nothing moves before the answer");
     key(&mut app, "enter");
@@ -2057,23 +2066,28 @@ fn dragging_a_file_onto_a_folder_asks_then_moves_and_keeps_the_tab() {
 fn drag_cancel_dirty_and_invalid_targets_move_nothing() {
     let d = drag_fixture("guard");
     let mut app = new_app();
+    // Tree rows start below the tree header.
+    let hh = app.tree_header_height();
     app.open(&d);
     render_hash(&mut app, 800, 600);
     // Cancel.
-    drag(&mut app, (60.0, 100.0), (60.0, 46.0));
+    drag(&mut app, (60.0, 100.0 + hh), (60.0, 46.0 + hh));
     key(&mut app, "escape");
     assert!(d.join("a.txt").exists());
     // A short wiggle is a click, not a drag.
     app.handle(Input::MouseDown {
         x: 60.0,
-        y: 46.0,
+        y: 46.0 + hh,
         button: crate::input::MouseButton::Left,
         clicks: 1,
     });
-    app.handle(Input::MouseMove { x: 60.0, y: 48.0 });
+    app.handle(Input::MouseMove {
+        x: 60.0,
+        y: 48.0 + hh,
+    });
     app.handle(Input::MouseUp {
         x: 60.0,
-        y: 48.0,
+        y: 48.0 + hh,
         button: crate::input::MouseButton::Left,
     });
     assert!(app.nag_message().is_none());
@@ -2081,29 +2095,35 @@ fn drag_cancel_dirty_and_invalid_targets_move_nothing() {
     // also expands it, so a.txt moves down to y = 127.
     app.handle(Input::MouseDown {
         x: 60.0,
-        y: 73.0,
+        y: 73.0 + hh,
         button: crate::input::MouseButton::Left,
         clicks: 1,
     });
-    app.handle(Input::MouseMove { x: 60.0, y: 110.0 });
-    app.handle(Input::MouseMove { x: 60.0, y: 73.0 });
+    app.handle(Input::MouseMove {
+        x: 60.0,
+        y: 110.0 + hh,
+    });
+    app.handle(Input::MouseMove {
+        x: 60.0,
+        y: 73.0 + hh,
+    });
     app.handle(Input::MouseUp {
         x: 60.0,
-        y: 73.0,
+        y: 73.0 + hh,
         button: crate::input::MouseButton::Left,
     });
     assert!(app.nag_message().is_none(), "into itself");
     // Onto its own folder (the root): nothing to do.
-    drag(&mut app, (60.0, 127.0), (60.0, 19.0));
+    drag(&mut app, (60.0, 127.0 + hh), (60.0, 19.0 + hh));
     assert!(app.nag_message().is_none(), "already in the root");
     // Dropped outside the tree: nothing.
-    drag(&mut app, (60.0, 127.0), (600.0, 127.0));
+    drag(&mut app, (60.0, 127.0 + hh), (600.0, 127.0 + hh));
     assert!(app.nag_message().is_none());
     // A file with unsaved edits is not moved.
     app.open(&d.join("a.txt"));
     app.handle(Input::Text("x".into()));
     render_hash(&mut app, 800, 600);
-    drag(&mut app, (60.0, 127.0), (60.0, 46.0));
+    drag(&mut app, (60.0, 127.0 + hh), (60.0, 46.0 + hh));
     assert!(
         app.nag_message()
             .unwrap_or_default()
@@ -2459,12 +2479,14 @@ fn compare_from_the_tree_menu_shows_changes_and_f7_walks_them() {
     use crate::input::MouseButton;
     let d = compare_dir("tree");
     let mut app = new_app();
+    // Tree rows start below the tree header.
+    let hh = app.tree_header_height();
     app.open(&d);
     render_hash(&mut app, 800, 600);
     // Rows: root 19, new.rs 46, old.rs 73.
-    mouse(&mut app, 60.0, 73.0, MouseButton::Right);
+    mouse(&mut app, 60.0, 73.0 + hh, MouseButton::Right);
     run_menu_item(&mut app, "Select for Compare");
-    mouse(&mut app, 60.0, 46.0, MouseButton::Right);
+    mouse(&mut app, 60.0, 46.0 + hh, MouseButton::Right);
     run_menu_item(&mut app, "Compare with Selected");
     assert_eq!(app.title(), "old.rs ↔ new.rs - litedit");
     assert!(
@@ -2485,7 +2507,7 @@ fn compare_from_the_tree_menu_shows_changes_and_f7_walks_them() {
         app.status_text()
     );
     // Folders don't offer compare.
-    mouse(&mut app, 60.0, 19.0, MouseButton::Right);
+    mouse(&mut app, 60.0, 19.0 + hh, MouseButton::Right);
     render_hash(&mut app, 800, 600);
     assert!(app.menu_item_pos("Select for Compare").is_none());
     key(&mut app, "escape");

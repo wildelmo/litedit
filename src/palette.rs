@@ -31,6 +31,8 @@ pub enum Action {
     SaveWorkspace,
     OpenWorkspace,
     AddFolder,
+    CloseFolder,
+    ToggleMenuBar,
     /// A named editing command run by the active view.
     Command(&'static str),
     /// Add / remove litedit in "Open with" for markdown files.
@@ -168,8 +170,8 @@ pub fn fuzzy_score(pattern: &str, text: &str) -> Option<i32> {
 }
 
 /// Files under `root`, following the tree's rules (ignore list, hidden
-/// files, no symlinked folders), relative paths, capped.
-pub fn index_files(root: &Path) -> Vec<PathBuf> {
+/// files only if the tree shows them, no symlinked folders), capped.
+pub fn index_files(root: &Path, show_hidden: bool) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
@@ -178,7 +180,7 @@ pub fn index_files(root: &Path) -> Vec<PathBuf> {
         if room == 0 {
             return out;
         }
-        let (entries, _, _) = read_dir_limited(&dir, false, room);
+        let (entries, _, _) = read_dir_limited(&dir, show_hidden, room);
         for e in entries {
             if out.len() >= MAX_INDEX_FILES {
                 return out;
@@ -253,6 +255,16 @@ impl Palette {
             label: "File: Add Folder to Workspace…".into(),
             detail: String::new(),
             action: Action::AddFolder,
+        });
+        items.push(Item {
+            label: "File: Close Folder".into(),
+            detail: String::new(),
+            action: Action::CloseFolder,
+        });
+        items.push(Item {
+            label: "View: Show / Hide Menu Bar".into(),
+            detail: String::new(),
+            action: Action::ToggleMenuBar,
         });
         items.push(Item {
             label: "View: Toggle Light / Dark Theme".into(),
@@ -549,7 +561,7 @@ impl Palette {
 }
 
 /// "ctrl+shift+p" → "Ctrl+Shift+P".
-fn pretty_keys(k: &str) -> String {
+pub fn pretty_keys(k: &str) -> String {
     k.split('+')
         .map(|p| match p {
             "plus" => "+".to_string(),
@@ -577,7 +589,7 @@ mod tests {
         for i in 0..crate::tree::MAX_ENTRIES + 200 {
             std::fs::write(d.join(format!("file{i:05}.txt")), "").unwrap();
         }
-        let idx = index_files(&d);
+        let idx = index_files(&d, true);
         assert_eq!(idx.len(), crate::tree::MAX_ENTRIES + 200);
         assert!(idx.iter().any(|p| p.ends_with("file05199.txt")));
         let _ = std::fs::remove_dir_all(&d);
@@ -643,7 +655,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(d.join("target/debug/junk.o"), "").unwrap();
-        let files = index_files(&d);
+        let files = index_files(&d, false);
         let names: Vec<String> = files
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -656,6 +668,11 @@ mod tests {
             !names.contains(&"junk.o".to_string()),
             "cache dirs are skipped"
         );
+        // With hidden files shown they are listed; ignored names never are.
+        let all = index_files(&d, true);
+        assert!(all.iter().any(|p| p.ends_with(".hidden")));
+        assert!(all.iter().all(|p| !p.ends_with("b.js")));
+        assert_eq!(all.len(), files.len() + 1);
         std::fs::remove_dir_all(&d).ok();
     }
 }

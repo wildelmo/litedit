@@ -181,7 +181,7 @@ pub fn run(out: &Path, mut app: App) -> std::io::Result<()> {
         )?;
     }
     let t = Instant::now();
-    let idx = crate::palette::index_files(&tree);
+    let idx = crate::palette::index_files(&tree, true);
     rows.push((
         format!("Ctrl+P index of {n_files} files"),
         format!(
@@ -192,7 +192,7 @@ pub fn run(out: &Path, mut app: App) -> std::io::Result<()> {
         ),
     ));
     let t = Instant::now();
-    let mut search = crate::view::search::SearchView::start(&tree, "needle");
+    let mut search = crate::view::search::SearchView::start(&tree, "needle", true);
     let mut dummy_fonts = crate::text::Fonts::load();
     let (mut reqs, mut cur, mut clip) = (
         Vec::new(),

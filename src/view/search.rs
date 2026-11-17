@@ -113,7 +113,8 @@ fn looks_binary(bytes: &[u8]) -> bool {
 }
 
 impl SearchView {
-    pub fn start(root: &Path, query: &str) -> Self {
+    /// `show_hidden`: search hidden files too (as the tree shows them).
+    pub fn start(root: &Path, query: &str, show_hidden: bool) -> Self {
         let (tx, rx) = channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let stop = cancel.clone();
@@ -122,7 +123,7 @@ impl SearchView {
         let _ = std::thread::Builder::new()
             .name("litedit-search".into())
             .spawn(move || {
-                let files = index_files(&root_c);
+                let files = index_files(&root_c, show_hidden);
                 let mut total = 0;
                 for (n, f) in files.iter().enumerate() {
                     if stop.load(Ordering::Relaxed) {
@@ -472,19 +473,24 @@ mod tests {
         std::fs::write(d.join("a.md"), "needle here\n").unwrap();
         std::fs::write(d.join("sub/b.rs"), "fn x() {}\n// NEEDLE\n").unwrap();
         std::fs::write(d.join("bin.dat"), b"needle\0\0\0").unwrap();
-        let mut v = SearchView::start(&d, "needle");
-        let start = std::time::Instant::now();
-        while !v.done && start.elapsed().as_secs() < 5 {
-            v.rx.try_recv()
-                .map(|m| match m {
-                    Msg::Hits(h) => v.hits.extend(h),
-                    Msg::Done => v.done = true,
-                    Msg::Progress(_) => {}
-                })
-                .ok();
+        // Hidden files are searched only when the tree shows them.
+        std::fs::create_dir_all(d.join(".docs")).unwrap();
+        std::fs::write(d.join(".docs/c.md"), "a needle in a hidden folder").unwrap();
+        for (show_hidden, want) in [(false, 2), (true, 3)] {
+            let mut v = SearchView::start(&d, "needle", show_hidden);
+            let start = std::time::Instant::now();
+            while !v.done && start.elapsed().as_secs() < 5 {
+                v.rx.try_recv()
+                    .map(|m| match m {
+                        Msg::Hits(h) => v.hits.extend(h),
+                        Msg::Done => v.done = true,
+                        Msg::Progress(_) => {}
+                    })
+                    .ok();
+            }
+            assert!(v.done);
+            assert_eq!(v.hits.len(), want, "{show_hidden}: {:?}", v.hits);
         }
-        assert!(v.done);
-        assert_eq!(v.hits.len(), 2, "{:?}", v.hits);
         std::fs::remove_dir_all(&d).ok();
     }
 }

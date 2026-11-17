@@ -12,7 +12,9 @@ Read this first, then `CLAUDE.md` and `ROADMAP.md`.
 
 ## What is on `main` and verified
 
-- Version 1.1.0 (unreleased, no tag). Everything through Epic 7 is on `main`.
+- Version 1.1.0 (unreleased, no tag). Everything through Epic 9 is on `main`
+  (Epic 8: security scan fixes; Epic 9: menu bar, Close Folder, tree header,
+  About with the version and who built it).
 - Windows CI (all real-window tests, one-window hand-over, "Open with"
   registry test) is green; numbers from the run on `c9001e3`: exe 6.89 MB,
   one window 21.6 MB private, 10 tabs 22.4 MB private, first render 89 ms.

@@ -1,0 +1,7 @@
+# Who made this build. Shown under Help -> About litedit.
+#
+# Edit this file, then build: it is embedded in litedit.exe and is not read
+# when the program runs. A line left empty is not shown.
+name = Joe Chun
+company =
+email =

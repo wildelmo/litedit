@@ -233,7 +233,7 @@ impl Tree {
             hover: None,
             scroll: Scroll::default(),
             view_h: 0.0,
-            show_hidden: false,
+            show_hidden: true,
             press: None,
             drop_target: None,
             requested_move: None,
@@ -281,6 +281,20 @@ impl Tree {
         self.roots.len() != before
     }
 
+    /// Show no folder at all ("Close Folder").
+    pub fn clear(&mut self) {
+        self.roots.clear();
+        self.entries.clear();
+        self.truncated.clear();
+        self.expanded.clear();
+        self.clear_selection();
+        self.scroll = Scroll::default();
+        self.press = None;
+        self.drop_target = None;
+        self.hover = None;
+        self.rows_dirty = true;
+    }
+
     pub fn is_shown(&self) -> bool {
         self.visible && !self.roots.is_empty()
     }
@@ -302,10 +316,18 @@ impl Tree {
         self.rows_dirty = true;
     }
 
-    pub fn toggle_hidden(&mut self) {
-        self.show_hidden = !self.show_hidden;
-        self.entries.clear();
-        self.rows_dirty = true;
+    /// Are hidden files listed (names starting with a dot, and what
+    /// Windows marks hidden or system)? On unless the user turned it off.
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    pub fn set_show_hidden(&mut self, on: bool) {
+        if self.show_hidden != on {
+            self.show_hidden = on;
+            self.entries.clear();
+            self.rows_dirty = true;
+        }
     }
 
     fn children(&mut self, dir: &Path) -> Vec<Entry> {

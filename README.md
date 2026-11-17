@@ -38,6 +38,7 @@ another file adds a tab to the running window (`--new-window` starts a second on
 
 | Key | Action |
 |---|---|
+| Menu bar, `Alt+F` / `Alt+E` / `Alt+V` / `Alt+G` / `Alt+H`, `F10` | File, Edit, View, Go, Help menus (arrows walk them; View → Hide Menu Bar) |
 | `Ctrl+O` / `Ctrl+Shift+O` | Open file / open folder |
 | `Ctrl+P` / `Ctrl+R` | Quick open a file in the folder / open recent |
 | `Ctrl+Shift+P` | Command palette (every command, with its shortcut) |
@@ -75,6 +76,7 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | `Ctrl+Shift+O` / `Ctrl+R` | Open folder / open recent file, folder or workspace |
 | Palette: File: Save Workspace As… / Open Workspace… | Save or open a `.litedit-workspace` (folders + open files + split) |
 | Palette or tree menu: Add Folder to Workspace… | Show another folder in the tree (right-click it → Remove Folder from Workspace) |
+| File → Close Folder, or click the tree header | Close the folder or workspace (its tabs come back next time; unsaved tabs stay) and show the start page |
 | `Ctrl+Alt+Right` / `Ctrl+Alt+Left` | Split: move the tab to the right / left side |
 | `Ctrl+1` / `Ctrl+2` | Focus the left / right side |
 | Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |
@@ -83,7 +85,7 @@ another file adds a tab to the running window (`--new-window` starts a second on
 | Palette: View: Toggle Read-Only | Lock a text tab against edits |
 | `Ctrl+\` | Show / hide the file tree |
 | `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
-| `Ctrl+Shift+H` | Show / hide hidden files in the tree |
+| `Ctrl+Shift+H` | Show / hide hidden files (names starting with a dot, files Windows marks hidden) in the tree, `Ctrl+P` and find in folder. Shown by default; your choice is remembered |
 | Click a file in the tree | Peek: shows it in one reusable tab (italic title). Double-click, `Enter` or editing keeps it open |
 | Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
 | Drag in the tree | Move a file or folder into another folder (asks first) |
@@ -99,6 +101,10 @@ another file adds a tab to the running window (`--new-window` starts a second on
 ```
 cargo build --release
 ```
+
+Help → About litedit shows the version and who made the build. To put your
+own name, company and email there, edit `assets/branding.txt` before
+building (it is embedded in the exe; empty lines are not shown).
 
 Headless render (used for testing):
 

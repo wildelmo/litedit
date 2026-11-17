@@ -12,6 +12,7 @@ use crate::editor::doc::SaveError;
 use crate::input::parse_key_combo;
 use crate::input::{Cursor, Input, Key, MouseButton, Request};
 use crate::menu::{Menu, MenuAction, MenuResult};
+use crate::menubar;
 use crate::nag::{Nag, NagAction, Pending};
 use crate::nav::{History, Loc, Remembered};
 use crate::palette::{Action, Outcome, Palette, index_files};
@@ -21,12 +22,14 @@ use crate::text::Fonts;
 use crate::theme;
 use crate::tree::Tree;
 use crate::ui::{Ctx, FontKind};
+use crate::view::about::AboutView;
 use crate::view::code::CodeView;
 use crate::view::diff::{DiffView, Side};
 use crate::view::image::{ImageView, is_image};
 use crate::view::markdown::{MarkdownView, is_markdown};
 use crate::view::message::MessageView;
 use crate::view::search::SearchView;
+use crate::view::start::StartView;
 use crate::view::{DiskState, Tick, View, ViewPos};
 use crate::workspace::{self, Workspace};
 
@@ -140,6 +143,19 @@ pub struct App {
     /// Tabs of the restored workspace that did not fit in the budget:
     /// (path, side, position). Kept in the workspace when it is saved.
     not_reopened: Vec<(PathBuf, u8, Option<ViewPos>)>,
+    /// The workspace file the tree came from (opened or saved as), if any;
+    /// shown in the tree header. Cleared when another folder is opened or
+    /// the folder is closed.
+    workspace_file: Option<PathBuf>,
+    /// The mouse is over the tree header.
+    header_hover: bool,
+    /// Setting `menu_bar`: the menu bar is shown.
+    menu_bar_on: bool,
+    /// The menu bar's menu that is open (it is `menu`); the bar shows while
+    /// one is open even when it is hidden.
+    bar_menu: Option<usize>,
+    /// The menu bar title under the mouse.
+    bar_hover: Option<usize>,
 }
 
 /// At most this much file text is opened by one restore (a session or a
@@ -167,6 +183,8 @@ struct OtherPane {
 }
 
 struct Layout {
+    /// The menu bar along the top.
+    menubar: Option<Rect>,
     nag: Option<Rect>,
     /// Tab bar and editor area of the focused group.
     tabs: Option<Rect>,
@@ -174,6 +192,8 @@ struct Layout {
     other: Option<OtherPane>,
     /// The line between the two groups.
     split_line: Option<Rect>,
+    /// The row above the tree naming what is open (folder / workspace).
+    tree_header: Option<Rect>,
     tree: Option<Rect>,
     divider: Option<Rect>,
     main: Rect,
@@ -202,7 +222,7 @@ impl App {
             scale,
             zoom: 1.0,
             size: (1, 1),
-            view: Box::new(MessageView::welcome()),
+            view: Box::new(StartView::new(&[])),
             tabs: vec![TabSlot {
                 id: 1,
                 view: None,
@@ -257,6 +277,11 @@ impl App {
             mods: crate::input::Mods::default(),
             restore_budget: MAX_RESTORE_BYTES,
             not_reopened: Vec::new(),
+            workspace_file: None,
+            header_hover: false,
+            menu_bar_on: true,
+            bar_menu: None,
+            bar_hover: None,
         }
     }
 
@@ -304,6 +329,11 @@ impl App {
         }
         self.wrap_code = s.wrap_code;
         self.trim_on_save = s.trim_trailing_whitespace;
+        self.menu_bar_on = s.menu_bar;
+        if self.tree.show_hidden() != s.hidden_files {
+            self.tree.set_show_hidden(s.hidden_files);
+            self.file_index = None;
+        }
         if theme::is_light() != light_before {
             self.each_view(|v| v.theme_changed());
         }
@@ -404,9 +434,21 @@ impl App {
     fn toggle_theme(&mut self) {
         let light = !theme::is_light();
         self.set_light(light);
-        let name = if light { "Light" } else { "Dark" };
+        let (value, name) = if light {
+            ("light", "Light theme")
+        } else {
+            ("dark", "Dark theme")
+        };
+        self.save_setting("theme", value, name);
+    }
+
+    /// Record `key = value` in the settings file after a change made from a
+    /// command (theme, menu bar); only that line changes. `name` says what
+    /// changed, for the status bar. If the settings file is open with
+    /// unsaved edits, or can't be rewritten safely, it is left alone.
+    fn save_setting(&mut self, key: &str, value: &str, name: &str) {
         let Some(path) = self.settings_path.clone() else {
-            self.notice = Some(format!("{name} theme"));
+            self.notice = Some(name.to_string());
             return;
         };
         // The tab may spell the path differently (case); use its own path
@@ -422,13 +464,13 @@ impl App {
         let dirty_open = open_as.iter().any(|(_, dirty)| *dirty);
         if dirty_open {
             self.notice = Some(format!(
-                "{name} theme for now; settings.txt has unsaved edits, so it was not changed"
+                "{name} for now; settings.txt has unsaved edits, so it was not changed"
             ));
             return;
         }
         let old = match std::fs::metadata(&path) {
             Ok(m) if m.len() > settings::MAX_BYTES => {
-                self.notice = Some(format!("{name} theme for now; settings.txt is too large"));
+                self.notice = Some(format!("{name} for now; settings.txt is too large"));
                 return;
             }
             // Only plain UTF-8 is rewritten; anything else would be damaged.
@@ -437,7 +479,7 @@ impl App {
                     Ok(t) => Some(t),
                     Err(_) => {
                         self.notice = Some(format!(
-                            "{name} theme for now; settings.txt isn't UTF-8, so it was not changed"
+                            "{name} for now; settings.txt isn't UTF-8, so it was not changed"
                         ));
                         return;
                     }
@@ -447,25 +489,23 @@ impl App {
             Err(_) => Some(settings::TEMPLATE.to_string()),
         };
         let Some(old) = old else {
-            self.notice = Some(format!("{name} theme for now; could not read settings.txt"));
+            self.notice = Some(format!("{name} for now; could not read settings.txt"));
             return;
         };
-        let new = settings::with_theme(&old, light);
+        let new = settings::with_setting(&old, key, value);
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         match crate::editor::save::save_bytes(&path, new.as_bytes()) {
             Ok(()) => {
-                self.notice = Some(format!("{name} theme (saved in settings)"));
+                self.notice = Some(format!("{name} (saved in settings)"));
                 // A clean tab showing the file picks up the change.
                 let mut changed: Vec<PathBuf> = open_as.into_iter().map(|(p, _)| p).collect();
                 changed.push(path);
                 self.handle(Input::FsChanged(changed));
             }
             Err(e) => {
-                self.notice = Some(format!(
-                    "{name} theme for now; could not save settings: {e}"
-                ));
+                self.notice = Some(format!("{name} for now; could not save settings: {e}"));
             }
         }
     }
@@ -570,6 +610,32 @@ impl App {
         self.layout().main
     }
 
+    /// Height of the row above the tree (tests: tree rows start below it).
+    #[cfg(test)]
+    pub fn tree_header_height(&self) -> f32 {
+        let pad_y = (theme::PADDING_Y * self.scale).round();
+        (self.ui_line_height() + pad_y * 2.0).round()
+    }
+
+    #[cfg(test)]
+    pub fn tree_header_rect(&self) -> Option<Rect> {
+        self.layout().tree_header
+    }
+
+    /// Centre of menu bar title `i` (None while the bar is hidden).
+    #[cfg(test)]
+    pub fn bar_title_pos(&mut self, i: usize) -> Option<(f32, f32)> {
+        let bar = self.layout().menubar?;
+        let mut ctx = ctx!(self);
+        let r = *menubar::title_rects(bar, &mut ctx).get(i)?;
+        Some((r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0))
+    }
+
+    #[cfg(test)]
+    pub fn bar_menu_open(&self) -> Option<usize> {
+        self.bar_menu
+    }
+
     /// Open a file (in a tab) or a folder (in the tree). Opening never
     /// discards anything: an already-open file is brought to the front,
     /// otherwise a new tab is added.
@@ -584,7 +650,11 @@ impl App {
         }
         if workspace::is_workspace_file(path) {
             match Workspace::load(path) {
-                Ok(w) => self.apply_workspace(w),
+                Ok(w) => {
+                    if self.apply_workspace(w) {
+                        self.workspace_file = Some(path.to_path_buf());
+                    }
+                }
                 Err(e) => self.nag = Some(Nag::error(format!("Cannot open workspace: {e}"))),
             }
             return;
@@ -807,6 +877,28 @@ impl App {
         self.activate(at);
     }
 
+    /// Help → About: the version and who made this build, in a tab. Asking
+    /// again shows the tab that is already open.
+    fn open_about(&mut self) {
+        let open = (0..self.tabs.len()).find(|&i| {
+            let v = self.tab_view(i);
+            v.path().is_none() && v.title() == crate::view::about::TITLE
+        });
+        match open {
+            Some(i) => self.activate(i),
+            None => self.add_tab(Box::new(AboutView::new(crate::branding::embedded()))),
+        }
+        self.focus = Focus::Main;
+        self.pending = true;
+    }
+
+    /// Test hook: an About tab for this identity (the window always shows
+    /// the embedded one).
+    #[cfg(test)]
+    pub fn add_about(&mut self, branding: crate::branding::Branding) {
+        self.add_tab(Box::new(AboutView::new(branding)));
+    }
+
     /// Close tab `i`, asking first if it has unsaved edits.
     pub fn close_tab(&mut self, i: usize) {
         if i >= self.tabs.len() {
@@ -846,7 +938,7 @@ impl App {
             self.view = if self.tree.root().is_some() {
                 Box::new(MessageView::folder_opened())
             } else {
-                Box::new(MessageView::welcome())
+                self.start_view()
             };
             return;
         }
@@ -1193,7 +1285,7 @@ impl App {
             _ => {
                 let mut all = Vec::new();
                 for r in &roots {
-                    all.extend(index_files(r));
+                    all.extend(index_files(r, self.tree.show_hidden()));
                     if all.len() >= crate::palette::MAX_INDEX_FILES {
                         all.truncate(crate::palette::MAX_INDEX_FILES);
                         break;
@@ -1228,6 +1320,8 @@ impl App {
             }
             Outcome::Run(Action::OpenWorkspace) => self.requests.push(Request::OpenWorkspaceDialog),
             Outcome::Run(Action::AddFolder) => self.requests.push(Request::AddFolderDialog),
+            Outcome::Run(Action::CloseFolder) => self.close_folder(),
+            Outcome::Run(Action::ToggleMenuBar) => self.toggle_menu_bar(),
             Outcome::Run(Action::OpenWith(add)) => {
                 let exe = std::env::current_exe()
                     .map(|p| p.display().to_string())
@@ -1431,6 +1525,9 @@ impl App {
                 MenuAction::RemoveFolder(path.clone()),
             ));
         }
+        if is_root && self.tree.root() == Some(path.as_path()) {
+            items.push(("Close Folder", MenuAction::CloseFolder));
+        }
         if is_dir {
             items.push(("Find in folder…", MenuAction::FindInFolder(path.clone())));
         } else {
@@ -1501,6 +1598,14 @@ impl App {
                 }
                 return;
             }
+            MenuAction::EditorKeys(combo) => {
+                // Edit menu: the open file, even if the tree had the keyboard.
+                self.focus = Focus::Main;
+                if let Some((key, mods)) = parse_key_combo(combo) {
+                    self.handle(Input::Key { key, mods });
+                }
+                return;
+            }
             MenuAction::RemoveFolder(p) => {
                 let p = p.clone();
                 self.remove_folder(&p);
@@ -1508,6 +1613,27 @@ impl App {
             }
             MenuAction::AddFolder => {
                 self.requests.push(Request::AddFolderDialog);
+                return;
+            }
+            MenuAction::CloseFolder => {
+                self.close_folder();
+                return;
+            }
+            MenuAction::Palette(action) => {
+                self.run_palette(Outcome::Run(action.clone()));
+                return;
+            }
+            MenuAction::Exit => {
+                // The normal close: unsaved edits are asked about first.
+                self.handle(Input::CloseRequested);
+                return;
+            }
+            MenuAction::About => {
+                self.open_about();
+                return;
+            }
+            MenuAction::ToggleMenuBar => {
+                self.toggle_menu_bar();
                 return;
             }
             MenuAction::SelectForCompare(p) => {
@@ -1645,7 +1771,7 @@ impl App {
             }
             MenuAction::FindInFolder(root) => {
                 if !text.trim().is_empty() {
-                    let view = SearchView::start(root, text.trim());
+                    let view = SearchView::start(root, text.trim(), self.tree.show_hidden());
                     self.add_tab(Box::new(view));
                     self.focus = Focus::Main;
                 }
@@ -1670,6 +1796,7 @@ impl App {
             self.tree.width = s.tree_width;
             self.tree.visible = s.tree_visible;
             self.zoom = s.zoom;
+            self.refresh_start_page();
         }
         self.session_dirty = false;
     }
@@ -1682,6 +1809,7 @@ impl App {
             s.tabs = self.stored.tabs.clone();
             s.positions = self.stored.positions.clone();
             s.active = self.stored.active;
+            s.workspace = self.stored.workspace.clone();
         }
         s
     }
@@ -1699,6 +1827,7 @@ impl App {
             tree_width: self.tree.width,
             tree_visible: self.tree.visible,
             zoom: self.zoom,
+            workspace: self.workspace_file.clone(),
         }
     }
 
@@ -1714,6 +1843,10 @@ impl App {
                 self.tree.add_root(f);
             }
             self.view = Box::new(MessageView::folder_opened());
+            // Only a name for the tree header: the file is not read.
+            self.workspace_file = s
+                .workspace
+                .filter(|f| workspace::is_workspace_file(f) && f.is_file());
         }
         let tabs: Vec<(PathBuf, u8)> = s
             .tabs
@@ -1726,7 +1859,27 @@ impl App {
         self.open_workspace_tabs(&tabs, &s.positions, s.active, false);
         self.tree.visible = s.tree_visible;
         self.focus = Focus::Main;
+        self.refresh_start_page();
         self.session_dirty = false;
+    }
+
+    /// The start page (no folder, no file): what to open, and the recent
+    /// folders, workspaces and files that still exist.
+    fn start_view(&self) -> Box<dyn View> {
+        Box::new(StartView::new(&self.recent))
+    }
+
+    /// Show the start page again if it is what the window shows (its list of
+    /// recent entries was built before the session was loaded).
+    fn refresh_start_page(&mut self) {
+        if self.tree.root().is_none()
+            && self.tabs.len() == 1
+            && self.view.path().is_none()
+            && !self.view.is_dirty()
+            && self.view.title().is_empty()
+        {
+            self.view = self.start_view();
+        }
     }
 
     #[cfg(test)]
@@ -2104,17 +2257,25 @@ impl App {
         let pad_y = (theme::PADDING_Y * self.scale).round() as i32;
         let status_h = self.ui_line_height() as i32 + pad_y * 2;
         let status = Rect::new(0, (h - status_h).max(0), w, status_h.min(h));
-        let nag_h = if self.nag.is_some() {
-            (self.ui_line_height() as i32 + pad_y * 3)
+        let bar_h = if self.menu_bar_on || self.bar_menu.is_some() {
+            (self.ui_line_height() as i32 + pad_y * 2)
                 .min(h - status_h)
                 .max(0)
         } else {
             0
         };
-        let nag = (nag_h > 0).then(|| Rect::new(0, 0, w, nag_h));
-        let top = nag_h;
+        let menubar = (bar_h > 0).then(|| Rect::new(0, 0, w, bar_h));
+        let nag_h = if self.nag.is_some() {
+            (self.ui_line_height() as i32 + pad_y * 3)
+                .min(h - status_h - bar_h)
+                .max(0)
+        } else {
+            0
+        };
+        let nag = (nag_h > 0).then(|| Rect::new(0, bar_h, w, nag_h));
+        let top = bar_h + nag_h;
         let body_h = (h - status_h - top).max(0);
-        let (tree, divider, col) = if self.tree.is_shown() && w > 200 {
+        let (tree_header, tree, divider, col) = if self.tree.is_shown() && w > 200 {
             let tw = (self.tree.width * self.scale)
                 .clamp(
                     TREE_MIN_W * self.scale,
@@ -2123,13 +2284,15 @@ impl App {
                 .min(w as f32 - 100.0)
                 .round() as i32;
             let div = (self.scale.round() as i32).max(1);
+            let hh = (self.ui_line_height() as i32 + pad_y * 2).min(body_h);
             (
-                Some(Rect::new(0, top, tw, body_h)),
+                Some(Rect::new(0, top, tw, hh)),
+                Some(Rect::new(0, top + hh, tw, body_h - hh)),
                 Some(Rect::new(tw, top, div, body_h)),
                 Rect::new(tw + div, top, (w - tw - div).max(0), body_h),
             )
         } else {
-            (None, None, Rect::new(0, top, w, body_h))
+            (None, None, None, Rect::new(0, top, w, body_h))
         };
         // Split view: left half group 0, right half group 1.
         let (col, other, split_line) = if self.is_split() && col.w > 2 {
@@ -2162,10 +2325,12 @@ impl App {
             (None, col)
         };
         Layout {
+            menubar,
             nag,
             tabs,
             other,
             split_line,
+            tree_header,
             tree,
             divider,
             main,
@@ -2704,15 +2869,17 @@ impl App {
     /// Switch to workspace `w` read from a workspace file (which may come
     /// from anyone): folders and tabs that content may not open are
     /// refused before anything touches them.
-    pub fn apply_workspace(&mut self, w: Workspace) {
-        self.switch_workspace(w, true);
+    /// True if the workspace's folder is now shown.
+    pub fn apply_workspace(&mut self, w: Workspace) -> bool {
+        self.switch_workspace(w, true)
     }
 
     /// Switch to workspace `w`: remember the current folder's tabs, close
     /// tabs that are saved and outside the new folder (unsaved ones stay —
     /// nothing is ever dropped), show the new folder and open its files.
     /// `gate`: `w` comes from a workspace file, not from our own store.
-    fn switch_workspace(&mut self, mut w: Workspace, gate: bool) {
+    /// Returns false (with a message) if the workspace's folder can't be shown.
+    fn switch_workspace(&mut self, mut w: Workspace, gate: bool) -> bool {
         let mut refused: Vec<(PathBuf, &'static str)> = Vec::new();
         if gate {
             if let Some(Err(why)) = w.folders.first().map(|f| crate::links::content_may_open(f)) {
@@ -2720,7 +2887,7 @@ impl App {
                     "The workspace's folder was not opened ({why}): {}",
                     w.folders[0].display()
                 )));
-                return;
+                return false;
             }
             w.folders
                 .retain(|f| match crate::links::content_may_open(f) {
@@ -2735,7 +2902,7 @@ impl App {
             self.nag = Some(Nag::error(
                 "The workspace's folder doesn't exist any more.".into(),
             ));
-            return;
+            return false;
         };
         self.persist_workspace();
         // Those belonged to the folder that is left (saved just above).
@@ -2789,6 +2956,7 @@ impl App {
         self.session_dirty = true;
         self.file_index = None;
         self.pending = true;
+        true
     }
 
     /// Open a folder: its remembered workspace if there is one.
@@ -2806,7 +2974,10 @@ impl App {
             .filter(|w| w.folders.first().is_some_and(|f| f == dir))
             .unwrap_or_else(|| Workspace::for_folder(dir));
         // Our own store, written from what the reader opened: not gated.
-        self.switch_workspace(w, false);
+        if self.switch_workspace(w, false) {
+            // A plain folder now, not the workspace file it may have come from.
+            self.workspace_file = None;
+        }
     }
 
     /// "File: Add Folder to Workspace…": show another folder in the tree.
@@ -2839,6 +3010,162 @@ impl App {
         }
     }
 
+    /// Show or hide the menu bar (tests: most start without it).
+    #[cfg(test)]
+    pub fn set_menu_bar(&mut self, on: bool) {
+        self.menu_bar_on = on;
+        self.pending = true;
+    }
+
+    /// Open menu `i` of the menu bar (`keyboard`: select its first item).
+    fn open_bar_menu(&mut self, i: usize, keyboard: bool) {
+        let i = i % menubar::TITLES.len();
+        // Set first: a hidden bar shows while one of its menus is open.
+        self.bar_menu = Some(i);
+        let Some(bar) = self.layout().menubar else {
+            self.bar_menu = None;
+            return;
+        };
+        let rects = {
+            let mut ctx = ctx!(self);
+            menubar::title_rects(bar, &mut ctx)
+        };
+        let x = rects.get(i).map_or(bar.x, |r| r.x);
+        let mut m = Menu::with_items(
+            x as f32,
+            bar.bottom() as f32,
+            menubar::items(i, self.menu_bar_on),
+        );
+        if keyboard {
+            m.select_first();
+        }
+        self.menu = Some(m);
+    }
+
+    /// The menu bar title at this mouse position, if any.
+    fn bar_title_at(&mut self, x: f32, y: f32) -> Option<usize> {
+        let bar = self.layout().menubar?;
+        if (y as i32) < bar.y || (y as i32) >= bar.bottom() {
+            return None;
+        }
+        let mut ctx = ctx!(self);
+        menubar::title_rects(bar, &mut ctx)
+            .iter()
+            .position(|r| (x as i32) >= r.x && (x as i32) < r.right())
+    }
+
+    /// "View: Hide / Show Menu Bar": switch now and record it in the
+    /// settings file (its `menu_bar` line).
+    fn toggle_menu_bar(&mut self) {
+        self.menu_bar_on = !self.menu_bar_on;
+        let (value, what) = if self.menu_bar_on {
+            ("on", "Menu bar shown")
+        } else {
+            ("off", "Menu bar hidden (Alt+F or F10 opens it)")
+        };
+        self.save_setting("menu_bar", value, what);
+    }
+
+    /// Ctrl+Shift+H: hidden files in the tree, Ctrl+P and find in folder.
+    /// Remembered in settings.
+    fn toggle_hidden_files(&mut self) {
+        let on = !self.tree.show_hidden();
+        self.tree.set_show_hidden(on);
+        self.file_index = None;
+        let (value, what) = if on {
+            ("on", "Hidden files shown")
+        } else {
+            ("off", "Hidden files not shown")
+        };
+        self.save_setting("hidden_files", value, what);
+    }
+
+    /// What the tree header says: the kind of thing open and, for a
+    /// workspace file, its name. (The folder names are the rows below.)
+    pub fn tree_header_text(&self) -> String {
+        match &self.workspace_file {
+            Some(f) => {
+                let name = f
+                    .file_stem()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                format!("WORKSPACE · {name}")
+            }
+            None if self.tree.roots().len() > 1 => "FOLDERS".into(),
+            None => "FOLDER".into(),
+        }
+    }
+
+    /// The tree header's menu: everything about the folder or workspace.
+    fn open_tree_header_menu(&mut self, header: Rect) {
+        let items = vec![
+            ("Open Folder…", MenuAction::Keys("ctrl+shift+o")),
+            ("Open Recent…", MenuAction::Keys("ctrl+r")),
+            (
+                "Open Workspace…",
+                MenuAction::Palette(Action::OpenWorkspace),
+            ),
+            ("Add Folder to Workspace…", MenuAction::AddFolder),
+            (
+                "Save Workspace As…",
+                MenuAction::Palette(Action::SaveWorkspace),
+            ),
+            ("Close Folder", MenuAction::CloseFolder),
+            ("Show / Hide Hidden Files", MenuAction::Keys("ctrl+shift+h")),
+            ("Hide File Tree", MenuAction::Keys("ctrl+\\")),
+        ];
+        let x = header.x as f32 + 6.0 * self.scale;
+        self.menu = Some(Menu::new(x, header.bottom() as f32, items));
+    }
+
+    /// "File: Close Folder": remember the folder's tabs (as switching to
+    /// another folder does), close the saved tabs, keep tabs with unsaved
+    /// edits, and show the start page. The next launch starts without a
+    /// folder. Nothing on disk is touched.
+    pub fn close_folder(&mut self) {
+        let Some(root) = self.tree.root().map(Path::to_path_buf) else {
+            self.notice = Some("No folder is open".into());
+            return;
+        };
+        if self.nag.is_some() {
+            return;
+        }
+        // Saved before any tab closes, so reopening the folder brings them back.
+        self.persist_workspace();
+        // An explicit close is what the next launch should see, also in a
+        // window started with a path (`litedit .`), which otherwise leaves
+        // the saved session alone.
+        self.owns_workspace = true;
+        self.not_reopened.clear();
+        let close: Vec<u64> = (0..self.tabs.len())
+            .filter(|&i| !self.tab_view(i).is_dirty())
+            .map(|i| self.tabs[i].id)
+            .collect();
+        let kept = self.tabs.len() - close.len();
+        for id in close {
+            self.remove_tab(id);
+        }
+        for t in &mut self.tabs {
+            t.group = 0;
+        }
+        self.group_shown = [self.tabs.get(self.active).map(|t| t.id), None];
+        self.tree.clear();
+        self.workspace_file = None;
+        self.focus = Focus::Main;
+        self.file_index = None;
+        self.refresh_start_page();
+        let mut note = format!(
+            "Closed {}; its tabs come back when you open it again",
+            display_name(&root)
+        );
+        if kept > 0 {
+            note.push_str(&format!(". Kept {kept} tab(s) with unsaved edits"));
+        }
+        self.notice = Some(note);
+        self.session_dirty = true;
+        self.pending = true;
+    }
+
     /// "File: Save Workspace As…" (from the dialog or a script).
     pub fn save_workspace_as(&mut self, path: &Path) {
         let path = if workspace::is_workspace_file(path) {
@@ -2854,6 +3181,7 @@ impl App {
         match self.current_workspace().save(&path) {
             Ok(()) => {
                 push_recent(&mut self.recent, &path);
+                self.workspace_file = Some(path.clone());
                 self.session_dirty = true;
                 self.notice = Some(format!("Saved workspace {}", display_name(&path)));
                 self.after_fs_change(&path);
@@ -2863,6 +3191,9 @@ impl App {
     }
 
     fn suggested_workspace_path(&self) -> PathBuf {
+        if let Some(f) = &self.workspace_file {
+            return f.clone();
+        }
         match self.tree.root() {
             Some(r) => r.join(format!(
                 "{}.{}",
@@ -3066,15 +3397,59 @@ impl App {
             && self.menu.is_some()
             && matches!(
                 input,
-                Input::Key { .. } | Input::MouseDown { .. } | Input::MouseMove { .. }
+                Input::Key { .. }
+                    | Input::MouseDown { .. }
+                    | Input::MouseMove { .. }
+                    | Input::Text(_)
             )
         {
+            // A menu bar menu: another title under the mouse switches to its
+            // menu; a click on the open menu's own title closes it.
+            if let Some(open) = self.bar_menu {
+                match input {
+                    Input::MouseMove { x, y } => {
+                        self.mouse = (*x, *y);
+                        if let Some(j) = self.bar_title_at(*x, *y) {
+                            if j != open {
+                                self.open_bar_menu(j, false);
+                            }
+                            return true;
+                        }
+                    }
+                    Input::MouseDown { x, y, .. } => {
+                        if let Some(j) = self.bar_title_at(*x, *y) {
+                            if j == open {
+                                self.menu = None;
+                                self.bar_menu = None;
+                            } else {
+                                self.open_bar_menu(j, false);
+                            }
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             match self.menu.as_mut().map(|m| m.handle(input)) {
                 Some(MenuResult::Run(a)) => {
                     self.menu = None;
+                    self.bar_menu = None;
                     self.run_menu(a);
                 }
-                Some(MenuResult::Close) => self.menu = None,
+                Some(MenuResult::Close) => {
+                    self.menu = None;
+                    self.bar_menu = None;
+                }
+                Some(MenuResult::Prev) | Some(MenuResult::Next) if self.bar_menu.is_some() => {
+                    let n = menubar::TITLES.len();
+                    let open = self.bar_menu.unwrap_or(0);
+                    let next = if matches!(input, Input::Key { key: Key::Left, .. }) {
+                        (open + n - 1) % n
+                    } else {
+                        (open + 1) % n
+                    };
+                    self.open_bar_menu(next, true);
+                }
                 _ => {}
             }
             return true;
@@ -3124,6 +3499,24 @@ impl App {
                 mods,
             } if !mods.ctrl && !mods.alt && !mods.shift => {
                 self.requests.push(Request::ToggleFullscreen);
+                return true;
+            }
+            // The menu bar from the keyboard: F10, or Alt + a title's first
+            // letter (Alt+F File, Alt+E Edit, Alt+V View, Alt+G Go, Alt+H Help).
+            Input::Key {
+                key: Key::F(10),
+                mods,
+            } if !mods.ctrl && !mods.alt && !mods.shift => {
+                self.open_bar_menu(0, true);
+                return true;
+            }
+            Input::Key {
+                key: Key::Char(c),
+                mods,
+            } if mods.alt && !mods.ctrl && !mods.shift && menubar::mnemonic(*c).is_some() => {
+                if let Some(i) = menubar::mnemonic(*c) {
+                    self.open_bar_menu(i, true);
+                }
                 return true;
             }
             Input::CloseRequested => {
@@ -3383,7 +3776,7 @@ impl App {
                         true
                     }
                     Key::Char('h') if mods.shift => {
-                        self.tree.toggle_hidden();
+                        self.toggle_hidden_files();
                         true
                     }
                     Key::Char('=') | Key::Char('+') => self.set_zoom(self.zoom * 1.1),
@@ -3425,6 +3818,36 @@ impl App {
         }
 
         let layout = self.layout();
+        // The menu bar: a click on a title opens its menu.
+        if let Some(bar) = layout.menubar {
+            match input {
+                Input::MouseDown { x, y, button, .. }
+                    if (*y as i32) >= bar.y && (*y as i32) < bar.bottom() =>
+                {
+                    self.mouse = (*x, *y);
+                    if *button == MouseButton::Left
+                        && let Some(j) = self.bar_title_at(*x, *y)
+                    {
+                        self.bar_hover = None;
+                        self.open_bar_menu(j, false);
+                    }
+                    return true;
+                }
+                Input::MouseMove { x, y } if (*y as i32) >= bar.y && (*y as i32) < bar.bottom() => {
+                    self.mouse = (*x, *y);
+                    self.cursor = Cursor::Default;
+                    let h = self.bar_title_at(*x, *y);
+                    let changed = h != self.bar_hover;
+                    self.bar_hover = h;
+                    return changed;
+                }
+                Input::MouseMove { .. } | Input::MouseLeave if self.bar_hover.is_some() => {
+                    self.bar_hover = None;
+                    self.pending = true;
+                }
+                _ => {}
+            }
+        }
         // Split view: a click anywhere in the other group focuses it first
         // (then the click is handled there); the wheel scrolls it in place.
         let mut layout = layout;
@@ -3600,6 +4023,39 @@ impl App {
             _ => {}
         }
 
+        // The tree header: a click (either button) opens its menu.
+        if let Some(hr) = layout.tree_header
+            && !self.tree.dragging()
+            && !self.dragging_divider
+        {
+            let inside = |x: f32, y: f32| {
+                x >= hr.x as f32
+                    && x < hr.right() as f32
+                    && y >= hr.y as f32
+                    && y < hr.bottom() as f32
+            };
+            match input {
+                Input::MouseDown { x, y, button, .. } if inside(*x, *y) => {
+                    self.mouse = (*x, *y);
+                    if *button != MouseButton::Middle {
+                        self.open_tree_header_menu(hr);
+                    }
+                    return true;
+                }
+                Input::MouseMove { x, y } if inside(*x, *y) => {
+                    self.cursor = Cursor::Default;
+                    let was = self.header_hover;
+                    self.header_hover = true;
+                    if let Some(t) = layout.tree {
+                        let mut ctx = ctx!(self);
+                        self.tree.handle(&Input::MouseLeave, t, &mut ctx);
+                    }
+                    return !was;
+                }
+                Input::MouseMove { .. } | Input::MouseLeave => self.header_hover = false,
+                _ => {}
+            }
+        }
         // A drag that started in the tree gets the mouse until release.
         if self.tree.dragging() && matches!(input, Input::MouseMove { .. } | Input::MouseUp { .. })
         {
@@ -3847,10 +4303,41 @@ impl App {
             .other
             .and_then(|o| self.shown_tab(o.group).map(|i| (o, i)));
         let mouse = self.mouse;
+        let (bar_open, bar_hover) = (self.bar_menu, self.bar_hover);
+        let header_text = self.tree_header_text();
+        let header_hover = self.header_hover;
         let current = self.view.path().map(Path::to_path_buf);
         let focus = self.focus;
         let mut ctx = ctx!(self);
 
+        if let Some(bar) = layout.menubar {
+            canvas.set_clip(bar);
+            canvas.fill_rect(bar, theme::p().background2);
+            canvas.fill_rect(
+                Rect::new(bar.x, bar.bottom() - 1, bar.w, 1),
+                theme::p().divider,
+            );
+            let lh = ctx.ui_metrics().line_height as i32;
+            let pad = ctx.px(10.0) as i32;
+            let rects = menubar::title_rects(bar, &mut ctx);
+            for (i, (t, r)) in menubar::TITLES.iter().zip(rects).enumerate() {
+                let r = Rect::new(r.x, r.y, r.w, r.h - 1);
+                if bar_open == Some(i) {
+                    canvas.fill_rect(r, theme::p().selection);
+                } else if bar_hover == Some(i) {
+                    canvas.fill_rect(r, theme::p().line_highlight);
+                }
+                ctx.label(
+                    canvas,
+                    t,
+                    r.x + pad,
+                    r.y + (r.h - lh) / 2,
+                    theme::p().text,
+                    r.w,
+                    FontKind::Ui,
+                );
+            }
+        }
         if let (Some(r), Some(nag)) = (layout.nag, self.nag.as_mut()) {
             canvas.set_clip(r);
             nag.render(canvas, r, &mut ctx);
@@ -3866,6 +4353,41 @@ impl App {
             );
             canvas.set_clip(d);
             canvas.fill_rect(d, theme::p().divider);
+        }
+        if let Some(hr) = layout.tree_header {
+            canvas.set_clip(hr);
+            canvas.fill_rect(
+                hr,
+                if header_hover {
+                    theme::p().line_highlight
+                } else {
+                    theme::p().background2
+                },
+            );
+            canvas.fill_rect(
+                Rect::new(hr.x, hr.bottom() - 1, hr.w, 1),
+                theme::p().divider,
+            );
+            let pad = ctx.px(10.0) as i32;
+            let lh = ctx.ui_metrics().line_height as i32;
+            // "⋯" at the right: the header is a menu button.
+            let dot = ctx.px(1.6).max(1.0);
+            let step = ctx.px(5.0);
+            let cx = hr.right() as f32 - pad as f32 - step;
+            let cy = hr.y as f32 + hr.h as f32 / 2.0;
+            for k in -1..=1 {
+                canvas.fill_circle(cx + k as f32 * step, cy, dot, theme::p().text);
+            }
+            let room = (cx - step * 2.0) as i32 - hr.x - pad;
+            ctx.label(
+                canvas,
+                &header_text,
+                hr.x + pad,
+                hr.y + (hr.h - lh) / 2,
+                theme::p().dim,
+                room.max(0),
+                FontKind::Ui,
+            );
         }
 
         for (bar, rects, titles, shown, (max_scroll, scroll, total), focused) in &bars {

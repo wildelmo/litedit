@@ -121,3 +121,18 @@ expect status Duplicated
 open out/zz-one - Copy.txt
 expect title zz-one - Copy.txt
 expect status CRLF
+# Menu bar, Close Folder and the start page (S9).
+key alt+f
+shot out/menu-file.png
+key escape
+key ctrl+shift+p
+text close folder
+key enter
+expect status Closed out
+shot out/start-page.png
+# Help → About: the version and who made this build, in a tab.
+key alt+h
+key down
+key enter
+expect title About
+shot out/about.png

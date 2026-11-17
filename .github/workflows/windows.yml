@@ -298,6 +298,31 @@ jobs:
           if (-not $ok) { $failed = $true }
           if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 
+          # 9. Menu bar from the keyboard: Alt+F and F10 reach the window
+          #    (Windows could take them for its own system menu) and open
+          #    File with New File selected; five down is Save. Then File →
+          #    Exit (Up wraps to the last item) closes the saved window.
+          $mf = Join-Path $env:RUNNER_TEMP "menus.txt"
+          [IO.File]::WriteAllText($mf, "start")
+          $p = Launch $mf
+          $ws.SendKeys("{END}1"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("%f"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{DOWN 5}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $viaAlt = [IO.File]::ReadAllText($mf)
+          $ws.SendKeys("2"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("{F10}"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{DOWN 5}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $viaF10 = [IO.File]::ReadAllText($mf)
+          $ws.SendKeys("%f"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{UP}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $ok = ($viaAlt -eq "start1") -and ($viaF10 -eq "start12") -and $exited
+          $rows += "| menu bar: Alt+F / F10 → Save, File → Exit | $(if ($ok) {'PASS'} else {"FAIL (alt=$viaAlt f10=$viaF10 exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+
           $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
           Write-Output $table
           $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY

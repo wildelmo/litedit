@@ -2,6 +2,25 @@
 
 ## 1.1.0 — unreleased
 
+- Hidden files and folders (`.docs`, `.github`, `.gitignore`, and what
+  Windows marks hidden) are shown by default, in the tree and now also in
+  Ctrl+P and find in folder. Ctrl+Shift+H (or View → Hidden Files) switches
+  them off or on, and the choice is remembered (`hidden_files` in
+  settings). `.git`, `node_modules` and the names in `ignore` stay out.
+- Help → About litedit shows the version and who made the build: created
+  by, company and email. Whoever builds litedit sets these in
+  `assets/branding.txt`; lines left empty are not shown.
+- Menu bar: File, Edit, View, Go and Help along the top, in the theme's
+  colours, with each item's shortcut next to it. Alt+F / E / V / G / H or
+  F10 opens it from the keyboard. View → Hide Menu Bar (or `menu_bar = off`
+  in settings) hides it; Alt+F and F10 still open it.
+- Close Folder (File menu, the tree header, or right-click the folder):
+  its tabs are remembered for next time, tabs with unsaved edits stay, and
+  the window shows a start page with Open File / Folder / Workspace and
+  your recent folders, workspaces and files.
+- The file tree has a header that says what is open — FOLDER, FOLDERS or
+  WORKSPACE and its name — and a click on it opens the folder and workspace
+  commands.
 - Big files: text is coloured only as far as you read, and loading takes
   much less memory (a 100,000-line, 8 MB file: 60 MB → 37 MB at its peak).
 - Read-only lock: "View: Toggle Read-Only" in the command palette protects

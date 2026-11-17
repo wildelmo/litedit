@@ -13,20 +13,6 @@ pub struct MessageView {
 }
 
 impl MessageView {
-    pub fn welcome() -> Self {
-        Self {
-            title: String::new(),
-            lines: vec![
-                "litedit".into(),
-                String::new(),
-                "Ctrl+O  open a file".into(),
-                "Ctrl+Shift+O  open a folder".into(),
-                "or drag a file or folder onto this window".into(),
-            ],
-            color: theme::p().text,
-        }
-    }
-
     pub fn folder_opened() -> Self {
         Self {
             title: String::new(),

@@ -228,12 +228,79 @@ fixed first (S5.0).
 - [x] S8.10 Folder listing: bounded work per folder
 - [x] S8.11 Rename never replaces a dangling link
 
+## Epic 9 — Menus and folders you can see (owner request, 2026-11-16)
+
+The owner found no way to close a folder, couldn't tell a folder from a
+workspace, and missed a menu bar: everything was in shortcuts and the
+palette.
+
+- [x] S9.1 Close Folder (palette, File menu, tree header, main folder's
+       right-click menu) and a start page: Open File / Folder / Workspace
+       and the recent folders, workspaces and files, by mouse or keyboard
+- [x] S9.2 Menu bar (File, Edit, View, Go, Help), drawn by us so it follows
+       the theme; items replay their shortcuts; Alt+F/E/V/G/H and F10;
+       `menu_bar` setting and View → Hide Menu Bar (D-040)
+- [x] S9.3 Tree header: says FOLDER, FOLDERS or WORKSPACE · name; a click
+       opens the folder / workspace menu (D-041)
+- [x] S9.4 Help → About litedit: a tab with the version and who made the
+       build (Created by / Company / Email from `assets/branding.txt`,
+       embedded at build time; empty lines are not shown) (D-042)
+- [x] S9.5 Hidden files are shown by default; Ctrl+Shift+H is remembered
+       (`hidden_files` setting); Ctrl+P and find in folder follow it (D-043)
+
 ---
 
 ## Progress log
 
 Newest first. One line per meaningful step.
 
+- 2026-11-16 — S9.5 Hidden files, at the owner's request (`.docs` was not
+  in the tree and the switch was forgotten at every start). They are shown
+  by default now, also without a settings file (headless, tests). The
+  switch is saved as `hidden_files = on/off`, like the menu bar. Found
+  while doing it: Ctrl+P and find in folder never listed hidden files,
+  whatever the switch said; they now follow it, so what the tree shows is
+  what they search (`index_files` and `SearchView::start` take the flag).
+  The always-ignored names and the `ignore` setting are unchanged. One new
+  app test, two extended unit tests; 9 mutation checks, all caught (one
+  only after the test also covered a window without a settings file, where
+  nothing else throws away Ctrl+P's file list). 448 tests pass on Windows
+  (1 ignored).
+- 2026-11-16 — S9.4 About, at the owner's request (the same idea as their
+  Demo Studio app, without its update check: litedit stays off the network,
+  D-042). Help → About litedit opens a tab with the compiled version, the
+  description, and Created by / Company / Email from `assets/branding.txt`
+  (`key = value`, embedded with `include_str!`, no new crate; values are cut
+  to one plain line of 100 characters; without a name the author from
+  `Cargo.toml` is shown). The checked-in file has the name only. Asking
+  again shows the open tab; a file opened while About is the only tab takes
+  its place; it is never saved in the session. 7 new tests (4 parser, 3 app).
+  Six mutation checks: five caught; one was not a real mutation (a fixed
+  background colour rightly passes a test about cached colours; caching the
+  colour is caught). Looked at in both themes and at 330 px wide.
+  447 tests pass on Windows (1 ignored).
+- 2026-11-16 — Epic 9 (S9.1–S9.3), at the owner's request after trying the
+  1.1 build. Close Folder remembers the folder's tabs first (reopening the
+  folder brings them back), closes the saved tabs, keeps tabs with unsaved
+  edits, and leaves the start page; the next launch starts without a
+  folder. The start page lists Open File / Folder / Workspace and up to 8
+  recent entries that still exist. The menu bar is a drawn row at the top
+  with File, Edit, View, Go and Help; almost every item replays its
+  shortcut, so menus and keys can't disagree. Hover switches menus, Left /
+  Right walk them, Exit goes through the normal close (unsaved edits are
+  asked about), and the bar does nothing under a question. The tree header
+  names what is open, remembers a workspace file's name across restarts
+  (only the name; the file is not read), and opens the same folder menu.
+  Most older tests click at fixed positions, so the shared test app starts
+  without the menu bar; four tree tests now offset their rows by the header.
+  Edit-menu items move the keyboard to the open file first (the tree may
+  have it), typing while a menu is open goes nowhere, and Close Folder is
+  remembered even in a window started with a path (`litedit .`).
+  15 new tests (`src/tests_menus.rs`, plus menu and menubar unit tests),
+  13 mutation checks all caught. Windows-only parts not run here: whether
+  Alt+F and F10 reach the window on a real desktop (read from winit's
+  source: they should, with no beep; the new real-window CI step 9 checks
+  Alt+F / F10 → Save and File → Exit). 440 tests pass on Windows (1 ignored).
 - 2026-11-15 — S8.8 + S8.9 One-window pipe (sub-agent, reviewed, one change
   at review; the owner handed these back). The pipe that hands files to the
   running window now opens only for the current user (before, other accounts
