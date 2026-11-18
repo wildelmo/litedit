@@ -348,8 +348,8 @@ jobs:
             target/release/litedit.exe
             out/
 
-  # A pushed tag like v1.0.0 publishes a GitHub Release with the exe (built and
-  # fully tested by the job above) plus the licence files.
+  # A pushed tag like v1.0.0 publishes a GitHub Release with one zip: the exe
+  # (built and fully tested by the job above) plus the licence files.
   release:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
@@ -378,8 +378,8 @@ jobs:
           # Also works when the release was drafted on github.com first: then
           # the files are attached to it.
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe --clobber
+            gh release upload "$GITHUB_REF_NAME" "$dir.zip" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe \
+            gh release create "$GITHUB_REF_NAME" "$dir.zip" \
               --title "litedit $GITHUB_REF_NAME" --notes "$notes"
           fi

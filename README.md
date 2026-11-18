@@ -17,8 +17,8 @@ scratch and contains no lite-xl code; `NOTICE` lists the few default values take
 
 ## Try it
 
-Download `litedit.exe` (or the zip with the licence files) from the
-[latest release](../../releases/latest). Builds of every commit are also
+Download the zip from the [latest release](../../releases/latest) and unzip
+it: `litedit.exe` is the whole program, the other files are its licences. Builds of every commit are also
 attached to each [windows workflow run](../../actions/workflows/windows.yml)
 (artifact `litedit-windows`). Then open a file or folder:
 
