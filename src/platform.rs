@@ -3,7 +3,11 @@
 //! URLs go to `ShellExecuteW` directly — never through `cmd /c start`, where
 //! characters like `&` or `^` in a crafted URL could run commands.
 
+use std::ffi::OsStr;
 use std::path::Path;
+
+#[cfg(windows)]
+use std::path::PathBuf;
 
 use crate::links::{LinkTarget, classify};
 
@@ -11,7 +15,7 @@ use crate::links::{LinkTarget, classify};
 /// The URL is re-validated here so no other caller can bypass the check.
 pub fn open_url(url: &str) -> Result<(), String> {
     match classify(url, Path::new("")) {
-        LinkTarget::Web(u) if u == url => shell_open(url, None),
+        LinkTarget::Web(u) if u == url => shell_open(OsStr::new(url), None),
         _ => Err(format!("refusing to open {url}")),
     }
 }
@@ -23,20 +27,66 @@ pub fn reveal_in_explorer(path: &Path) -> Result<(), String> {
         return Err("refusing to reveal this path".into());
     }
     // Paths cannot contain '"' on Windows, so quoting is unambiguous.
-    shell_open("explorer.exe", Some(&format!("/select,\"{p}\"")))
+    reveal_selected(&format!("/select,\"{p}\""))
 }
 
 #[cfg(windows)]
-fn shell_open(file: &str, params: Option<&str>) -> Result<(), String> {
+fn reveal_selected(params: &str) -> Result<(), String> {
+    let explorer = windows_explorer_path()?;
+    shell_open(explorer.as_os_str(), Some(params))
+}
+
+#[cfg(not(windows))]
+fn reveal_selected(_params: &str) -> Result<(), String> {
+    // Development builds on other platforms: do nothing.
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_explorer_path() -> Result<PathBuf, String> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetWindowsDirectoryW;
+
+    let mut directory = vec![0u16; 260];
+    loop {
+        let capacity = u32::try_from(directory.len())
+            .map_err(|_| "Windows directory path is too long")?;
+        // SAFETY: `directory` is writable for `capacity` UTF-16 code units.
+        let len = unsafe { GetWindowsDirectoryW(directory.as_mut_ptr(), capacity) } as usize;
+        if len == 0 {
+            return Err("GetWindowsDirectoryW failed".into());
+        }
+        if len >= directory.len() {
+            let capacity = len
+                .checked_add(1)
+                .ok_or("Windows directory path is too long")?;
+            directory.resize(capacity, 0);
+            continue;
+        }
+
+        let mut explorer = PathBuf::from(OsString::from_wide(&directory[..len]));
+        if !explorer.is_absolute() {
+            return Err("Windows directory is not absolute".into());
+        }
+        explorer.push("explorer.exe");
+        return Ok(explorer);
+    }
+}
+
+#[cfg(windows)]
+fn shell_open(file: &OsStr, params: Option<&str>) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-    let op = wide("open");
-    let file_w = wide(file);
-    let params_w = params.map(wide);
+    let op: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let file_w: Vec<u16> = file.encode_wide().chain(std::iter::once(0)).collect();
+    let params_w = params.map(|p| {
+        p.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    });
     // SAFETY: all pointers are valid, NUL-terminated UTF-16 buffers that
     // outlive the call; a null HWND and null directory are permitted.
     let r = unsafe {
@@ -58,7 +108,7 @@ fn shell_open(file: &str, params: Option<&str>) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn shell_open(_file: &str, _params: Option<&str>) -> Result<(), String> {
+fn shell_open(_file: &OsStr, _params: Option<&str>) -> Result<(), String> {
     // Development builds on other platforms: do nothing.
     Ok(())
 }
