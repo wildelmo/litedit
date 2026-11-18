@@ -1,0 +1,385 @@
+name: windows
+
+# Actions are pinned to commit SHAs (a moved tag cannot change what runs). To
+# update: look up the new tag's commit with `git ls-remote <repo> refs/tags/<tag>^{}`
+# and replace the SHA and the trailing tag comment.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2 (v2.9.3)
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      - name: Pure-Rust regex check (no onig C library)
+        shell: pwsh
+        run: |
+          cargo tree --target x86_64-pc-windows-msvc -i onig_sys 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) { Write-Error "onig_sys (C regex) is in the dependency tree"; exit 1 }
+          exit 0
+
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+
+      - name: Static CRT check (no VC++ redistributable needed)
+        shell: pwsh
+        run: |
+          $deps = dumpbin /dependents target\release\litedit.exe | Out-String
+          Write-Output $deps
+          if ($deps -match "VCRUNTIME|MSVCP|api-ms-win-crt") { Write-Error "exe depends on the VC++ runtime"; exit 1 }
+
+      - name: Icon and version info embedded
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "target\release\litedit.exe").Path
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Output "ProductName=$($vi.ProductName) FileVersion=$($vi.FileVersion) Description=$($vi.FileDescription)"
+          if ($vi.ProductName -ne "litedit") { Write-Error "version info missing"; exit 1 }
+          Add-Type -AssemblyName System.Drawing
+          $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($exe)
+          if ($null -eq $icon) { Write-Error "icon missing"; exit 1 }
+          Write-Output "icon: $($icon.Width)x$($icon.Height)"
+
+      - name: Measure (size, startup, memory) and screenshots
+        shell: pwsh
+        run: |
+          $exe = "target\release\litedit.exe"
+          New-Item -ItemType Directory -Force out | Out-Null
+          $sizeMB = [math]::Round((Get-Item $exe).Length / 1MB, 2)
+
+          # Scripted smoke test: drives the app through the same input path as
+          # the window, with assertions, and writes screenshots to out/.
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $sp = Start-Process -FilePath $exe -Wait -NoNewWindow -PassThru -ArgumentList @("--script", "ci\smoke.script")
+          $sw.Stop()
+          if ($sp.ExitCode -ne 0) { Write-Error "smoke script failed ($($sp.ExitCode))"; exit 1 }
+          Start-Process -FilePath $exe -Wait -NoNewWindow -ArgumentList @(
+            "--screenshot", "out\startup.png", "--stats", "out\stats.txt", "--size", "1280x800", "src\canvas.rs")
+          $stats = Get-Content out\stats.txt -Raw
+
+          # Real window: open a file, let it settle, read memory.
+          $p = Start-Process -FilePath $exe -ArgumentList @("--new-window", "README.md") -PassThru
+          Start-Sleep -Seconds 4
+          $p.Refresh()
+          $alive = -not $p.HasExited
+          $ws = if ($alive) { [math]::Round($p.WorkingSet64 / 1MB, 1) } else { "n/a" }
+          $peak = if ($alive) { [math]::Round($p.PeakWorkingSet64 / 1MB, 1) } else { "n/a" }
+          $priv = if ($alive) { [math]::Round($p.PrivateMemorySize64 / 1MB, 1) } else { "n/a" }
+          if ($alive) { Stop-Process -Id $p.Id -Force }
+
+          # Ten tabs: open every fixture plus sources.
+          $files = @(Get-ChildItem tests\fixtures -File | Select-Object -ExpandProperty FullName) + @("src\app.rs", "src\view\code.rs", "README.md")
+          $files = $files | Select-Object -First 10
+          $p10 = Start-Process -FilePath $exe -ArgumentList (@("--new-window") + ($files | ForEach-Object { "`"$_`"" })) -PassThru
+          Start-Sleep -Seconds 4
+          $p10.Refresh()
+          $ws10 = if (-not $p10.HasExited) { [math]::Round($p10.WorkingSet64 / 1MB, 1) } else { "n/a (exited)" }
+          $priv10 = if (-not $p10.HasExited) { [math]::Round($p10.PrivateMemorySize64 / 1MB, 1) } else { "n/a" }
+          if (-not $p10.HasExited) { Stop-Process -Id $p10.Id -Force }
+
+          $crash = Test-Path "target\release\litedit-crash.log"
+          $summary = @"
+          ## litedit Windows metrics
+          | metric | value |
+          |---|---|
+          | exe size | $sizeMB MB |
+          | smoke script wall time | $($sw.ElapsedMilliseconds) ms |
+          | window: working set after 4s | $ws MB |
+          | window: peak working set | $peak MB |
+          | window: private bytes | $priv MB |
+          | 10 tabs: working set / private | $ws10 MB / $priv10 MB |
+          | window still running after 4s | $alive |
+          | crash log present | $crash |
+
+          ``````
+          $stats
+          ``````
+          "@
+          $summary | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          $summary | Out-File -Encoding utf8 out\metrics.md
+          Write-Output $summary
+          if ($crash) { Get-Content "target\release\litedit-crash.log"; exit 1 }
+          if (-not $alive) { Write-Error "window process exited early"; exit 1 }
+
+      - name: Performance numbers (litedit --bench)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "target\release\litedit.exe" -ArgumentList @("--bench", "out\bench.md") -Wait -NoNewWindow -PassThru
+          if ($p.ExitCode -ne 0) { Write-Error "bench failed"; exit 1 }
+          $b = Get-Content out\bench.md -Raw
+          Write-Output $b
+          $b | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: Real-window tests
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "target\release\litedit.exe").Path
+          $ws = New-Object -ComObject WScript.Shell
+          $rows = @()
+          $failed = $false
+          function Launch($file) {
+            $p = Start-Process -FilePath $exe -ArgumentList @("--new-window", "`"$file`"") -PassThru
+            Start-Sleep -Seconds 3
+            [void]$ws.AppActivate($p.Id)
+            Start-Sleep -Milliseconds 600
+            return $p
+          }
+          function Title($p) { $p.Refresh(); return $p.MainWindowTitle }
+
+          # 1. Typing + Ctrl+S writes the file.
+          $f = Join-Path $env:RUNNER_TEMP "typing.txt"
+          [IO.File]::WriteAllText($f, "start")
+          $p = Launch $f
+          $ws.SendKeys("{END} typed"); Start-Sleep -Milliseconds 400
+          $dirtyTitle = Title $p
+          $ws.SendKeys("^s"); Start-Sleep -Seconds 1
+          $content = [IO.File]::ReadAllText($f)
+          $ok = ($content -eq "start typed") -and ($dirtyTitle -like "*typing.txt*")
+          $rows += "| typing + Ctrl+S | $(if ($ok) {'PASS'} else {"FAIL ($content / $dirtyTitle)"}) |"
+          if (-not $ok) { $failed = $true }
+
+          # 2. Alt+F4 on a clean document exits immediately.
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $ok = $p.HasExited
+          $rows += "| Alt+F4 when saved exits | $(if ($ok) {'PASS'} else {'FAIL'}) |"
+          if (-not $ok) { $failed = $true; Stop-Process -Id $p.Id -Force }
+
+          # 3. Alt+F4 with unsaved edits asks first; 'd' (Don't save) then exits.
+          $p = Launch $f
+          $ws.SendKeys("{END}!"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $stillOpen = -not $p.HasExited
+          $ws.SendKeys("d"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $content = [IO.File]::ReadAllText($f)
+          $ok = $stillOpen -and $exited -and ($content -eq "start typed")
+          $rows += "| Alt+F4 when dirty prompts, Don't save exits | $(if ($ok) {'PASS'} else {"FAIL (open=$stillOpen exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+
+          # 4. Ctrl+O opens the native dialog; typing a path opens that file.
+          $g = Join-Path $env:RUNNER_TEMP "opened.md"
+          [IO.File]::WriteAllText($g, "# Opened via dialog")
+          #    The system dialog can be slow to appear on a busy runner:
+          #    wait for the title to change, and try a second time if needed.
+          $ok = $false; $t = ""
+          foreach ($attempt in 1..2) {
+            $p = Launch $f
+            $ws.SendKeys("^o"); Start-Sleep -Seconds (2 * $attempt + 1)
+            $ws.SendKeys($g); Start-Sleep -Milliseconds 800
+            $ws.SendKeys("{ENTER}")
+            foreach ($i in 1..16) {
+              Start-Sleep -Milliseconds 500
+              $t = Title $p
+              if ($t -like "opened.md*") { $ok = $true; break }
+            }
+            if ($ok) { break }
+            if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+            Start-Sleep -Seconds 1
+          }
+          $rows += "| Ctrl+O native dialog opens a file | $(if ($ok) {'PASS'} else {"FAIL (title: $t)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+          # 5. Ctrl+, creates and opens settings.txt in %APPDATA%; the theme
+          #    toggle rewrites its theme line; the clean tab exits on Alt+F4.
+          $set = Join-Path $env:APPDATA "litedit\settings.txt"
+          Remove-Item $set -ErrorAction SilentlyContinue
+          $p = Launch $f
+          $ws.SendKeys("^,"); Start-Sleep -Seconds 1
+          $t = Title $p
+          $created = (Test-Path $set) -and ((Get-Content $set -Raw) -match "(?m)^theme = dark")
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("toggle light"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $toggled = (Test-Path $set) -and ((Get-Content $set -Raw) -match "(?m)^theme = light")
+          $ws.SendKeys("%{F4}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $ok = $created -and $toggled -and $exited -and ($t -like "settings.txt*")
+          $rows += "| Ctrl+, opens settings; theme toggle saves | $(if ($ok) {'PASS'} else {"FAIL (title=$t created=$created toggled=$toggled exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+          Remove-Item $set -ErrorAction SilentlyContinue
+
+          # 6. Memory with many viewed markdown tabs: open 12 copies of the
+          #    roadmap and visit every tab (hidden tabs must free their
+          #    rendered previews).
+          $mdDir = Join-Path $env:RUNNER_TEMP "mdtabs"
+          New-Item -ItemType Directory -Force $mdDir | Out-Null
+          $mdArgs = @("--new-window")
+          0..11 | ForEach-Object { $t = Join-Path $mdDir "doc$_.md"; Copy-Item README.md $t; $mdArgs += "`"$t`"" }
+          $p = Start-Process -FilePath $exe -ArgumentList $mdArgs -PassThru
+          Start-Sleep -Seconds 3
+          [void]$ws.AppActivate($p.Id); Start-Sleep -Milliseconds 600
+          1..13 | ForEach-Object { $ws.SendKeys("^{TAB}"); Start-Sleep -Milliseconds 350 }
+          Start-Sleep -Seconds 1
+          $p.Refresh()
+          $mdPriv = if (-not $p.HasExited) { [math]::Round($p.PrivateMemorySize64 / 1MB, 1) } else { -1 }
+          $ok = ($mdPriv -gt 0) -and ($mdPriv -lt 80)
+          $rows += "| 12 markdown tabs, each viewed: private bytes (limit 80 MB) | $(if ($ok) {"PASS ($mdPriv MB)"} else {"FAIL ($mdPriv MB)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+          # 7. One window: a second launch hands its file to the running
+          #    window and exits; --new-window starts another window.
+          Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          $oneA = Join-Path $env:RUNNER_TEMP "one-a.txt"; [IO.File]::WriteAllText($oneA, "first")
+          $oneB = Join-Path $env:RUNNER_TEMP "one-b.txt"; [IO.File]::WriteAllText($oneB, "second")
+          $p1 = Start-Process -FilePath $exe -ArgumentList "`"$oneA`"" -PassThru
+          Start-Sleep -Seconds 3
+          $p2 = Start-Process -FilePath $exe -ArgumentList "`"$oneB`"" -PassThru
+          $exited = $p2.WaitForExit(8000)
+          Start-Sleep -Seconds 1
+          $t = Title $p1
+          $count = @(Get-Process litedit -ErrorAction SilentlyContinue).Count
+          $handed = $exited -and ($t -like "one-b.txt*") -and ($count -eq 1)
+          # Several launches at once (Explorer opening a selection): the
+          # window serves them one after another, each in a moment, so all
+          # of them hand over and exit. A window that kept waiting on a
+          # launch that has already gone would leave the third one to give
+          # up and open its own window.
+          $oneC = Join-Path $env:RUNNER_TEMP "one-c.txt"; [IO.File]::WriteAllText($oneC, "third")
+          $oneD = Join-Path $env:RUNNER_TEMP "one-d.txt"; [IO.File]::WriteAllText($oneD, "fourth")
+          $many = @($oneA, $oneC, $oneD) | ForEach-Object { Start-Process -FilePath $exe -ArgumentList "`"$_`"" -PassThru }
+          $manyExited = $true
+          foreach ($m in $many) { if (-not $m.WaitForExit(8000)) { $manyExited = $false } }
+          Start-Sleep -Seconds 1
+          $countMany = @(Get-Process litedit -ErrorAction SilentlyContinue).Count
+          $handedMany = $manyExited -and ($countMany -eq 1)
+          if (-not $handedMany) { $many | Where-Object { -not $_.HasExited } | Stop-Process -Force }
+          # A folder is not handed over: it gets its own window.
+          $p3 = Start-Process -FilePath $exe -ArgumentList "`"$env:RUNNER_TEMP`"" -PassThru
+          Start-Sleep -Seconds 3
+          $p3.Refresh(); $folderOwn = -not $p3.HasExited
+          $p4 = Start-Process -FilePath $exe -ArgumentList @("--new-window", "`"$oneA`"") -PassThru
+          Start-Sleep -Seconds 3
+          $p4.Refresh(); $newWin = -not $p4.HasExited
+          $ok = $handed -and $handedMany -and $folderOwn -and $newWin
+          $rows += "| second launch opens in the running window | $(if ($ok) {'PASS'} else {"FAIL (exited=$exited title=$t count=$count threeAtOnce=$handedMany/$countMany folderOwn=$folderOwn newWindow=$newWin)"}) |"
+          if (-not $ok) { $failed = $true }
+          Get-Process litedit -ErrorAction SilentlyContinue | Stop-Process -Force
+
+          # 8. "Open with" registration: the palette command (after its
+          #    confirmation) writes the current user's registry; remove undoes it.
+          $cmdKey = "HKCU:\Software\Classes\litedit.md\shell\open\command"
+          $p = Launch $f
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("add litedit to"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 700
+          $before = Test-Path $cmdKey
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $cmd = if (Test-Path $cmdKey) { (Get-Item $cmdKey).GetValue("") } else { "" }
+          $progids = (Get-Item "HKCU:\Software\Classes\.md\OpenWithProgids" -ErrorAction SilentlyContinue)
+          $listed = ($null -ne $progids) -and ($progids.GetValueNames() -contains "litedit.md")
+          $added = (-not $before) -and ($cmd -eq "`"$exe`" `"%1`"") -and $listed
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("^+p"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("remove litedit from"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Milliseconds 700
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $removed = -not (Test-Path $cmdKey)
+          $ok = $added -and $removed
+          $rows += "| Open with: add (after confirmation) and remove | $(if ($ok) {'PASS'} else {"FAIL (before=$before cmd=$cmd listed=$listed removed=$removed)"}) |"
+          if (-not $ok) { $failed = $true }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+
+          # 9. Menu bar from the keyboard: Alt+F and F10 reach the window
+          #    (Windows could take them for its own system menu) and open
+          #    File with New File selected; five down is Save. Then File →
+          #    Exit (Up wraps to the last item) closes the saved window.
+          $mf = Join-Path $env:RUNNER_TEMP "menus.txt"
+          [IO.File]::WriteAllText($mf, "start")
+          $p = Launch $mf
+          $ws.SendKeys("{END}1"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("%f"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{DOWN 5}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $viaAlt = [IO.File]::ReadAllText($mf)
+          $ws.SendKeys("2"); Start-Sleep -Milliseconds 400
+          $ws.SendKeys("{F10}"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{DOWN 5}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $viaF10 = [IO.File]::ReadAllText($mf)
+          $ws.SendKeys("%f"); Start-Sleep -Milliseconds 500
+          $ws.SendKeys("{UP}"); Start-Sleep -Milliseconds 300
+          $ws.SendKeys("{ENTER}"); Start-Sleep -Seconds 1
+          $p.Refresh(); $exited = $p.HasExited
+          $ok = ($viaAlt -eq "start1") -and ($viaF10 -eq "start12") -and $exited
+          $rows += "| menu bar: Alt+F / F10 → Save, File → Exit | $(if ($ok) {'PASS'} else {"FAIL (alt=$viaAlt f10=$viaF10 exited=$exited)"}) |"
+          if (-not $ok) { $failed = $true; if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force } }
+
+          $table = "`n### Real-window tests`n| test | result |`n|---|---|`n" + ($rows -join "`n")
+          Write-Output $table
+          $table | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          if ($failed) { exit 1 }
+
+      - name: Print screenshots (base64, decoded by scripts/ci-shots.sh)
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem out\*.png | ForEach-Object {
+            $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($_.FullName))
+            Write-Output "BEGIN_PNG $($_.Name)"
+            for ($i = 0; $i -lt $b64.Length; $i += 4000) {
+              Write-Output $b64.Substring($i, [Math]::Min(4000, $b64.Length - $i))
+            }
+            Write-Output "END_PNG"
+          }
+
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: litedit-windows
+          path: |
+            target/release/litedit.exe
+            out/
+
+  # A pushed tag like v1.0.0 publishes a GitHub Release with the exe (built and
+  # fully tested by the job above) plus the licence files.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: litedit-windows
+          path: artifact
+      - name: Check the tag matches Cargo.toml
+        run: |
+          want="v$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          [ "$want" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but Cargo.toml says $want"; exit 1; }
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dir="litedit-$GITHUB_REF_NAME-windows-x64"
+          mkdir "$dir"
+          cp artifact/target/release/litedit.exe LICENSE NOTICE THIRD-PARTY-NOTICES.txt README.md "$dir/"
+          zip -r "$dir.zip" "$dir"
+          notes=$(awk -v v="## ${GITHUB_REF_NAME#v}" '$0 ~ "^## " {p = index($0, v) == 1} p' CHANGELOG.md)
+          # Also works when the release was drafted on github.com first: then
+          # the files are attached to it.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$dir.zip" artifact/target/release/litedit.exe \
+              --title "litedit $GITHUB_REF_NAME" --notes "$notes"
+          fi

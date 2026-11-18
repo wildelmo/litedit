@@ -1,0 +1,138 @@
+# Windows CI smoke test: drives the app like a user and captures screenshots.
+size 1280 800
+open tests/fixtures/sample.rs
+expect title sample.rs
+shot out/code.png
+key pagedown
+wheel 3
+key ctrl+plus
+shot out/code-zoomed.png
+key ctrl+0
+open tests/fixtures/sample.md
+expect status Markdown preview
+shot out/markdown.png
+key end
+shot out/markdown-end.png
+key ctrl+e
+expect status Markdown source
+key ctrl+home
+text Edited:\s
+shot out/markdown-source.png
+key ctrl+e
+expect status Markdown preview
+expect title ● sample.md
+shot out/markdown-edited.png
+key ctrl+w
+expect nag Save changes to sample.md
+key d
+expect no-nag
+open tests/fixtures/sample.md
+key ctrl+o
+expect request OpenFileDialog
+key ctrl+shift+o
+expect request OpenFolderDialog
+open tests/fixtures
+key down
+key end
+key enter
+shot out/tree.png
+key ctrl+\
+key ctrl+shift+e
+scale 1.5
+size 1920 1200
+open tests/fixtures/sample.md
+shot out/markdown-150.png
+open tests/fixtures/crlf.txt
+expect status CRLF
+open tests/fixtures/invalid-utf8.txt
+expect status invalid bytes replaced
+# Editing + saving: byte-exact line endings, dirty marker, prompts.
+open tests/fixtures/crlf.txt
+saveas out/edited.txt
+key end
+text !
+expect title ● edited.txt
+save
+expect file out/edited.txt line one!\r\nline two\r\nline three\r\n
+expect no-nag
+key enter
+text added
+shot out/editing.png
+close
+expect nag Save changes to edited.txt
+key d
+expect request Quit
+open tests/fixtures/does-not-exist.txt
+shot out/error.png
+# Compare two files side by side.
+compare tests/fixtures/compare/old.rs tests/fixtures/compare/new.rs
+expect status 5 changes
+key f7
+expect status Change 1 of 5
+shot out/compare.png
+# Light theme: switched at run time (all tabs re-colour).
+theme light
+open tests/fixtures/sample.md
+shot out/light-markdown.png
+key ctrl+shift+v
+shot out/light-split.png
+open tests/fixtures/sample.rs
+key ctrl+f
+text fn
+shot out/light-code.png
+theme dark
+# Picture tab.
+open tests/fixtures/img/banner.png
+shot out/image.png
+expect status 360 × 120 px
+# Read-only lock: typing changes nothing, so closing asks nothing.
+open tests/fixtures/crlf.txt
+key ctrl+shift+p
+text toggle read-only
+key enter
+expect status Read-only
+text zzz
+key ctrl+w
+expect no-nag
+# Back / Forward.
+open tests/fixtures/sample.rs
+open tests/fixtures/crlf.txt
+key alt+left
+expect title sample.rs
+key alt+right
+expect title crlf.txt
+# Compare with the clipboard (the file's own text: identical).
+key ctrl+a
+key ctrl+c
+key ctrl+shift+p
+text compare with clipboard
+key enter
+expect title Clipboard
+expect status No changes
+# Tree: duplicate a file (never overwrites), then delete both with one question.
+open out/edited.txt
+saveas out/zz-one.txt
+open out
+key ctrl+shift+e
+key end
+key ctrl+d
+settle
+expect status Duplicated
+open out/zz-one - Copy.txt
+expect title zz-one - Copy.txt
+expect status CRLF
+# Menu bar, Close Folder and the start page (S9).
+key alt+f
+shot out/menu-file.png
+key escape
+key ctrl+shift+p
+text close folder
+key enter
+expect status Closed out
+shot out/start-page.png
+# Help → About: the version and who made this build, in a tab.
+key alt+h
+key down
+key enter
+expect title About
+shot out/about.png

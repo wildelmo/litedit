@@ -1,0 +1,44 @@
+[package]
+name = "litedit"
+version = "1.2.0"
+edition = "2024"
+authors = ["Joe Chun"]
+description = "Ultralight markdown-first text editor for Windows"
+license = "MIT"
+repository = "https://github.com/wildelmo/litedit"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+cosmic-text = "0.19"
+png = "0.18.1"
+syntect = { version = "5.3.0", default-features = false, features = ["default-fancy"] }
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+pulldown-cmark = { version = "0.13.6", default-features = false }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+notify = "8"
+unicode-segmentation = "1.13.3"
+fancy-regex = { version = "0.16", default-features = false, features = ["std", "unicode", "perf"] }
+similar = { version = "2", default-features = false, features = ["text", "inline"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Optimise dependencies even in debug/test builds (syntect is very slow unoptimised).
+[profile.dev.package."*"]
+opt-level = 2
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+rfd = { version = "0.18", default-features = false }
+arboard = { version = "3", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

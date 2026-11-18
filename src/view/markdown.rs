@@ -1,0 +1,2469 @@
+//! Markdown preview (the default for `.md` files), with `Ctrl+E` switching
+//! to the editable source. The preview is re-parsed from the editor's text
+//! whenever it changes, and the scroll position follows across the switch.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use crate::canvas::{Canvas, Rect};
+use crate::doc::Document;
+use crate::editor::doc::SaveError;
+use crate::images::{ImageStore, ImgState, scale_to};
+use crate::input::{Cursor as MouseCursor, Input, Key, MouseButton, Request};
+use crate::links::{LinkTarget, classify};
+use crate::markdown::layout::{
+    Element, ImgInfo, Layout, LayoutCtx, META_CODE, layout, link_from_meta,
+};
+use crate::markdown::parse::{Block, BlockKind, Budget, Inline, MdDoc, parse_within};
+use crate::theme;
+use crate::ui::{Ctx, FontKind};
+use crate::view::code::CodeView;
+use crate::view::{DiskState, Scroll, Tick, View, ViewPos, draw_vscrollbar};
+use cosmic_text::Cursor;
+
+pub fn is_markdown(path: &Path) -> bool {
+    path.extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .is_some_and(|e| {
+            matches!(
+                e.as_str(),
+                "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn"
+            )
+        })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Preview,
+    Source,
+    /// Editor on the left, live preview on the right.
+    Split,
+}
+
+/// Re-parsing a large document on every keystroke would lag; wait this long
+/// after the last edit before refreshing the side-by-side preview.
+const LIVE_DEBOUNCE: Duration = Duration::from_millis(180);
+const LIVE_DEBOUNCE_MIN_BYTES: usize = 30_000;
+
+/// Shown in the status bar while the preview is refused for size.
+pub const TOO_LARGE: &str = "This file is too large to preview; showing the source";
+
+/// Most matches listed by find in the preview.
+const MAX_PREVIEW_MATCHES: usize = 20_000;
+
+/// Find in the rendered preview (Ctrl+F in preview mode): matches are
+/// ranges inside the layout's text elements, recomputed whenever the
+/// pattern or the layout changes.
+struct PreviewFind {
+    f: crate::find::Finder,
+    /// (element index, start, end), in document order.
+    matches: Vec<(usize, Cursor, Cursor)>,
+    current: Option<usize>,
+    /// What `matches` was computed for: pattern, case, regex, layout number.
+    key: Option<(String, bool, bool, u64)>,
+    /// Scroll the current match into view at the next draw.
+    reveal: bool,
+    /// Typing goes to the bar (false after a click on the page).
+    focused: bool,
+    /// The match list hit its limit or the time budget.
+    capped: bool,
+}
+
+pub struct MarkdownView {
+    /// The source editor; the single owner of the document text.
+    editor: CodeView,
+    md: MdDoc,
+    /// Sanitized `\n` text the preview was parsed from, and its version.
+    md_text: String,
+    md_version: u64,
+    /// Layout and the (width, scale, image version) it was made for.
+    layout: Option<((i32, u32, u32), Layout)>,
+    images: ImageStore,
+    /// Bumped whenever an image finishes loading (forces relayout).
+    images_version: u32,
+    /// Scaled pixels per (path, w, h), for the current display size.
+    scaled: HashMap<(PathBuf, u32, u32), Vec<u8>>,
+    scroll: Scroll,
+    mode: Mode,
+    hover_link: Option<usize>,
+    /// The preview's rectangle (the right half in split mode).
+    last_rect: Rect,
+    last_edit: std::time::Instant,
+    mouse_x: f32,
+    /// Caret line the split preview last followed.
+    followed_line: usize,
+    /// Preview text selection: (element index, cursor) anchor and head.
+    sel: Option<((usize, Cursor), (usize, Cursor))>,
+    selecting: bool,
+    /// Message shown in the status bar (e.g. blocked link).
+    notice: Option<String>,
+    /// Scroll the preview to this source line once the layout exists.
+    pending_scroll_line: Option<usize>,
+    /// Find bar of the preview.
+    pfind: Option<PreviewFind>,
+    /// Counts layouts built (find results belong to one layout).
+    layout_gen: u64,
+    /// Element count of the last layout of the current text (survives the
+    /// layout being dropped while the tab is hidden).
+    last_shape: Option<usize>,
+    /// A restored position: scroll the preview to this source line plus
+    /// millionths of its block. Applied at each draw until every image has
+    /// its size (the page still moves while they load) or the reader
+    /// scrolls.
+    restore_anchor: Option<(usize, u32)>,
+    /// The preview's position when its layout was last dropped (a hidden
+    /// tab still knows where it is).
+    anchor_memo: (usize, u32),
+    /// Where the preview was before a `#heading` link scrolled it.
+    jump_from: Option<ViewPos>,
+    /// Whole-document limits of the preview.
+    budget: Budget,
+    /// The text of `md_version` is over `budget`: `md` is empty and the
+    /// view stays in source mode.
+    md_over: bool,
+}
+
+impl MarkdownView {
+    pub fn new(doc: Document) -> Self {
+        Self::with_budget(doc, Budget::default())
+    }
+
+    /// A view whose preview has the given whole-document limits.
+    pub fn with_budget(doc: Document, budget: Budget) -> Self {
+        let mut editor = CodeView::new(doc);
+        editor.wrap = true; // prose reads better wrapped (D-022)
+        let md_version = editor.doc.version();
+        let mut v = Self {
+            editor,
+            md: MdDoc::default(),
+            md_text: String::new(),
+            md_version,
+            layout: None,
+            images: ImageStore::new(),
+            images_version: 0,
+            scaled: HashMap::new(),
+            scroll: Scroll::default(),
+            mode: Mode::Preview,
+            hover_link: None,
+            last_rect: Rect::new(0, 0, 0, 0),
+            last_edit: std::time::Instant::now(),
+            mouse_x: 0.0,
+            followed_line: usize::MAX,
+            sel: None,
+            selecting: false,
+            notice: None,
+            pending_scroll_line: None,
+            pfind: None,
+            layout_gen: 0,
+            last_shape: None,
+            restore_anchor: None,
+            anchor_memo: (0, 0),
+            jump_from: None,
+            budget,
+            md_over: false,
+        };
+        v.parse_current();
+        // Images are requested when the page is first laid out (drawn), so
+        // tabs that were never shown hold no decoded pictures.
+        v
+    }
+
+    /// Whether the editor's text passes the cheap size check (before any
+    /// copy or parse).
+    fn source_fits(&self) -> bool {
+        let buf = &self.editor.doc.buf;
+        if buf.line_count() > self.budget.lines {
+            return false;
+        }
+        // Lines joined with '\n' (no newline after the last one).
+        let mut bytes = buf.line_count().saturating_sub(1);
+        for l in buf.lines() {
+            bytes = bytes.saturating_add(l.len());
+            if bytes > self.budget.bytes {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Parse the editor's text into `md` within the budget. Over it, `md`
+    /// and `md_text` are emptied and the view goes to source mode (the
+    /// status bar says why). The caller has dropped the old layout.
+    fn parse_current(&mut self) {
+        self.md_version = self.editor.doc.version();
+        let parsed = if self.source_fits() {
+            let text = crate::text::sanitize(&self.editor.doc.buf.to_text_lf()).into_owned();
+            parse_within(&text, &self.budget).ok().map(|md| (text, md))
+        } else {
+            None
+        };
+        match parsed {
+            Some((text, md)) => {
+                self.md_text = text;
+                self.md = md;
+                self.md_over = false;
+            }
+            None => {
+                self.md_text = String::new();
+                self.md = MdDoc::default();
+                self.refuse_preview();
+            }
+        }
+    }
+
+    /// The document is too big to preview: forget what was built for it and
+    /// show the source (text, caret and undo are the editor's and stay).
+    fn refuse_preview(&mut self) {
+        self.md_over = true;
+        if self.layout.is_some() {
+            self.drop_layout();
+        }
+        self.last_shape = None;
+        self.sel = None;
+        self.selecting = false;
+        self.hover_link = None;
+        self.pfind = None;
+        self.pending_scroll_line = None;
+        self.mode = Mode::Source;
+    }
+
+    /// Switch to preview or side by side unless the document is over the
+    /// budget (then it stays in source, with `TOO_LARGE` in the status
+    /// bar). True if switched.
+    fn enter_preview_mode(&mut self, mode: Mode) -> bool {
+        self.sync_preview();
+        if self.md_over {
+            self.refuse_preview();
+            return false;
+        }
+        self.mode = mode;
+        true
+    }
+
+    /// Whether the preview is refused for size (tests).
+    #[cfg(test)]
+    pub fn over_budget(&self) -> bool {
+        self.md_over
+    }
+
+    /// Every image source in the document.
+    fn image_sources(&self) -> Vec<String> {
+        fn walk(blocks: &[Block], out: &mut Vec<String>) {
+            for b in blocks {
+                match &b.kind {
+                    BlockKind::Paragraph(i) | BlockKind::Heading { inlines: i, .. } => {
+                        for x in i {
+                            if let Inline::Image { src, .. } = x {
+                                out.push(src.clone());
+                            }
+                        }
+                    }
+                    BlockKind::Quote { blocks, .. } | BlockKind::Footnote { blocks, .. } => {
+                        walk(blocks, out)
+                    }
+                    BlockKind::List { items, .. } => {
+                        for it in items {
+                            walk(&it.blocks, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.md.blocks, &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// What layout should know about each image source; starts loads.
+    fn request_images(&mut self) -> HashMap<String, ImgInfo> {
+        let base = self.base_dir();
+        let mut map = HashMap::new();
+        for src in self.image_sources() {
+            let info = match classify(&src, &base) {
+                LinkTarget::File(p) => {
+                    let ext = p
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    if ext == "svg" {
+                        ImgInfo::Note("SVG images are not supported".into())
+                    } else {
+                        match self.images.get(&p) {
+                            ImgState::Ready(d) => ImgInfo::Size {
+                                w: d.natural.0,
+                                h: d.natural.1,
+                                path: p,
+                            },
+                            // Pixels dropped while hidden: same size, so
+                            // nothing moves while it is decoded again.
+                            ImgState::Unloaded { natural, .. } => ImgInfo::Size {
+                                w: natural.0,
+                                h: natural.1,
+                                path: p,
+                            },
+                            ImgState::Loading => ImgInfo::Note("loading…".into()),
+                            ImgState::Failed(e) => ImgInfo::Note(e),
+                        }
+                    }
+                }
+                LinkTarget::Web(_) => ImgInfo::Note("remote images are not loaded".into()),
+                LinkTarget::Anchor(_) => ImgInfo::Note("not an image".into()),
+                LinkTarget::Blocked(why) => ImgInfo::Note(why.into()),
+            };
+            map.insert(src, info);
+        }
+        map
+    }
+
+    fn base_dir(&self) -> PathBuf {
+        self.editor
+            .doc
+            .path()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default()
+    }
+
+    /// The selectable text element and buffer cursor under a window point.
+    fn text_hit(&self, px: f32, py: f32) -> Option<(usize, Cursor)> {
+        let (_, l) = self.layout.as_ref()?;
+        let x = px - self.last_rect.x as f32;
+        let y = py - self.last_rect.y as f32 + self.scroll.y;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, el) in l.elements.iter().enumerate() {
+            if let Element::Text {
+                y: ey,
+                h,
+                sel: true,
+                ..
+            } = el
+            {
+                let d = if y < *ey {
+                    ey - y
+                } else if y > ey + h {
+                    y - ey - h
+                } else {
+                    0.0
+                };
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((i, d));
+                }
+            }
+        }
+        let (i, _) = best?;
+        let Element::Text {
+            x: ex,
+            y: ey,
+            h,
+            buffer,
+            ..
+        } = &l.elements[i]
+        else {
+            return None;
+        };
+        let ly = (y - ey).clamp(0.0, (h - 1.0).max(0.0));
+        buffer.hit(x - ex, ly).map(|c| (i, c))
+    }
+
+    fn sel_range(&self) -> Option<((usize, Cursor), (usize, Cursor))> {
+        let (a, b) = self.sel?;
+        let key = |p: &(usize, Cursor)| (p.0, p.1.line, p.1.index);
+        if a == b {
+            return None;
+        }
+        Some(if key(&a) <= key(&b) { (a, b) } else { (b, a) })
+    }
+
+    /// The selected preview text as plain text.
+    pub fn selected_text(&self) -> String {
+        let (Some((lo, hi)), Some((_, l))) = (self.sel_range(), self.layout.as_ref()) else {
+            return String::new();
+        };
+        let mut parts = Vec::new();
+        for i in lo.0..=hi.0 {
+            let Some(Element::Text {
+                buffer, sel: true, ..
+            }) = l.elements.get(i)
+            else {
+                continue;
+            };
+            let mut lines = Vec::new();
+            for (li, bl) in buffer.lines.iter().enumerate() {
+                let t = bl.text();
+                let start = if i == lo.0 && li == lo.1.line {
+                    lo.1.index.min(t.len())
+                } else if i == lo.0 && li < lo.1.line {
+                    continue;
+                } else {
+                    0
+                };
+                let end = if i == hi.0 && li == hi.1.line {
+                    hi.1.index.min(t.len())
+                } else if i == hi.0 && li > hi.1.line {
+                    break;
+                } else {
+                    t.len()
+                };
+                if let Some(seg) = t.get(start..end.max(start)) {
+                    lines.push(seg.to_string());
+                }
+            }
+            parts.push(lines.join("\n"));
+        }
+        parts.join("\n")
+    }
+
+    fn select_all(&mut self) {
+        let Some((_, l)) = &self.layout else { return };
+        let texts: Vec<usize> = l
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, Element::Text { sel: true, .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let (Some(&first), Some(&last)) = (texts.first(), texts.last()) else {
+            return;
+        };
+        let Element::Text { buffer, .. } = &l.elements[last] else {
+            return;
+        };
+        let end_line = buffer.lines.len().saturating_sub(1);
+        let end_idx = buffer.lines.last().map_or(0, |b| b.text().len());
+        self.sel = Some((
+            (first, Cursor::new(0, 0)),
+            (last, Cursor::new(end_line, end_idx)),
+        ));
+    }
+
+    fn preview_stale(&self) -> bool {
+        self.editor.doc.version() != self.md_version
+    }
+
+    /// In split mode, large documents refresh only after typing pauses.
+    fn live_ready(&self) -> bool {
+        self.mode != Mode::Split
+            || self.editor.doc.buf.line_count() * 40 < LIVE_DEBOUNCE_MIN_BYTES
+            || self.last_edit.elapsed() >= LIVE_DEBOUNCE
+    }
+
+    fn split_rects(rect: Rect, ctx: &Ctx) -> (Rect, Rect, Rect) {
+        let div = ctx.px(1.0).max(1.0) as i32;
+        let lw = (rect.w - div) / 2;
+        (
+            Rect::new(rect.x, rect.y, lw, rect.h),
+            Rect::new(rect.x + lw, rect.y, div, rect.h),
+            Rect::new(rect.x + lw + div, rect.y, rect.w - lw - div, rect.h),
+        )
+    }
+
+    /// Keep the block containing the editor's caret visible in the preview.
+    fn follow_caret(&mut self) {
+        let line = self.editor.doc.primary().head.line;
+        if line == self.followed_line {
+            return;
+        }
+        self.followed_line = line;
+        let Some((_, l)) = &self.layout else { return };
+        let byte = self
+            .md_text
+            .match_indices('\n')
+            .nth(line.saturating_sub(1))
+            .map(|(i, _)| i + 1)
+            .filter(|_| line > 0)
+            .unwrap_or(0);
+        let y = l
+            .offsets
+            .iter()
+            .take_while(|(o, _)| *o <= byte)
+            .last()
+            .map(|(_, y)| *y)
+            .unwrap_or(0.0);
+        let vh = self.last_rect.h as f32;
+        if y < self.scroll.y + vh * 0.1 || y > self.scroll.y + vh * 0.8 {
+            self.scroll.y = (y - vh / 3.0).max(0.0);
+            self.clamp();
+            self.restore_anchor = None;
+        }
+    }
+
+    /// Re-parse the preview if the text changed since the last parse.
+    fn sync_preview(&mut self) {
+        if self.editor.doc.version() == self.md_version {
+            return;
+        }
+        // Before the text is replaced: the position is in terms of it.
+        self.drop_layout();
+        // Not two copies of the text (and its tree) at once.
+        self.md_text = String::new();
+        self.md = MdDoc::default();
+        self.parse_current();
+        self.last_shape = None;
+        self.scaled.clear();
+    }
+
+    /// Lay the preview out for `width` if needed. A document whose layout
+    /// goes over the budget is refused like one whose parse did.
+    fn ensure_layout(&mut self, width: i32, ctx: &mut Ctx) {
+        if self.md_over {
+            return;
+        }
+        let k = ctx.scale * ctx.zoom;
+        let key = (width, k.to_bits(), self.images_version);
+        if self.layout.as_ref().map(|(k, _)| *k) != Some(key) {
+            let images = self.request_images();
+            let mut lctx = LayoutCtx {
+                images: &images,
+                sans: ctx.fonts.sans.clone(),
+                mono: ctx.fonts.mono.clone(),
+                fonts: &mut ctx.fonts.system,
+                k,
+                max_elements: self.budget.max_elements(),
+            };
+            let l = layout(&self.md, &mut lctx, width as f32);
+            if l.over_budget {
+                drop(l);
+                self.refuse_preview();
+                self.md = MdDoc::default();
+                self.md_text = String::new();
+                return;
+            }
+            // Keep a selection across relayouts that only change sizes (image
+            // loaded, window resized): same elements, same order.
+            let same_shape = self.last_shape == Some(l.elements.len());
+            if !same_shape {
+                self.sel = None;
+            }
+            self.last_shape = Some(l.elements.len());
+            self.layout_gen += 1;
+            self.layout = Some((key, l));
+        }
+    }
+
+    fn content_height(&self) -> f32 {
+        self.layout.as_ref().map(|(_, l)| l.height).unwrap_or(0.0)
+    }
+
+    fn clamp(&mut self) {
+        let h = self.content_height();
+        let (w, vh) = (self.last_rect.w as f32, self.last_rect.h as f32);
+        self.scroll.clamp(w, h, w, vh);
+        self.scroll.x = 0.0;
+    }
+
+    /// Link index under a window-space point, if any.
+    // ---- find in the preview ---------------------------------------------
+
+    /// Page area and find bar (when open) of the preview in `rect`.
+    fn preview_rects(&self, rect: Rect, ctx: &Ctx) -> (Rect, Option<Rect>) {
+        if self.pfind.is_none() || self.mode != Mode::Preview {
+            return (rect, None);
+        }
+        let h = CodeView::find_bar_height(ctx).min(rect.h);
+        (
+            Rect::new(rect.x, rect.y, rect.w, rect.h - h),
+            Some(Rect::new(rect.x, rect.bottom() - h, rect.w, h)),
+        )
+    }
+
+    fn open_preview_find(&mut self) {
+        let initial = {
+            let t = self.selected_text();
+            if t.contains('\n') || t.chars().count() > 200 {
+                String::new()
+            } else {
+                t
+            }
+        };
+        match self.pfind.as_mut() {
+            Some(p) => {
+                p.focused = true;
+                if !initial.is_empty() {
+                    p.f.find.set_text(&initial);
+                }
+            }
+            None => {
+                self.pfind = Some(PreviewFind {
+                    f: crate::find::Finder::new(&initial, false),
+                    matches: Vec::new(),
+                    current: None,
+                    key: None,
+                    reveal: true,
+                    focused: true,
+                    capped: false,
+                });
+            }
+        }
+    }
+
+    /// Recompute the match list if the pattern or the layout changed.
+    fn refresh_preview_find(&mut self) {
+        let gen_now = self.layout_gen;
+        let scroll_y = self.scroll.y;
+        let (Some(p), Some((_, l))) = (self.pfind.as_mut(), self.layout.as_ref()) else {
+            return;
+        };
+        let key = (
+            p.f.pattern().to_string(),
+            p.f.case_sensitive,
+            p.f.regex,
+            gen_now,
+        );
+        if p.key.as_ref() == Some(&key) {
+            return;
+        }
+        let pattern_changed = p
+            .key
+            .as_ref()
+            .is_none_or(|k| (&k.0, k.1, k.2) != (&key.0, key.1, key.2));
+        p.key = Some(key);
+        p.matches.clear();
+        p.capped = false;
+        let deadline = std::time::Instant::now() + crate::find::SEARCH_BUDGET;
+        let mut first_visible = None;
+        'all: for (ei, el) in l.elements.iter().enumerate() {
+            let Element::Text {
+                buffer,
+                sel: true,
+                y,
+                h,
+                ..
+            } = el
+            else {
+                continue;
+            };
+            if ei % 64 == 63 && std::time::Instant::now() > deadline {
+                p.capped = true;
+                break;
+            }
+            for (li, line) in buffer.lines.iter().enumerate() {
+                for (a, b) in p.f.line_matches(line.text()) {
+                    if first_visible.is_none() && y + h >= scroll_y {
+                        first_visible = Some(p.matches.len());
+                    }
+                    p.matches.push((ei, Cursor::new(li, a), Cursor::new(li, b)));
+                    if p.matches.len() >= MAX_PREVIEW_MATCHES {
+                        p.capped = true;
+                        break 'all;
+                    }
+                }
+            }
+        }
+        if p.matches.is_empty() {
+            p.current = None;
+        } else if pattern_changed {
+            // Start from what is on screen (or the first match).
+            p.current = Some(first_visible.unwrap_or(0));
+            p.reveal = true;
+        } else {
+            p.current = Some(p.current.unwrap_or(0).min(p.matches.len() - 1));
+        }
+    }
+
+    fn preview_find_step(&mut self, back: bool) {
+        if let Some(p) = self.pfind.as_mut() {
+            let n = p.matches.len();
+            if n > 0 {
+                let c = p.current.unwrap_or(0);
+                p.current = Some(if back { (c + n - 1) % n } else { (c + 1) % n });
+                p.reveal = true;
+            }
+        }
+    }
+
+    /// Bring the current match into view (a third of the way down).
+    fn reveal_preview_match(&mut self, view_h: f32) {
+        let Some(p) = self.pfind.as_mut() else { return };
+        if !std::mem::take(&mut p.reveal) {
+            return;
+        }
+        let (Some(ci), Some((_, l))) = (p.current, self.layout.as_ref()) else {
+            return;
+        };
+        let Some(&(ei, a, b)) = p.matches.get(ci) else {
+            return;
+        };
+        let Some(Element::Text { buffer, y, .. }) = l.elements.get(ei) else {
+            return;
+        };
+        let top = buffer
+            .layout_runs()
+            .find(|r| r.highlight(a, b).next().is_some())
+            .map_or(*y, |r| *y + r.line_top);
+        if top < self.scroll.y + 8.0 || top > self.scroll.y + view_h - 48.0 {
+            self.scroll.y = (top - view_h / 3.0).max(0.0);
+            self.restore_anchor = None;
+        }
+    }
+
+    fn render_preview_find(&mut self, canvas: &mut Canvas, bar: Rect, ctx: &mut Ctx) {
+        let truncated = self.layout.as_ref().is_some_and(|(_, l)| l.truncated);
+        let Some(p) = self.pfind.as_mut() else { return };
+        canvas.fill_rect(bar, theme::p().background2);
+        canvas.fill_rect(Rect::new(bar.x, bar.y, bar.w, 1), theme::p().divider);
+        let mut info = match p.f.error() {
+            Some(e) => e,
+            None if p.f.pattern().is_empty() => String::new(),
+            None if p.matches.is_empty() => "no matches".into(),
+            None => format!(
+                "{} of {}{}",
+                p.current.map_or(0, |c| c + 1),
+                p.matches.len(),
+                if p.capped { "+" } else { "" }
+            ),
+        };
+        if truncated {
+            info.push_str(" · long code blocks are shortened here (Ctrl+E searches everything)");
+        }
+        let pad = ctx.px(theme::PADDING_X) as i32;
+        let lh = ctx.ui_metrics().line_height as i32;
+        let toggles = format!(
+            "{}  {}",
+            if p.f.case_sensitive { "[Aa]" } else { " Aa " },
+            if p.f.regex { "[.*]" } else { " .* " }
+        );
+        let tw = ctx.text_width(&toggles, FontKind::Mono) as i32;
+        let iw = (ctx.text_width(&info, FontKind::Ui) as i32).min(bar.w / 2);
+        let field = Rect::new(
+            bar.x,
+            bar.y,
+            (bar.w - tw - iw - pad * 3).max(ctx.px(120.0) as i32),
+            bar.h,
+        );
+        let focused = p.focused && ctx.focused;
+        p.f.find.render(canvas, field, ctx, focused);
+        let ty = bar.y + (bar.h - lh) / 2;
+        let err = info.starts_with("invalid pattern") || info.starts_with("no matches");
+        ctx.label(
+            canvas,
+            &info,
+            field.right() + pad,
+            ty,
+            if err {
+                theme::p().error
+            } else {
+                theme::p().text
+            },
+            iw + 2,
+            FontKind::Ui,
+        );
+        ctx.label(
+            canvas,
+            &toggles,
+            bar.right() - tw - pad,
+            ty,
+            theme::p().accent,
+            tw + 2,
+            FontKind::Mono,
+        );
+    }
+
+    /// Keys and clicks for the preview's find bar. Some(redraw) if handled.
+    fn handle_preview_find(
+        &mut self,
+        input: &Input,
+        bar: Option<Rect>,
+        ctx: &mut Ctx,
+    ) -> Option<bool> {
+        let p = self.pfind.as_mut()?;
+        let in_bar = |x: f32, y: f32| {
+            bar.is_some_and(|b| {
+                x >= b.x as f32 && x < b.right() as f32 && y >= b.y as f32 && y < b.bottom() as f32
+            })
+        };
+        match input {
+            Input::MouseDown { x, y, .. } => {
+                p.focused = in_bar(*x, *y);
+                if p.focused {
+                    p.f.find.handle(input, ctx);
+                    return Some(true);
+                }
+                None
+            }
+            Input::MouseMove { x, y } if in_bar(*x, *y) => {
+                *ctx.cursor = MouseCursor::Text;
+                Some(false)
+            }
+            Input::Key {
+                key: Key::F(3),
+                mods,
+            } => {
+                self.preview_find_step(mods.shift);
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Escape, ..
+            } => {
+                self.pfind = None;
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Char('c'),
+                mods,
+            } if mods.alt && !mods.ctrl => {
+                p.f.case_sensitive = !p.f.case_sensitive;
+                Some(true)
+            }
+            Input::Key {
+                key: Key::Char('r'),
+                mods,
+            } if mods.alt && !mods.ctrl => {
+                p.f.regex = !p.f.regex;
+                Some(true)
+            }
+            Input::Key { .. } | Input::Text(_) if p.focused => {
+                use crate::inputbar::BarEvent;
+                match p.f.find.handle(input, ctx) {
+                    BarEvent::Submit { back } => {
+                        self.preview_find_step(back);
+                        Some(true)
+                    }
+                    BarEvent::Cancel => {
+                        self.pfind = None;
+                        Some(true)
+                    }
+                    BarEvent::Ignored => None,
+                    _ => Some(true),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The task marker offset of the checkbox under the mouse (with a few
+    /// pixels of slack around the box).
+    fn checkbox_at(&self, px: f32, py: f32) -> Option<usize> {
+        let (_, l) = self.layout.as_ref()?;
+        let dx = self.last_rect.x as f32;
+        let dy = self.last_rect.y as f32 - self.scroll.y;
+        let (x, y) = (px - dx, py - dy);
+        l.elements.iter().find_map(|el| match el {
+            Element::Checkbox {
+                x: bx,
+                y: by,
+                size,
+                offset: Some(off),
+                ..
+            } if x >= bx - 4.0 && x < bx + size + 4.0 && y >= by - 4.0 && y < by + size + 4.0 => {
+                Some(*off)
+            }
+            _ => None,
+        })
+    }
+
+    /// Tick or untick the task whose marker is at byte `offset` of the
+    /// preview text. The preview text is the buffer with line endings and
+    /// unsafe characters replaced one for one, so the marker is found by
+    /// line and character position, and the edit only happens if the buffer
+    /// really has `[ ]` / `[x]` there. One undo step.
+    fn toggle_task(&mut self, offset: usize) -> bool {
+        if self.editor.is_read_only() {
+            self.editor.doc.refused = true;
+            return false;
+        }
+        if self.preview_stale() {
+            return false;
+        }
+        let text = &self.md_text;
+        if offset > text.len() || !text.is_char_boundary(offset) {
+            return false;
+        }
+        let line = text.as_bytes()[..offset]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
+        let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+        let chars_before = text[line_start..offset].chars().count();
+        let buf = &self.editor.doc.buf;
+        if line >= buf.line_count() {
+            return false;
+        }
+        let src = buf.line(line);
+        let Some((col, _)) = src.char_indices().nth(chars_before) else {
+            return false;
+        };
+        let new = match src.get(col..col + 3) {
+            Some("[ ]") => "x",
+            Some("[x]") | Some("[X]") => " ",
+            _ => return false,
+        };
+        use crate::editor::buffer::Pos;
+        self.editor.doc.replace_ranges(vec![(
+            Pos::new(line, col + 1),
+            Pos::new(line, col + 2),
+            new.to_string(),
+        )]);
+        self.editor.text_changed(line);
+        self.sync_preview();
+        true
+    }
+
+    fn link_at(&self, px: f32, py: f32) -> Option<usize> {
+        let (_, l) = self.layout.as_ref()?;
+        let dx = self.last_rect.x as f32;
+        let dy = self.last_rect.y as f32 - self.scroll.y;
+        let (x, y) = (px - dx, py - dy);
+        for el in &l.elements {
+            match el {
+                Element::Text {
+                    x: ex,
+                    y: ey,
+                    h,
+                    buffer,
+                    ..
+                } => {
+                    if y < *ey || y >= ey + h {
+                        continue;
+                    }
+                    for run in buffer.layout_runs() {
+                        let top = ey + run.line_top;
+                        if y < top || y >= top + run.line_height {
+                            continue;
+                        }
+                        for g in run.glyphs {
+                            let gx = ex + g.x;
+                            if x >= gx && x < gx + g.w {
+                                return link_from_meta(g.metadata);
+                            }
+                        }
+                    }
+                }
+                Element::Image {
+                    x: ex,
+                    y: ey,
+                    w,
+                    h,
+                    link,
+                    ..
+                } => {
+                    if x >= *ex && x < ex + w && y >= *ey && y < ey + h {
+                        return *link;
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn activate_link(&mut self, idx: usize, ctx: &mut Ctx) {
+        let Some(dest) = self.md.links.get(idx).cloned() else {
+            return;
+        };
+        match classify(&dest, &self.base_dir()) {
+            LinkTarget::Web(url) => {
+                ctx.requests.push(Request::OpenUrl(url));
+                self.notice = None;
+            }
+            LinkTarget::Anchor(slug) => {
+                let from = self.position();
+                if let Some((_, l)) = &self.layout
+                    && let Some((_, y)) = l.anchors.iter().find(|(s, _)| *s == slug)
+                {
+                    self.scroll.y = (*y - ctx.px(12.0)).max(0.0);
+                    self.clamp();
+                    self.restore_anchor = None;
+                    self.jump_from = from;
+                }
+            }
+            LinkTarget::File(p) => {
+                // Before anything that follows links (`is_file` does).
+                if let Err(why) = crate::links::content_may_open(&p) {
+                    self.notice = Some(format!("Link blocked ({why}): {dest}"));
+                } else if p.is_file() {
+                    ctx.requests.push(Request::OpenPath(p));
+                } else {
+                    self.notice = Some(format!("Link target not found: {}", p.display()));
+                }
+            }
+            LinkTarget::Blocked(why) => self.notice = Some(format!("Link blocked ({why}): {dest}")),
+        }
+    }
+
+    fn toggle_mode(&mut self, ctx: &mut Ctx) {
+        // The other view opens at the place this one shows, not at a
+        // position restored for it earlier.
+        self.restore_anchor = None;
+        match self.mode {
+            Mode::Preview => {
+                // Preview → source: keep the block at the top of the view.
+                let line = self.top_source_line();
+                self.editor.scroll_to_line(line, ctx);
+                self.mode = Mode::Source;
+            }
+            Mode::Source | Mode::Split => {
+                let line = self.editor.top_line(ctx);
+                if !self.enter_preview_mode(Mode::Preview) {
+                    return;
+                }
+                // Lay out now so the scroll position can be mapped.
+                let w = self.last_rect.w.max(1);
+                self.ensure_layout(w, ctx);
+                if self.md_over {
+                    return;
+                }
+                self.scroll_to_source_line(line);
+            }
+        }
+    }
+
+    /// Forget the layout (it is rebuilt at the next draw), remembering
+    /// where the preview was.
+    fn drop_layout(&mut self) {
+        if self.layout.is_some() {
+            self.anchor_memo = self.top_anchor();
+            self.layout = None;
+        }
+    }
+
+    /// Where blocks start: (source line, y), one entry per line, both
+    /// increasing; the first entry starts at y = 0 so the space above the
+    /// first block belongs to it.
+    fn line_marks(&self) -> Vec<(usize, f32)> {
+        let Some((_, l)) = &self.layout else {
+            return Vec::new();
+        };
+        let text = self.md_text.as_bytes();
+        let mut marks: Vec<(usize, f32)> = Vec::new();
+        let (mut at, mut line) = (0usize, 0usize);
+        for &(off, y) in &l.offsets {
+            let off = off.min(text.len());
+            if off < at {
+                (at, line) = (0, 0);
+            }
+            line += text[at..off].iter().filter(|b| **b == b'\n').count();
+            at = off;
+            match marks.last() {
+                None => marks.push((line, 0.0)),
+                Some(&(pl, py)) if line > pl && y > py => marks.push((line, y)),
+                _ => {}
+            }
+        }
+        marks
+    }
+
+    /// The preview's scroll position as (source line of the block at the
+    /// top, millionths of the way through it): the same place whatever the
+    /// width or zoom.
+    fn top_anchor(&self) -> (usize, u32) {
+        let marks = self.line_marks();
+        let y = self.scroll.y.max(0.0);
+        let Some(i) = marks.iter().rposition(|(_, my)| *my <= y) else {
+            return (0, 0);
+        };
+        let (line, start) = marks[i];
+        let end = marks.get(i + 1).map_or(self.content_height(), |m| m.1);
+        let span = end - start;
+        if span <= 0.0 {
+            return (line, 0);
+        }
+        let frac = ((y - start) / span).clamp(0.0, 1.0);
+        (line, (frac * 1_000_000.0).round() as u32)
+    }
+
+    /// Scroll to a `top_anchor` position. A line past the end (the file
+    /// shrank, or the value was made up) lands in the last block.
+    fn scroll_to_anchor(&mut self, (line, millionths): (usize, u32)) {
+        let marks = self.line_marks();
+        let Some(i) = marks
+            .iter()
+            .rposition(|(l, _)| *l <= line)
+            .or(if marks.is_empty() { None } else { Some(0) })
+        else {
+            return;
+        };
+        let start = marks[i].1;
+        let end = marks.get(i + 1).map_or(self.content_height(), |m| m.1);
+        let frac = millionths.min(ViewPos::MAX_POFF) as f32 / 1_000_000.0;
+        self.scroll.y = start + (end - start).max(0.0) * frac;
+    }
+
+    fn top_source_line(&self) -> usize {
+        let Some((_, l)) = &self.layout else { return 0 };
+        let off = l
+            .offsets
+            .iter()
+            .find(|(_, y)| *y >= self.scroll.y - 1.0)
+            .map(|(o, _)| *o)
+            .unwrap_or(0);
+        let off = off.min(self.md_text.len());
+        self.md_text.as_bytes()[..off]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count()
+    }
+
+    fn scroll_to_source_line(&mut self, line: usize) {
+        let Some((_, l)) = &self.layout else { return };
+        let byte = self
+            .md_text
+            .match_indices('\n')
+            .nth(line.saturating_sub(1))
+            .map(|(i, _)| i + 1)
+            .filter(|_| line > 0)
+            .unwrap_or(0);
+        // A block that starts anywhere on that line counts (a heading inside
+        // a list item or quote starts after the marker, not at column 0).
+        let line_end = self.md_text[byte.min(self.md_text.len())..]
+            .find('\n')
+            .map_or(self.md_text.len(), |i| byte + i);
+        let y = l
+            .offsets
+            .iter()
+            .take_while(|(o, _)| *o <= line_end)
+            .last()
+            .map(|(_, y)| *y)
+            .unwrap_or(0.0);
+        self.scroll.y = y;
+    }
+
+    /// Draw the previous layout (the text changed but the debounce has not
+    /// expired yet).
+    fn render_preview_stale(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        let v = self.md_version;
+        self.md_version = self.editor.doc.version(); // pretend fresh for this frame
+        self.render_preview(canvas, rect, ctx);
+        self.md_version = v;
+    }
+
+    fn render_preview(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        self.sync_preview();
+        canvas.fill_rect(rect, theme::p().background);
+        self.ensure_layout(rect.w, ctx);
+        if let Some(line) = self.pending_scroll_line.take() {
+            self.scroll_to_source_line(line);
+        }
+        if let Some(a) = self.restore_anchor {
+            self.scroll_to_anchor(a);
+            if !self.images.pending() {
+                self.restore_anchor = None;
+            }
+        }
+        self.refresh_preview_find();
+        self.reveal_preview_match(rect.h as f32);
+        self.clamp();
+        let dx = rect.x as f32;
+        let dy = rect.y as f32 - self.scroll.y;
+        let view_top = self.scroll.y;
+        let view_bottom = self.scroll.y + rect.h as f32;
+        let hover = self.hover_link;
+        let selection = self.sel_range();
+        let found: &[(usize, Cursor, Cursor)] =
+            self.pfind.as_ref().map_or(&[], |p| p.matches.as_slice());
+        let found_current = self.pfind.as_ref().and_then(|p| p.current);
+        let Some((_, layout)) = self.layout.as_mut() else {
+            return;
+        };
+
+        for (ei, el) in layout.elements.iter_mut().enumerate() {
+            let (y0, y1) = el.y_range();
+            if y1 < view_top || y0 > view_bottom {
+                continue;
+            }
+            match el {
+                Element::Fill { x, y, w, h, color } => {
+                    canvas.fill_rect(frect(*x + dx, *y + dy, *w, *h), *color);
+                }
+                Element::Text {
+                    x,
+                    y,
+                    buffer,
+                    color,
+                    sel: selectable,
+                    ..
+                } => {
+                    let (tx, ty) = (*x + dx, *y + dy);
+                    // Find matches in this element (the current one stronger).
+                    // Only rows on screen are checked, and each row only
+                    // against the matches on its own text line (a long code
+                    // block with thousands of matches stays cheap to draw).
+                    if !found.is_empty() {
+                        let from = found.partition_point(|m| m.0 < ei);
+                        let to = from + found[from..].partition_point(|m| m.0 == ei);
+                        if from < to {
+                            let here = &found[from..to];
+                            for run in buffer.layout_runs() {
+                                let top = ty + run.line_top;
+                                if top > rect.bottom() as f32 {
+                                    break;
+                                }
+                                if top + run.line_height < rect.y as f32 {
+                                    continue;
+                                }
+                                let l0 = here.partition_point(|m| m.1.line < run.line_i);
+                                for (k, (_, a, b)) in here[l0..]
+                                    .iter()
+                                    .take_while(|m| m.1.line == run.line_i)
+                                    .enumerate()
+                                {
+                                    let current = found_current == Some(from + l0 + k);
+                                    for (hx, hw) in run.highlight(*a, *b) {
+                                        canvas.fill_rect(
+                                            frect(tx + hx, top, hw.max(2.0), run.line_height),
+                                            if current {
+                                                theme::p().caret.with_alpha(110)
+                                            } else {
+                                                theme::p().find_match
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Selection highlight.
+                    if let Some((lo, hi)) = selection
+                        && ei >= lo.0
+                        && ei <= hi.0
+                        && *selectable
+                    {
+                        let start = if ei == lo.0 { lo.1 } else { Cursor::new(0, 0) };
+                        let end = if ei == hi.0 {
+                            hi.1
+                        } else {
+                            let last = buffer.lines.len().saturating_sub(1);
+                            Cursor::new(last, buffer.lines.last().map_or(0, |b| b.text().len()))
+                        };
+                        for run in buffer.layout_runs() {
+                            for (hx, hw) in run.highlight(start, end) {
+                                canvas.fill_rect(
+                                    frect(tx + hx, ty + run.line_top, hw.max(2.0), run.line_height),
+                                    theme::p().selection,
+                                );
+                            }
+                        }
+                    }
+                    // Inline code backgrounds and link hover underline.
+                    for run in buffer.layout_runs() {
+                        let mut span: Option<(f32, f32)> = None;
+                        let top = ty + run.line_top;
+                        if top > rect.bottom() as f32 {
+                            break;
+                        }
+                        if top + run.line_height < rect.y as f32 {
+                            continue;
+                        }
+                        let flush = |canvas: &mut Canvas, s: Option<(f32, f32)>| {
+                            if let Some((a, b)) = s {
+                                let pad = 3.0;
+                                canvas.fill_rect(
+                                    frect(
+                                        tx + a - pad,
+                                        top + 2.0,
+                                        b - a + pad * 2.0,
+                                        run.line_height - 4.0,
+                                    ),
+                                    theme::p().md_code_bg,
+                                );
+                            }
+                        };
+                        for g in run.glyphs {
+                            if g.metadata & META_CODE != 0 {
+                                span = Some(match span {
+                                    Some((a, _)) => (a, g.x + g.w),
+                                    None => (g.x, g.x + g.w),
+                                });
+                            } else {
+                                flush(canvas, span.take());
+                            }
+                            if hover.is_some() && link_from_meta(g.metadata) == hover {
+                                canvas.fill_rect(
+                                    frect(tx + g.x, top + 1.0, g.w, run.line_height - 2.0),
+                                    theme::p().md_link.with_alpha(28),
+                                );
+                            }
+                        }
+                        flush(canvas, span);
+                    }
+                    ctx.fonts.draw_buffer(
+                        canvas,
+                        buffer,
+                        tx.round() as i32,
+                        ty.round() as i32,
+                        *color,
+                    );
+                }
+                Element::Checkbox {
+                    x,
+                    y,
+                    size,
+                    checked,
+                    ..
+                } => {
+                    let r = frect(*x + dx, *y + dy, *size, *size);
+                    let b = ctx.px(1.5).max(1.0) as i32;
+                    if *checked {
+                        canvas.fill_rect(r, theme::p().md_link);
+                        let (bx, by, s) = (*x + dx, *y + dy, *size);
+                        let lw = (s * 0.14).max(1.5);
+                        canvas.draw_line(
+                            bx + s * 0.24,
+                            by + s * 0.52,
+                            bx + s * 0.42,
+                            by + s * 0.70,
+                            lw,
+                            theme::p().background,
+                        );
+                        canvas.draw_line(
+                            bx + s * 0.42,
+                            by + s * 0.70,
+                            bx + s * 0.76,
+                            by + s * 0.32,
+                            lw,
+                            theme::p().background,
+                        );
+                    } else {
+                        canvas.fill_rect(r, theme::p().md_muted);
+                        canvas.fill_rect(
+                            Rect::new(r.x + b, r.y + b, r.w - 2 * b, r.h - 2 * b),
+                            theme::p().background,
+                        );
+                    }
+                }
+                Element::Image {
+                    x,
+                    y,
+                    w,
+                    h,
+                    alt,
+                    path,
+                    note,
+                    ..
+                } => {
+                    let r = frect(*x + dx, *y + dy, *w, *h);
+                    let ready = path.as_ref().and_then(|p| match self.images.get(p) {
+                        ImgState::Ready(d) => Some((p.clone(), d)),
+                        _ => None,
+                    });
+                    if let Some((p, d)) = ready {
+                        let key = (p, r.w.max(1) as u32, r.h.max(1) as u32);
+                        if !self.scaled.contains_key(&key) {
+                            if self.scaled.len() > 32 {
+                                self.scaled.clear();
+                            }
+                            let px = scale_to(&d, key.1, key.2);
+                            self.scaled.insert(key.clone(), px);
+                        }
+                        canvas.draw_rgba(r.x, r.y, key.1 as i32, key.2 as i32, &self.scaled[&key]);
+                    } else {
+                        canvas.fill_rect(r, theme::p().md_border);
+                        canvas.fill_rect(
+                            Rect::new(r.x + 1, r.y + 1, r.w - 2, r.h - 2),
+                            theme::p().md_block_bg,
+                        );
+                        let what = if alt.is_empty() {
+                            "image".to_string()
+                        } else {
+                            alt.clone()
+                        };
+                        let label = match note {
+                            Some(n) => format!("{what} — {n}"),
+                            None => what,
+                        };
+                        let lh = ctx.ui_metrics().line_height as i32;
+                        let pad = ctx.px(10.0) as i32;
+                        ctx.label(
+                            canvas,
+                            &label,
+                            r.x + pad,
+                            r.y + (r.h - lh) / 2,
+                            theme::p().md_muted,
+                            r.w - pad * 2,
+                            FontKind::Ui,
+                        );
+                    }
+                }
+            }
+        }
+        let h = layout.height;
+        draw_vscrollbar(canvas, rect, self.scroll.y, h, ctx);
+    }
+}
+
+fn frect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    let (x0, y0) = (x.round() as i32, y.round() as i32);
+    Rect::new(
+        x0,
+        y0,
+        ((x + w).round() as i32 - x0).max(0),
+        ((y + h).round() as i32 - y0).max(0),
+    )
+}
+
+impl View for MarkdownView {
+    fn render(&mut self, canvas: &mut Canvas, rect: Rect, ctx: &mut Ctx) {
+        self.last_rect = rect;
+        let outer_clip = canvas.set_clip(rect);
+        canvas.set_clip(outer_clip);
+        let mode = self.mode;
+        match self.mode {
+            Mode::Preview => {
+                let (page, bar) = self.preview_rects(rect, ctx);
+                self.last_rect = page;
+                canvas.set_clip(page);
+                self.render_preview(canvas, page, ctx);
+                if let Some(bar) = bar {
+                    canvas.set_clip(bar);
+                    self.render_preview_find(canvas, bar, ctx);
+                }
+            }
+            Mode::Source => self.editor.render(canvas, rect, ctx),
+            Mode::Split => {
+                let (left, div, right) = Self::split_rects(rect, ctx);
+                canvas.set_clip(left);
+                self.editor.render(canvas, left, ctx);
+                canvas.set_clip(div);
+                canvas.fill_rect(div, theme::p().divider);
+                canvas.set_clip(right);
+                self.last_rect = right;
+                // Large documents refresh once typing pauses (tick redraws).
+                if !self.preview_stale() || self.live_ready() || self.layout.is_none() {
+                    self.render_preview(canvas, right, ctx);
+                    self.follow_caret();
+                } else {
+                    self.render_preview_stale(canvas, right, ctx);
+                }
+            }
+        }
+        if self.mode != mode {
+            // The preview was refused while drawing (the text grew over the
+            // budget): this frame shows the source instead.
+            canvas.set_clip(outer_clip);
+            self.last_rect = rect;
+            self.editor.render(canvas, rect, ctx);
+        }
+    }
+
+    fn handle(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        self.last_rect = rect;
+        if self.mode == Mode::Preview && matches!(input, Input::Key { .. } | Input::Text(_)) {
+            // (The source and split views clear it themselves.)
+            self.editor.doc.refused = false;
+        }
+        if let Input::Key {
+            key: Key::Char('e'),
+            mods,
+        } = input
+            && mods.ctrl
+            && !mods.shift
+        {
+            self.toggle_mode(ctx);
+            *ctx.cursor = MouseCursor::Default;
+            return true;
+        }
+        // Ctrl+Shift+V: side-by-side live preview on/off.
+        if let Input::Key {
+            key: Key::Char('v'),
+            mods,
+        } = input
+            && mods.ctrl
+            && mods.shift
+        {
+            if self.mode == Mode::Split {
+                self.mode = Mode::Source;
+            } else {
+                self.enter_preview_mode(Mode::Split);
+            }
+            self.followed_line = usize::MAX;
+            return true;
+        }
+        if let Input::MouseMove { x, .. } = input {
+            self.mouse_x = *x;
+        }
+        if self.mode == Mode::Split {
+            let (left, _, right) = Self::split_rects(rect, ctx);
+            let over_preview = match input {
+                Input::MouseMove { x, .. }
+                | Input::MouseDown { x, .. }
+                | Input::MouseUp { x, .. } => *x >= right.x as f32,
+                Input::Wheel { .. } => self.mouse_x >= right.x as f32,
+                _ => false,
+            };
+            if !over_preview {
+                let v = self.editor.doc.version();
+                let r = self.editor.handle(input, left, ctx);
+                if self.editor.doc.version() != v {
+                    self.last_edit = std::time::Instant::now();
+                }
+                return r;
+            }
+            self.last_rect = right;
+            return self.handle_preview(input, right, ctx);
+        }
+        if self.mode == Mode::Preview {
+            // Ctrl+F searches the rendered page (the preview stays).
+            if let Input::Key {
+                key: Key::Char('f'),
+                mods,
+            } = input
+                && mods.ctrl
+                && !mods.shift
+                && !mods.alt
+            {
+                self.open_preview_find();
+                return true;
+            }
+            // Replace works on the source: switch to editing first (so does
+            // F3 when the preview has no find bar).
+            if let Input::Key { key, mods } = input
+                && ((mods.ctrl && matches!(key, Key::Char('h')))
+                    || (matches!(key, Key::F(3)) && self.pfind.is_none()))
+            {
+                self.pfind = None;
+                self.toggle_mode(ctx);
+            }
+        }
+        if self.mode == Mode::Source {
+            return self.editor.handle(input, rect, ctx);
+        }
+        let (page, bar) = self.preview_rects(rect, ctx);
+        self.last_rect = page;
+        // Keys act on an up-to-date match list even before the next draw.
+        if self.pfind.is_some() && matches!(input, Input::Key { .. }) {
+            self.sync_preview();
+            self.ensure_layout(page.w.max(1), ctx);
+            self.refresh_preview_find();
+        }
+        if let Some(r) = self.handle_preview_find(input, bar, ctx) {
+            return r;
+        }
+        self.handle_preview(input, page, ctx)
+    }
+
+    fn tick(&mut self, ctx: &mut Ctx, budget: Duration) -> Tick {
+        let mut t = match self.mode {
+            Mode::Source | Mode::Split => self.editor.tick(ctx, budget),
+            Mode::Preview => Tick::default(),
+        };
+        if self.mode == Mode::Split && self.preview_stale() {
+            if self.live_ready() {
+                t.redraw = true;
+            } else {
+                t.more = true; // come back when the debounce expires
+            }
+        }
+        if self.images.poll() {
+            self.images_version += 1;
+            t.redraw |= self.mode != Mode::Source;
+        }
+        t.more |= self.images.pending();
+        t
+    }
+
+    fn title(&self) -> String {
+        self.editor.title()
+    }
+
+    fn status(&self) -> Vec<String> {
+        let mut v = match self.mode {
+            Mode::Preview => {
+                let mut v = vec!["Markdown preview".to_string(), "Ctrl+E: edit".to_string()];
+                if let Some(p) = &self.pfind
+                    && !p.f.pattern().is_empty()
+                {
+                    v.push(match (p.current, p.matches.len()) {
+                        (_, 0) => "Find: no matches".to_string(),
+                        (c, n) => format!(
+                            "Find: {} of {n}{}",
+                            c.map_or(0, |c| c + 1),
+                            if p.capped { "+" } else { "" }
+                        ),
+                    });
+                }
+                if self.editor.is_read_only() {
+                    v.push("Read-only".to_string());
+                    if self.editor.doc.refused {
+                        v.push("Locked: nothing was changed (View: Toggle Read-Only)".into());
+                    }
+                }
+                v
+            }
+            Mode::Split => {
+                let mut s = self.editor.status();
+                s.insert(0, "Markdown side by side".into());
+                s.insert(1, "Ctrl+Shift+V: single view".into());
+                s
+            }
+            Mode::Source => {
+                let mut s = self.editor.status();
+                s.insert(0, "Markdown source".into());
+                // Over the budget the notice takes the hint's place (it
+                // stays until the text is small enough and Ctrl+E is used).
+                s.insert(
+                    1,
+                    if self.md_over {
+                        TOO_LARGE
+                    } else {
+                        "Ctrl+E: preview"
+                    }
+                    .into(),
+                );
+                s
+            }
+        };
+        if let Some(n) = &self.notice {
+            v.push(n.clone());
+        }
+        v
+    }
+
+    fn path(&self) -> Option<&Path> {
+        self.editor.path()
+    }
+
+    fn reload(&mut self, ctx: &mut Ctx) -> bool {
+        let changed = self.editor.reload(ctx);
+        if changed {
+            self.images.clear();
+            self.sync_preview();
+        }
+        changed
+    }
+
+    fn metrics_changed(&mut self) {
+        self.drop_layout();
+        self.editor.metrics_changed();
+    }
+
+    fn theme_changed(&mut self) {
+        self.drop_layout();
+        self.editor.theme_changed();
+    }
+
+    fn has_background_work(&self) -> bool {
+        self.images.pending() || (self.mode != Mode::Preview && self.editor.has_background_work())
+    }
+
+    fn on_hide(&mut self) {
+        self.drop_layout();
+        self.scaled = HashMap::new();
+        self.images.unload();
+        self.editor.on_hide();
+    }
+
+    #[cfg(test)]
+    fn scroll_y(&self) -> f32 {
+        self.scroll.y
+    }
+
+    #[cfg(test)]
+    fn checkboxes(&self) -> Vec<(f32, f32)> {
+        let Some((_, l)) = &self.layout else {
+            return Vec::new();
+        };
+        let dx = self.last_rect.x as f32;
+        let dy = self.last_rect.y as f32 - self.scroll.y;
+        l.elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Checkbox { x, y, size, .. } => {
+                    Some((x + dx + size / 2.0, y + dy + size / 2.0))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn highlight_probe(&self, line: usize) -> Option<(usize, Option<Vec<crate::syntax::Span>>)> {
+        self.editor.highlight_probe(line)
+    }
+
+    #[cfg(test)]
+    fn has_caches(&self) -> bool {
+        self.layout.is_some()
+            || !self.scaled.is_empty()
+            || self.images.loaded() > 0
+            || self.images.pending()
+            || self.editor.has_caches()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.editor.is_dirty()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.editor.is_read_only()
+    }
+
+    fn text(&self) -> Option<String> {
+        self.editor.text()
+    }
+
+    fn headings(&mut self) -> Option<Vec<(u8, String, usize)>> {
+        self.sync_preview();
+        if self.md_over {
+            // Too big to parse: a line scan finds the `#` headings.
+            let lines = self.editor.doc.buf.lines().iter().map(String::as_str);
+            return Some(crate::markdown::parse::scan_headings(lines));
+        }
+        let text = self.md_text.as_bytes();
+        Some(
+            crate::markdown::parse::headings(&self.md)
+                .into_iter()
+                .map(|(level, title, off)| {
+                    let off = off.min(text.len());
+                    let line = text[..off].iter().filter(|b| **b == b'\n').count();
+                    (level, title, line)
+                })
+                .collect(),
+        )
+    }
+
+    fn goto_heading(&mut self, line: usize) {
+        if self.mode != Mode::Preview {
+            self.editor.goto_line(line + 1);
+        }
+        if self.mode != Mode::Source {
+            // The layout may not exist yet (hidden tab, resized window):
+            // resolved at the next draw.
+            self.pending_scroll_line = Some(line);
+            self.restore_anchor = None;
+        }
+    }
+
+    fn position(&self) -> Option<ViewPos> {
+        let (ptop, poff) = match (self.pending_scroll_line, self.restore_anchor) {
+            // Jumps the next draw will resolve count as done.
+            (Some(line), _) => (line, 0),
+            (None, Some(a)) => a,
+            (None, None) if self.layout.is_some() => self.top_anchor(),
+            (None, None) => self.anchor_memo,
+        };
+        Some(ViewPos {
+            ptop,
+            poff,
+            mode: match self.mode {
+                Mode::Preview => 0,
+                Mode::Source => 1,
+                Mode::Split => 2,
+            },
+            ..self.editor.editor_pos()
+        })
+    }
+
+    fn restore_position(&mut self, pos: ViewPos) {
+        if self.position() == Some(pos) {
+            return;
+        }
+        match pos.mode {
+            1 => self.mode = Mode::Source,
+            2 => {
+                self.enter_preview_mode(Mode::Split);
+            }
+            _ => {
+                self.enter_preview_mode(Mode::Preview);
+            }
+        }
+        self.editor.restore_editor_pos(pos);
+        self.pending_scroll_line = None;
+        self.restore_anchor = Some((pos.ptop, pos.poff.min(ViewPos::MAX_POFF)));
+        // Side by side: the preview stays where it was, it doesn't jump to
+        // the caret at the next draw.
+        self.followed_line = self.editor.doc.primary().head.line;
+    }
+
+    fn take_jump_origin(&mut self) -> Option<ViewPos> {
+        self.jump_from.take()
+    }
+
+    fn run_command(&mut self, name: &str) -> bool {
+        let done = self.editor.run_command(name);
+        if done {
+            self.drop_layout();
+        }
+        done
+    }
+
+    fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
+        self.editor.save(allow_lossy)
+    }
+
+    fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+        let n = self.editor.save_as(path, allow_lossy)?;
+        self.drop_layout();
+        self.images.clear();
+        Ok(n)
+    }
+
+    fn disk_state(&self) -> DiskState {
+        self.editor.disk_state()
+    }
+
+    fn reload_discarding(&mut self, ctx: &mut Ctx) -> bool {
+        let r = self.editor.reload_discarding(ctx);
+        self.images.clear();
+        self.sync_preview();
+        r
+    }
+
+    fn mark_orphaned(&mut self) {
+        self.editor.mark_orphaned();
+    }
+
+    fn line_count(&self) -> Option<usize> {
+        self.editor.line_count()
+    }
+
+    fn goto_line(&mut self, line: usize) -> bool {
+        if self.mode == Mode::Preview {
+            self.mode = Mode::Source;
+        }
+        self.editor.goto_line(line)
+    }
+
+    fn caret_rect(&self) -> Option<Rect> {
+        matches!(self.mode, Mode::Source | Mode::Split)
+            .then(|| self.editor.caret_rect())
+            .flatten()
+    }
+
+    #[cfg(test)]
+    fn snapshot(&self) -> Option<(String, Vec<crate::editor::buffer::Pos>)> {
+        self.editor.snapshot()
+    }
+}
+
+impl MarkdownView {
+    fn handle_preview(&mut self, input: &Input, rect: Rect, ctx: &mut Ctx) -> bool {
+        // Hit-testing needs a layout even before the first frame.
+        if matches!(
+            input,
+            Input::MouseDown { .. } | Input::MouseMove { .. } | Input::Key { .. }
+        ) {
+            self.sync_preview();
+            self.ensure_layout(rect.w.max(1), ctx);
+        }
+        let lh = ctx.font_px(theme::md_font_size()) * theme::MD_LINE_HEIGHT;
+        let before = self.scroll.y;
+        match input {
+            Input::Wheel { .. } => {
+                self.scroll.wheel(input, lh);
+            }
+            Input::Key {
+                key: Key::Char('a'),
+                mods,
+            } if mods.ctrl => {
+                self.select_all();
+                return true;
+            }
+            // Undo / redo work in the preview too (a ticked checkbox can be
+            // taken back without switching to the source).
+            Input::Key {
+                key: k @ (Key::Char('z') | Key::Char('y')),
+                mods,
+            } if mods.ctrl && !mods.alt => {
+                let redo = *k == Key::Char('y') || mods.shift;
+                if self.editor.undo_redo(redo) {
+                    self.sync_preview();
+                }
+                return true;
+            }
+            Input::Key {
+                key: Key::Char('c'),
+                mods,
+            } if mods.ctrl => {
+                let t = self.selected_text();
+                if !t.is_empty() {
+                    ctx.clipboard.set(t);
+                }
+                return false;
+            }
+            Input::Key {
+                key: Key::Escape, ..
+            } if self.sel.is_some() => {
+                self.sel = None;
+                return true;
+            }
+            Input::Key { key, mods } => {
+                let page = (rect.h as f32 - lh * 2.0).max(lh);
+                match key {
+                    Key::Down => self.scroll.y += lh,
+                    Key::Up => self.scroll.y -= lh,
+                    Key::PageDown => self.scroll.y += page,
+                    Key::PageUp => self.scroll.y -= page,
+                    Key::Char(' ') if !mods.ctrl => {
+                        self.scroll.y += if mods.shift { -page } else { page }
+                    }
+                    Key::Home => self.scroll.y = 0.0,
+                    Key::End => self.scroll.y = f32::MAX,
+                    _ => return false,
+                }
+            }
+            Input::MouseMove { x, y } if self.selecting => {
+                if let (Some(h), Some((a, _))) = (self.text_hit(*x, *y), self.sel) {
+                    self.sel = Some((a, h));
+                }
+                *ctx.cursor = MouseCursor::Text;
+                return true;
+            }
+            Input::MouseMove { x, y } => {
+                let link = self.link_at(*x, *y);
+                let changed = link != self.hover_link;
+                self.hover_link = link;
+                *ctx.cursor = if link.is_some() || self.checkbox_at(*x, *y).is_some() {
+                    MouseCursor::Pointer
+                } else {
+                    MouseCursor::Default
+                };
+                return changed;
+            }
+            Input::MouseLeave => {
+                let changed = self.hover_link.is_some();
+                self.hover_link = None;
+                *ctx.cursor = MouseCursor::Default;
+                return changed;
+            }
+            Input::MouseDown {
+                x,
+                y,
+                button: MouseButton::Left,
+                clicks,
+            } => {
+                if let Some(idx) = self.link_at(*x, *y) {
+                    self.activate_link(idx, ctx);
+                    return true;
+                }
+                if let Some(off) = self.checkbox_at(*x, *y) {
+                    self.toggle_task(off);
+                    return true;
+                }
+                // Start a text selection (double-click: the whole block).
+                let hit = self.text_hit(*x, *y);
+                self.sel = hit.map(|h| (h, h));
+                self.selecting = hit.is_some();
+                if *clicks >= 2
+                    && let (Some((i, _)), Some((_, l))) = (hit, self.layout.as_ref())
+                    && let Element::Text { buffer, .. } = &l.elements[i]
+                {
+                    let end_line = buffer.lines.len().saturating_sub(1);
+                    let end = buffer.lines.last().map_or(0, |b| b.text().len());
+                    self.sel = Some(((i, Cursor::new(0, 0)), (i, Cursor::new(end_line, end))));
+                    self.selecting = false;
+                }
+                return true;
+            }
+            Input::MouseUp { .. } => {
+                self.selecting = false;
+                return false;
+            }
+            _ => return false,
+        }
+        self.clamp();
+        if self.scroll.y != before {
+            // The reader moved on: stop holding a restored position.
+            self.restore_anchor = None;
+        }
+        self.scroll.y != before
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canvas::Canvas;
+    use crate::text::Fonts;
+
+    struct Harness {
+        fonts: Fonts,
+        requests: Vec<Request>,
+        cursor: MouseCursor,
+        clip: crate::clipboard::MemClipboard,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            Self {
+                fonts: Fonts::load(),
+                requests: Vec::new(),
+                cursor: MouseCursor::Default,
+                clip: crate::clipboard::MemClipboard::default(),
+            }
+        }
+        fn ctx(&mut self) -> Ctx<'_> {
+            Ctx {
+                fonts: &mut self.fonts,
+                scale: 1.0,
+                zoom: 1.0,
+                requests: &mut self.requests,
+                cursor: &mut self.cursor,
+                focused: true,
+                clipboard: &mut self.clip,
+                mods: crate::input::Mods::default(),
+            }
+        }
+    }
+
+    fn view(text: &str, dir: &Path) -> MarkdownView {
+        let path = dir.join("doc.md");
+        std::fs::write(&path, text).unwrap();
+        MarkdownView::new(Document::open(&path).unwrap())
+    }
+
+    fn render(v: &mut MarkdownView, h: &mut Harness, w: u32, hgt: u32) {
+        let mut buf = vec![0u32; (w * hgt) as usize];
+        let mut c = Canvas::new(&mut buf, w, hgt);
+        let rect = c.bounds();
+        v.render(&mut c, rect, &mut h.ctx());
+    }
+
+    /// Window coordinates of the first glyph belonging to link `idx`.
+    fn link_point(v: &MarkdownView, idx: usize) -> (f32, f32) {
+        let (_, l) = v.layout.as_ref().unwrap();
+        for el in &l.elements {
+            if let Element::Text { x, y, buffer, .. } = el {
+                for run in buffer.layout_runs() {
+                    for g in run.glyphs {
+                        if link_from_meta(g.metadata) == Some(idx) {
+                            return (
+                                x + g.x + g.w / 2.0,
+                                y + run.line_top + run.line_height / 2.0 - v.scroll.y,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        panic!("link {idx} not laid out");
+    }
+
+    fn click(v: &mut MarkdownView, h: &mut Harness, p: (f32, f32)) -> bool {
+        let rect = v.last_rect;
+        v.handle(&Input::MouseMove { x: p.0, y: p.1 }, rect, &mut h.ctx());
+        v.handle(
+            &Input::MouseDown {
+                x: p.0,
+                y: p.1,
+                button: MouseButton::Left,
+                clicks: 1,
+            },
+            rect,
+            &mut h.ctx(),
+        )
+    }
+
+    fn tmpdir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("litedit-md-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// Render until every picture is decoded; count the magenta pixels.
+    fn magenta_after_load(v: &mut MarkdownView, h: &mut Harness) -> usize {
+        let (w, hgt) = (800u32, 600u32);
+        let start = std::time::Instant::now();
+        loop {
+            render(v, h, w, hgt);
+            if !v.images.pending() {
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 10, "pictures never loaded");
+            std::thread::sleep(Duration::from_millis(2));
+            v.tick(&mut h.ctx(), Duration::from_millis(5));
+        }
+        let mut buf = vec![0u32; (w * hgt) as usize];
+        let mut c = Canvas::new(&mut buf, w, hgt);
+        let rect = c.bounds();
+        v.render(&mut c, rect, &mut h.ctx());
+        buf.iter()
+            .filter(|&&p| {
+                let (r, g, b) = ((p >> 16) & 255, (p >> 8) & 255, p & 255);
+                r > 200 && g < 70 && b > 200
+            })
+            .count()
+    }
+
+    #[test]
+    fn two_spellings_of_one_picture_both_show_from_one_decode() {
+        let dir = tmpdir("spell");
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        image::RgbaImage::from_pixel(40, 30, image::Rgba([255, 0, 255, 255]))
+            .save(dir.join("pic.png"))
+            .unwrap();
+        let mut h = Harness::new();
+        let mut one = view("![a](pic.png)\n", &dir);
+        let single = magenta_after_load(&mut one, &mut h);
+        assert!(single >= 40 * 30, "the picture is drawn: {single}");
+        let mut two = view("![a](pic.png)\n\n![b](./sub/../pic.png)\n", &dir);
+        assert_eq!(magenta_after_load(&mut two, &mut h), 2 * single);
+        assert_eq!(two.images.counts(), (1, 1), "one entry, one decode");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_to_links_that_reach_a_network_share_are_blocked() {
+        let dir = tmpdir("linklinks");
+        std::fs::write(dir.join("real.md"), "# real").unwrap();
+        let _ = std::fs::remove_file(dir.join("net.md"));
+        let _ = std::fs::remove_file(dir.join("local.md"));
+        std::os::unix::fs::symlink("//evil/share/x.md", dir.join("net.md")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real.md"), dir.join("local.md")).unwrap();
+        let mut v = view("[net](net.md) [local](local.md)\n", &dir);
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 900, 600);
+        {
+            let p = link_point(&v, 0);
+            click(&mut v, &mut h, p)
+        };
+        assert!(h.requests.is_empty(), "never opened");
+        assert!(
+            v.status()
+                .iter()
+                .any(|s| s
+                    == "Link blocked (it is a link to a network share or device path): net.md"),
+            "{:?}",
+            v.status()
+        );
+        {
+            let p = link_point(&v, 1);
+            click(&mut v, &mut h, p)
+        };
+        assert_eq!(
+            h.requests.pop(),
+            Some(Request::OpenPath(dir.join("local.md")))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn links_open_safely() {
+        let dir = tmpdir("links");
+        std::fs::write(dir.join("other.md"), "# other").unwrap();
+        let text = "[web](https://example.com) [bad](javascript:alert(1)) [unc](//evil/share/x.md) \
+                    [file](other.md) [missing](nope.md) [jump](#far-away)\n\n"
+            .to_string()
+            + &"filler\n\n".repeat(200) + "## Far away\n";
+        let mut v = view(&text, &dir);
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 900, 600);
+
+        assert!({
+            let p = link_point(&v, 0);
+            click(&mut v, &mut h, p)
+        });
+        assert_eq!(h.cursor, MouseCursor::Pointer);
+        assert_eq!(
+            h.requests.pop(),
+            Some(Request::OpenUrl("https://example.com".into()))
+        );
+
+        {
+            let p = link_point(&v, 1);
+            click(&mut v, &mut h, p)
+        };
+        assert!(h.requests.is_empty());
+        assert!(v.status().iter().any(|s| s.contains("blocked")));
+
+        {
+            let p = link_point(&v, 2);
+            click(&mut v, &mut h, p)
+        };
+        assert!(h.requests.is_empty(), "network path must not be opened");
+
+        {
+            let p = link_point(&v, 3);
+            click(&mut v, &mut h, p)
+        };
+        assert_eq!(
+            h.requests.pop(),
+            Some(Request::OpenPath(dir.join("other.md")))
+        );
+
+        {
+            let p = link_point(&v, 4);
+            click(&mut v, &mut h, p)
+        };
+        assert!(h.requests.is_empty());
+        assert!(v.status().iter().any(|s| s.contains("not found")));
+
+        let before = v.scroll.y;
+        {
+            let p = link_point(&v, 5);
+            click(&mut v, &mut h, p)
+        };
+        assert!(
+            v.scroll.y > before + 1000.0,
+            "anchor should scroll far down"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ctrl_e_toggles_and_keeps_position() {
+        let dir = tmpdir("toggle");
+        let text: String = (0..300)
+            .map(|i| format!("Paragraph number {i}.\n\n"))
+            .collect();
+        let mut v = view(&text, &dir);
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 800, 600);
+        let rect = v.last_rect;
+        for _ in 0..10 {
+            v.handle(
+                &Input::Key {
+                    key: Key::PageDown,
+                    mods: Default::default(),
+                },
+                rect,
+                &mut h.ctx(),
+            );
+        }
+        render(&mut v, &mut h, 800, 600);
+        let ctrl_e = Input::Key {
+            key: Key::Char('e'),
+            mods: crate::input::Mods {
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        assert!(v.handle(&ctrl_e, rect, &mut h.ctx()));
+        assert_eq!(v.status()[0], "Markdown source");
+        render(&mut v, &mut h, 800, 600);
+        let line = v.editor.top_line(&h.ctx());
+        assert!(
+            line > 100,
+            "source should open near the same place, got line {line}"
+        );
+        assert!(v.handle(&ctrl_e, rect, &mut h.ctx()));
+        assert_eq!(v.status()[0], "Markdown preview");
+        assert!(v.scroll.y > 1000.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn budget(bytes: usize, lines: usize, blocks: usize) -> Budget {
+        Budget {
+            bytes,
+            lines,
+            blocks,
+        }
+    }
+
+    fn view_with(text: &str, dir: &Path, b: Budget) -> MarkdownView {
+        let path = dir.join("doc.md");
+        std::fs::write(&path, text).unwrap();
+        MarkdownView::with_budget(Document::open(&path).unwrap(), b)
+    }
+
+    fn ctrl(c: char, shift: bool) -> Input {
+        Input::Key {
+            key: Key::Char(c),
+            mods: crate::input::Mods {
+                ctrl: true,
+                shift,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn shows_too_large(v: &MarkdownView) -> bool {
+        v.mode == Mode::Source
+            && v.status()[0] == "Markdown source"
+            && v.status().iter().any(|s| s == TOO_LARGE)
+    }
+
+    /// Twenty headings: 81 bytes, 22 lines (two empty at the end), 20 blocks.
+    fn twenty() -> String {
+        "# x\n".repeat(20) + "\n"
+    }
+
+    #[test]
+    fn over_budget_documents_open_in_source() {
+        let dir = tmpdir("budget-open");
+        let mut h = Harness::new();
+        let text = twenty();
+        for (b, over) in [
+            (budget(80, 1000, 1000), true), // bytes
+            (budget(1000, 21, 1000), true), // lines
+            (budget(1000, 1000, 19), true), // blocks
+            (budget(81, 22, 20), false),    // just within all three
+            (budget(1000, 1000, 1000), false),
+        ] {
+            let mut v = view_with(&text, &dir, b);
+            assert_eq!(v.over_budget(), over, "{b:?}");
+            if over {
+                assert!(shows_too_large(&v), "{b:?}");
+                // Nothing was kept from the parse.
+                assert!(v.md.blocks.is_empty() && v.md_text.is_empty());
+            } else {
+                assert_eq!(v.md.blocks.len(), 20);
+                assert_eq!(v.status()[0], "Markdown preview");
+            }
+            render(&mut v, &mut h, 600, 400);
+            assert_eq!(v.layout.is_some(), !over, "{b:?}");
+            assert_eq!(v.over_budget(), over);
+            // The source is all there and editable.
+            assert_eq!(v.text().unwrap(), text);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_document_within_the_budget_renders_as_before() {
+        let dir = tmpdir("budget-same");
+        let src = std::fs::read_to_string(crate::tests::fixture("sample.md")).unwrap();
+        let mut h = Harness::new();
+        let pixels = |v: &mut MarkdownView, h: &mut Harness| {
+            let (w, hh) = (700u32, 900u32);
+            let mut buf = vec![0u32; (w * hh) as usize];
+            let mut c = Canvas::new(&mut buf, w, hh);
+            let rect = c.bounds();
+            v.render(&mut c, rect, &mut h.ctx());
+            buf
+        };
+        let mut plain = view(&src, &dir);
+        let blocks = crate::markdown::parse::parse(&src).blocks.len();
+        assert!(blocks > 10);
+        let lines = src.split('\n').count();
+        // Exactly at every limit (blocks counted at all levels are more
+        // than the top-level ones; find the smallest budget that fits).
+        let mut n = blocks;
+        while parse_within(&src, &budget(src.len(), lines, n)).is_err() {
+            n += 1;
+        }
+        let mut tight = view_with(&src, &dir, budget(src.len(), lines, n));
+        assert!(!tight.over_budget());
+        assert_eq!(pixels(&mut plain, &mut h), pixels(&mut tight, &mut h));
+        let over = view_with(&src, &dir, budget(src.len(), lines, n - 1));
+        assert!(over.over_budget());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn preview_stays_refused_while_over_budget() {
+        let dir = tmpdir("budget-toggle");
+        let mut v = view_with(&twenty(), &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 600, 400);
+        let rect = v.last_rect;
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        assert!(v.handle(&ctrl('v', true), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        // A remembered position in preview or side by side mode.
+        let pos = |mode| ViewPos {
+            mode,
+            ptop: 3,
+            ..ViewPos::default()
+        };
+        for mode in [0, 2] {
+            v.restore_position(pos(mode));
+            assert!(shows_too_large(&v));
+            assert_eq!(v.position().unwrap().mode, 1);
+        }
+        // Hidden and shown again: still the source, nothing rebuilt.
+        v.on_hide();
+        assert!(!v.has_caches());
+        render(&mut v, &mut h, 600, 400);
+        assert!(shows_too_large(&v) && v.layout.is_none());
+        // Go to Heading still finds the headings (by a line scan).
+        let hs = v.headings().unwrap();
+        assert_eq!(hs.len(), 20);
+        assert_eq!(hs[5], (1, "x".to_string(), 5));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn growing_over_the_budget_switches_to_source_and_back() {
+        use crate::editor::buffer::Pos;
+        let dir = tmpdir("budget-grow");
+        let mut v = view_with("# a\n\ntext\n", &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        let rect = Rect::new(0, 0, 800, 500);
+        // Side by side, caret on the last line.
+        assert!(v.handle(&ctrl('v', true), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Split);
+        render(&mut v, &mut h, 800, 500);
+        assert!(v.layout.is_some());
+        let at = Pos::new(3, 0);
+        v.editor
+            .doc
+            .replace_ranges(vec![(at, at, "# b\n".repeat(12))]);
+        v.editor.text_changed(3);
+        v.editor.goto_line(2);
+        let before = v.snapshot().unwrap();
+        // The live preview refreshes at the next draw, which finds the
+        // document over the budget: the source takes the whole view.
+        render(&mut v, &mut h, 800, 500);
+        assert!(shows_too_large(&v));
+        assert!(v.layout.is_none() && v.md.blocks.is_empty());
+        assert_eq!(v.snapshot().unwrap(), before, "text and carets kept");
+        assert_eq!(v.last_rect, rect);
+        // Shrunk again: the preview comes back when asked for.
+        let end = v.editor.doc.buf.end();
+        v.editor.doc.replace_ranges(vec![(at, end, String::new())]);
+        v.editor.text_changed(3);
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Preview);
+        assert!(!v.over_budget());
+        assert!(!v.status().iter().any(|s| s == TOO_LARGE));
+        render(&mut v, &mut h, 800, 500);
+        assert!(v.layout.is_some());
+        // Undo in the preview brings the big text back: source again.
+        assert!(v.handle(&ctrl('z', false), rect, &mut h.ctx()));
+        assert!(shows_too_large(&v));
+        assert!(v.text().unwrap().contains(&"# b\n".repeat(12)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reloading_into_an_over_budget_document() {
+        let dir = tmpdir("budget-reload");
+        let mut v = view_with("# small\n", &dir, budget(1000, 1000, 10));
+        let mut h = Harness::new();
+        render(&mut v, &mut h, 600, 400);
+        assert!(v.layout.is_some());
+        std::fs::write(dir.join("doc.md"), twenty()).unwrap();
+        assert!(v.reload(&mut h.ctx()));
+        assert!(shows_too_large(&v));
+        render(&mut v, &mut h, 600, 400);
+        assert!(v.layout.is_none());
+        assert_eq!(v.text().unwrap(), twenty());
+        // And back to a small file: the preview is available again.
+        std::fs::write(dir.join("doc.md"), "# small again\n").unwrap();
+        assert!(v.reload_discarding(&mut h.ctx()));
+        let rect = v.last_rect;
+        assert!(v.handle(&ctrl('e', false), rect, &mut h.ctx()));
+        assert_eq!(v.mode, Mode::Preview);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn layout_stops_at_its_element_budget() {
+        let doc = crate::markdown::parse::parse(&"para\n\n".repeat(100));
+        let mut h = Harness::new();
+        let images = HashMap::new();
+        let fonts = &mut h.fonts;
+        let mut lctx = LayoutCtx {
+            images: &images,
+            sans: fonts.sans.clone(),
+            mono: fonts.mono.clone(),
+            fonts: &mut fonts.system,
+            k: 1.0,
+            max_elements: 5,
+        };
+        let l = layout(&doc, &mut lctx, 600.0);
+        assert!(l.over_budget);
+        assert!(l.elements.len() <= 6, "{}", l.elements.len());
+        lctx.max_elements = 1000;
+        let l = layout(&doc, &mut lctx, 600.0);
+        assert!(!l.over_budget);
+        assert_eq!(l.elements.len(), 100);
+    }
+
+    #[test]
+    fn renders_at_tiny_sizes() {
+        let dir = tmpdir("tiny");
+        let src = std::fs::read_to_string(crate::tests::fixture("sample.md")).unwrap();
+        let mut v = view(&src, &dir);
+        let mut h = Harness::new();
+        for (w, hh) in [(1, 1), (10, 10), (40, 40), (200, 100)] {
+            render(&mut v, &mut h, w, hh);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

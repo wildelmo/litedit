@@ -1,0 +1,39 @@
+litedit is an original program, written from scratch in Rust. It contains
+no source code from lite-xl (https://github.com/lite-xl/lite-xl), a separate
+editor written in C and Lua.
+
+lite-xl was used as a design reference, and these specific values were
+taken from it:
+
+- the default dark colour scheme (colour values from lite-xl's
+  data/colors/default.lua)
+- default sizes and spacing (padding and font sizes)
+- the characters that end a word, for double-click and Ctrl+arrow
+- the file and folder names the file tree hides by default, such as .git
+
+Its general design (the window layout, how editing and undo behave, fuzzy
+file search) also inspired litedit's own implementation.
+
+lite-xl's licence, which covers the values listed above:
+
+  Copyright (c) 2020 rxi
+  Copyright (c) 2020-2022 Francesco Abbate
+  Copyright (c) 2022-present Lite XL Team
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to
+  deal in the Software without restriction, including without limitation the
+  rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+  sell copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in
+  all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+  FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+  IN THE SOFTWARE.

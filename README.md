@@ -1,0 +1,119 @@
+# litedit
+
+An ultralight, memory-safe text editor for Windows, written in Rust.
+
+- **Markdown opens as a pretty preview by default.** Press `Ctrl+E` to edit.
+- Code and text files are shown with syntax colours.
+- File tree on the left.
+- One small `.exe`: no installer, no browser engine, no plugins, no network.
+
+Inspired by [lite-xl](https://github.com/lite-xl/lite-xl). litedit is written from
+scratch and contains no lite-xl code; `NOTICE` lists the few default values taken from it.
+
+> **Version 1.0.0.** Markdown preview (default) and editing, side-by-side
+> live preview, tabs, find/replace, find in folder, command palette, quick
+> open, file tree with file actions, safe saving, session restore, light and
+> dark themes, settings file. See [CHANGELOG.md](CHANGELOG.md).
+
+## Try it
+
+Download `litedit.exe` (or the zip with the licence files) from the
+[latest release](../../releases/latest). Builds of every commit are also
+attached to each [windows workflow run](../../actions/workflows/windows.yml)
+(artifact `litedit-windows`). Then open a file or folder:
+
+```
+litedit.exe notes\todo.md
+litedit.exe C:\path\to\folder
+```
+
+or drag a file or folder onto the window. To open markdown files with a
+double-click, run **Preferences: Add litedit to "Open with" for Markdown…** from
+the command palette (`Ctrl+Shift+P`), then pick litedit once in Explorer's
+"Open with" → "Always". If litedit is already running, opening
+another file adds a tab to the running window (`--new-window` starts a second one).
+
+## Keys
+
+| Key | Action |
+|---|---|
+| Menu bar, `Alt+F` / `Alt+E` / `Alt+V` / `Alt+G` / `Alt+H`, `F10` | File, Edit, View, Go, Help menus (arrows walk them; View → Hide Menu Bar) |
+| `Ctrl+O` / `Ctrl+Shift+O` | Open file / open folder |
+| `Ctrl+P` / `Ctrl+R` | Quick open a file in the folder / open recent |
+| `Ctrl+Shift+P` | Command palette (every command, with its shortcut) |
+| `Ctrl+Tab`, `Ctrl+PgUp/PgDn`, `Alt+1..9` | Switch tabs |
+| `Ctrl+W` | Close tab (asks if there are unsaved changes) |
+| `Ctrl+F` / `Ctrl+H` | Find / replace (`F3`, `Alt+C` case, `Alt+R` regex, `Ctrl+Enter` replace all). In the markdown preview `Ctrl+F` searches the rendered page |
+| `Ctrl+Shift+F` | Find in folder |
+| `Ctrl+G` | Go to line |
+| `Ctrl+Shift+G` | Markdown: go to heading (outline list) |
+| `Alt+Left` / `Alt+Right` | Back / forward through the places you've been |
+| `1` / `0` / double-click (picture tab) | Actual size / fit to window / toggle; drag or wheel pans |
+| `Ctrl+Shift+V` | Markdown: side-by-side live preview |
+| `Ctrl+E` | Markdown: switch preview ↔ editing |
+| Click a task checkbox in the preview | Tick / untick it (`Ctrl+Z` undoes; `Ctrl+S` saves) |
+| `Ctrl+S` / `Ctrl+Shift+S` | Save / Save as |
+| `Ctrl+W` / `Ctrl+Shift+T` | Close tab / reopen the last closed tab |
+| Right-click a file → Select for Compare, then Compare with Selected | Side-by-side comparison (`F7` / `Shift+F7` next / previous change); tab menu or palette: Compare with Saved |
+| Palette: Compare Left ↔ Right / Compare with Clipboard | Compare the two sides of a split, or the file with the clipboard |
+| `Alt+W`, `Enter` / double-click (in a comparison) | Ignore whitespace differences; open the file at that line |
+| Tabs | Drag to reorder, wheel to scroll, middle-click to close, right-click for Close Others / Close All / Copy Path… |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (whole line when nothing is selected) |
+| `Ctrl+A` / `Ctrl+L` | Select all / select line |
+| `Ctrl+Shift+D` / `Ctrl+Shift+K` | Duplicate line / delete line |
+| `Alt+Up` / `Alt+Down` | Move line(s) up / down |
+| `Ctrl+Enter` / `Ctrl+Shift+Enter` | New line below / above |
+| `Ctrl+J` | Join lines |
+| `Ctrl+Shift+Up` / `Ctrl+Shift+Down` | Add a caret above / below |
+| Palette: Upper/Lower Case, Trim Trailing Whitespace, Convert Indentation, Line Endings | Text commands |
+| `F11` | Full screen |
+| `Ctrl+/` | Comment / uncomment line(s) |
+| `Ctrl+D` / `Ctrl+Shift+L` | Select next / all occurrences (type to edit them all; `Esc` for one caret) |
+| `Ctrl+click` / `Shift+click` | Add a caret / extend the selection |
+| `Ctrl+N` | New file (named in the current folder) |
+| `Ctrl+Shift+O` / `Ctrl+R` | Open folder / open recent file, folder or workspace |
+| Palette: File: Save Workspace As… / Open Workspace… | Save or open a `.litedit-workspace` (folders + open files + split) |
+| Palette or tree menu: Add Folder to Workspace… | Show another folder in the tree (right-click it → Remove Folder from Workspace) |
+| File → Close Folder, or click the tree header | Close the folder or workspace (its tabs come back next time; unsaved tabs stay) and show the start page |
+| `Ctrl+Alt+Right` / `Ctrl+Alt+Left` | Split: move the tab to the right / left side |
+| `Ctrl+1` / `Ctrl+2` | Focus the left / right side |
+| Right-click in the editor | Cut, Copy, Paste, Select All, Find, Toggle Comment, Compare with Saved |
+| `Tab` / `Shift+Tab` | Indent / outdent |
+| `Alt+Z` | Toggle word wrap (on by default for markdown) |
+| Palette: View: Toggle Read-Only | Lock a text tab against edits |
+| `Ctrl+\` | Show / hide the file tree |
+| `Ctrl+Shift+E` | Focus the file tree (arrows, Enter, Esc to leave) |
+| `Ctrl+Shift+H` | Show / hide hidden files (names starting with a dot, files Windows marks hidden) in the tree, `Ctrl+P` and find in folder. Shown by default; your choice is remembered |
+| Click a file in the tree | Peek: shows it in one reusable tab (italic title). Double-click, `Enter` or editing keeps it open |
+| Right-click in the tree | New file / folder, rename, delete (Recycle Bin), find in folder |
+| Drag in the tree | Move a file or folder into another folder (asks first) |
+| `F2` / `Delete` in the tree | Rename / delete (Recycle Bin, asks first) |
+| `Ctrl+click` / `Shift+click` / `Ctrl+A` in the tree | Select several entries; `Delete` or a drag then acts on all of them (one question) |
+| `Ctrl+C` / `Ctrl+V` / `Ctrl+D` in the tree | Copy, paste, duplicate files and folders (never overwrites) |
+| `Ctrl +` / `Ctrl -` / `Ctrl 0`, `Ctrl+wheel` | Zoom in / out / reset |
+| `Ctrl+,` | Settings (theme, font sizes, fonts, wrap, ignored folders) |
+| Wheel, `PgUp`/`PgDn`, `Home`/`End`, `Space` | Scroll |
+
+## Build
+
+```
+cargo build --release
+```
+
+Help → About litedit shows the version and who made the build. To put your
+own name, company and email there, edit `assets/branding.txt` before
+building (it is embedded in the exe; empty lines are not shown).
+
+Headless render (used for testing):
+
+```
+litedit --screenshot out.png [--size 1280x800] [--scale 1.5] [--theme light] <file>
+```
+
+## License
+
+MIT © 2026 Joe Chun. See `LICENSE`, `NOTICE` (the few defaults taken from
+lite-xl) and `THIRD-PARTY-NOTICES.txt` (the open-source libraries and syntax
+definitions built into the exe; regenerate with
+`python3 scripts/third-party-notices.py` after changing dependencies).
