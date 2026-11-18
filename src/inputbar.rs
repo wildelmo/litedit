@@ -45,6 +45,8 @@ impl InputBar {
             encoding: Encoding::Utf8,
             lossy: false,
             meta: None,
+            #[cfg(windows)]
+            save_target: None,
         });
         doc.select_all();
         Self {

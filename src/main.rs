@@ -10,6 +10,7 @@ mod clipboard;
 mod diff;
 mod doc;
 mod editor;
+mod fileio;
 mod find;
 mod fsops;
 mod images;
@@ -53,6 +54,8 @@ mod tests_nav;
 mod tests_scan;
 #[cfg(test)]
 mod tests_tree;
+#[cfg(test)]
+mod tests_watch;
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

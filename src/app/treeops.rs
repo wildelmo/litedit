@@ -725,7 +725,7 @@ impl App {
     /// details again if it is one of them.
     pub(super) fn file_details_changed(&mut self, paths: &[PathBuf]) {
         if let Some(path) = self.ops.details.as_ref().map(|d| d.path.clone())
-            && paths.contains(&path)
+            && (paths.is_empty() || paths.contains(&path))
         {
             self.ops.details = Some(self.stat_details(&path));
         }

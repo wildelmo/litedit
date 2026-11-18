@@ -48,9 +48,12 @@ pub struct DisplayLine {
 
 impl DisplayLine {
     pub fn new(line: &str, max_cols: usize) -> Self {
-        let mut text = String::with_capacity(line.len().min(max_cols + 8));
-        let mut src = Vec::with_capacity(line.len() + 1);
-        let mut disp = Vec::with_capacity(line.len() + 1);
+        let mut text = String::with_capacity(line.len().min(max_cols.saturating_add(8)));
+        // At most one mapping per displayed character plus the end/cut entry.
+        // A source line can be much larger than the prefix we ever display.
+        let map_capacity = line.len().saturating_add(1).min(max_cols.saturating_add(1));
+        let mut src = Vec::with_capacity(map_capacity);
+        let mut disp = Vec::with_capacity(map_capacity);
         let mut col = 0;
         let mut cut = false;
         for (b, c) in line.char_indices() {
@@ -180,8 +183,21 @@ pub fn expand_tabs(line: &str, max: usize) -> String {
     DisplayLine::new(line, max).text
 }
 
+/// The raw source prefix that can affect a [`DisplayLine`].
+fn display_source_prefix(line: &str, max_cols: usize) -> &str {
+    let Some(chars) = max_cols.checked_add(1) else {
+        return line;
+    };
+    let end = line
+        .char_indices()
+        .nth(chars)
+        .map_or(line.len(), |(byte, _)| byte);
+    &line[..end]
+}
+
 struct CachedLine {
-    source: String,
+    /// Exact source used by the display mapping, bounded by the display cut.
+    source_prefix: Box<str>,
     /// The highlight spans this line was shaped with (None = plain).
     spans: Option<Vec<Span>>,
     buffer: Buffer,
@@ -238,8 +254,8 @@ pub struct CodeView {
 
 impl CodeView {
     pub fn new(doc: Document) -> Self {
-        let first_line = doc.text.lines().next().unwrap_or("").to_string();
-        let highlighter = LineHighlighter::new(find_syntax(&doc.path, &first_line));
+        let first_line = doc.text.lines().next().unwrap_or("");
+        let highlighter = LineHighlighter::new(find_syntax(&doc.path, first_line));
         Self {
             doc: EditDoc::new(doc),
             scroll: Scroll::default(),
@@ -469,11 +485,15 @@ impl CodeView {
     fn line(&mut self, i: usize, ctx: &mut Ctx) -> &CachedLine {
         let spans = self.highlighter.spans(i);
         let source = self.doc.buf.line(i);
+        let source_prefix = display_source_prefix(source, MAX_DISPLAY_CHARS);
         // Rebuild when the text changed, or new highlighting differs from
         // what was drawn. While a line's spans are being recomputed (after an
         // edit above it), keep showing its previous colours — no flash.
         let stale = match self.cache.get(&i) {
-            Some(c) => c.source != source || (spans.is_some() && c.spans.as_deref() != spans),
+            Some(c) => {
+                c.source_prefix.as_ref() != source_prefix
+                    || (spans.is_some() && c.spans.as_deref() != spans)
+            }
             None => true,
         };
         if stale {
@@ -484,7 +504,7 @@ impl CodeView {
             self.cache.insert(
                 i,
                 CachedLine {
-                    source: source.to_string(),
+                    source_prefix: source_prefix.into(),
                     spans: spans.map(<[Span]>::to_vec),
                     buffer,
                     dl,
@@ -527,10 +547,7 @@ impl CodeView {
                 return snap_grapheme(self.doc.buf.line(i), col);
             }
         }
-        if c.dl.text.ends_with('…') && c.source.chars().count() > MAX_DISPLAY_CHARS {
-            return c.dl.to_src(c.dl.text.len());
-        }
-        c.source.len()
+        c.dl.to_src(c.dl.text.len())
     }
 
     fn pos_at(&mut self, x: f32, y: f32, ctx: &mut Ctx) -> Pos {
@@ -1686,8 +1703,8 @@ impl View for CodeView {
 
     fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
         let n = self.doc.save_as(path, allow_lossy)?;
-        let first = self.doc.buf.line(0).to_string();
-        self.highlighter = LineHighlighter::new(find_syntax(path, &first));
+        let first = self.doc.buf.line(0);
+        self.highlighter = LineHighlighter::new(find_syntax(path, first));
         self.cache.clear();
         Ok(n)
     }
@@ -1769,6 +1786,26 @@ mod tests {
         let out = expand_tabs(&long, 100);
         assert_eq!(out.chars().count(), 101);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn long_line_display_storage_is_bounded() {
+        let long = "x".repeat(1_000_000);
+        let dl = DisplayLine::new(&long, MAX_DISPLAY_CHARS);
+        assert_eq!(dl.src.len(), MAX_DISPLAY_CHARS + 1);
+        assert_eq!(dl.disp.len(), MAX_DISPLAY_CHARS + 1);
+        assert!(dl.src.capacity() <= MAX_DISPLAY_CHARS + 1);
+        assert!(dl.disp.capacity() <= MAX_DISPLAY_CHARS + 1);
+        assert_eq!(
+            display_source_prefix(&long, MAX_DISPLAY_CHARS).len(),
+            MAX_DISPLAY_CHARS + 1
+        );
+        assert_eq!(dl.to_src(dl.text.len()), MAX_DISPLAY_CHARS);
+
+        let unicode = "é".repeat(MAX_DISPLAY_CHARS + 100);
+        let dl = DisplayLine::new(&unicode, MAX_DISPLAY_CHARS);
+        assert_eq!(dl.src.len(), MAX_DISPLAY_CHARS + 1);
+        assert_eq!(dl.to_src(dl.text.len()), MAX_DISPLAY_CHARS * "é".len());
     }
 
     #[test]

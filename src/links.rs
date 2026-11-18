@@ -8,6 +8,12 @@
 
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DriveSafety {
+    Local,
+    Unsafe,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkTarget {
     /// http/https/mailto URL, safe to hand to the system browser.
@@ -65,12 +71,61 @@ pub fn is_network_path(p: &str) -> bool {
     p.starts_with("\\\\") || p.starts_with("//") || p.starts_with("\\/") || p.starts_with("/\\")
 }
 
+/// Ask Windows about a drive prefix before content can make us touch it.
+/// Mapped drives look like ordinary `X:\\` paths but may reconnect to a
+/// network server as soon as filesystem metadata is requested.
+fn drive_path_is_unsafe_with(p: &str, classify: impl FnOnce(&[u16; 4]) -> DriveSafety) -> bool {
+    let p = p.trim_start();
+    let p = p
+        .strip_prefix("\\\\?\\")
+        .or_else(|| p.strip_prefix("\\??\\"))
+        .unwrap_or(p);
+    let b = p.as_bytes();
+    if b.len() < 2 || !b[0].is_ascii_alphabetic() || b[1] != b':' {
+        return false;
+    }
+    let root = [
+        u16::from(b[0].to_ascii_uppercase()),
+        b':' as u16,
+        b'\\' as u16,
+        0,
+    ];
+    classify(&root) == DriveSafety::Unsafe
+}
+
+#[cfg(windows)]
+fn classify_drive_root(root: &[u16; 4]) -> DriveSafety {
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+        DRIVE_UNKNOWN,
+    };
+
+    // SAFETY: `root` is a NUL-terminated `X:\\` string and remains alive for
+    // the duration of the call.
+    let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+    match kind {
+        DRIVE_REMOVABLE | DRIVE_FIXED | DRIVE_CDROM | DRIVE_RAMDISK => DriveSafety::Local,
+        DRIVE_UNKNOWN | DRIVE_NO_ROOT_DIR | DRIVE_REMOTE => DriveSafety::Unsafe,
+        _ => DriveSafety::Unsafe,
+    }
+}
+
+#[cfg(not(windows))]
+fn classify_drive_root(_: &[u16; 4]) -> DriveSafety {
+    DriveSafety::Local
+}
+
 /// Paths Windows treats specially and that a markdown file must never make
 /// us open: network shares, `\\?\` / `\??\` / `\\.\` device and NT paths
-/// (they can reach UNC shares too), and alternate data streams (`a.png:x`).
-pub fn is_unsafe_local_path(p: &str) -> bool {
+/// (they can reach UNC shares too), mapped/unavailable drive prefixes, and
+/// alternate data streams (`a.png:x`).
+fn is_unsafe_local_path_with(p: &str, classify: impl FnOnce(&[u16; 4]) -> DriveSafety) -> bool {
     let p = p.trim_start();
     if is_network_path(p) {
+        return true;
+    }
+    if drive_path_is_unsafe_with(p, classify) {
         return true;
     }
     let b = p.as_bytes();
@@ -87,8 +142,12 @@ pub fn is_unsafe_local_path(p: &str) -> bool {
         .any(|(i, c)| c == ':' && !(i == 1 && b[0].is_ascii_alphabetic()))
 }
 
-/// A link target that is a local drive path written in verbatim/NT form
-/// (`\\?\C:\…`, `\??\C:\…`, as Windows junctions report) is fine.
+pub fn is_unsafe_local_path(p: &str) -> bool {
+    is_unsafe_local_path_with(p, classify_drive_root)
+}
+
+/// Is a link target a drive path written in verbatim/NT form
+/// (`\\?\C:\…`, `\??\C:\…`, as Windows junctions report)?
 fn is_local_drive_target(t: &str) -> bool {
     let rest = t
         .strip_prefix("\\\\?\\")
@@ -100,6 +159,20 @@ fn is_local_drive_target(t: &str) -> bool {
             && b[1] == b':'
             && (b[2] == b'\\' || b[2] == b'/')
     })
+}
+
+/// Reparse points report local drive targets in verbatim/NT form. Keep that
+/// spelling exception only when Windows also says the target drive is local.
+fn is_unsafe_link_target_with(t: &str, classify: impl FnOnce(&[u16; 4]) -> DriveSafety) -> bool {
+    if is_local_drive_target(t) {
+        drive_path_is_unsafe_with(t, classify)
+    } else {
+        is_unsafe_local_path_with(t, classify)
+    }
+}
+
+fn is_unsafe_link_target(t: &str) -> bool {
+    is_unsafe_link_target_with(t, classify_drive_root)
 }
 
 /// Does any symlink/junction along `p` — or any hop of a chain of links —
@@ -117,7 +190,7 @@ pub fn link_reaches_unsafe(p: &Path) -> bool {
                 Ok(m) if m.file_type().is_symlink() => match std::fs::read_link(&cur) {
                     Ok(t) => {
                         let ts = t.to_string_lossy();
-                        if is_unsafe_local_path(&ts) && !is_local_drive_target(&ts) {
+                        if is_unsafe_link_target(&ts) {
                             return true;
                         }
                         cur = if t.is_absolute() || is_local_drive_target(&ts) {
@@ -315,6 +388,42 @@ mod tests {
         assert_eq!(content_may_open(&shared.join("real/a.md")), Ok(()));
         assert!(content_may_open(&shared.join("net.md")).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn mapped_drive_paths_and_reparse_targets_are_refused_before_io() {
+        fn z_is_remote(root: &[u16; 4]) -> DriveSafety {
+            assert_eq!(root[1..], [b':' as u16, b'\\' as u16, 0]);
+            if root[0] == b'Z' as u16 {
+                DriveSafety::Unsafe
+            } else {
+                DriveSafety::Local
+            }
+        }
+
+        for path in ["Z:\\pics\\a.png", "z:/pics/a.png", "Z:pics\\a.png"] {
+            assert!(is_unsafe_local_path_with(path, z_is_remote), "{path}");
+        }
+        assert!(!is_unsafe_local_path_with("C:\\pics\\a.png", z_is_remote));
+        assert!(is_unsafe_link_target_with(
+            "\\\\?\\Z:\\pics\\a.png",
+            z_is_remote
+        ));
+        assert!(!is_unsafe_link_target_with(
+            "\\??\\C:\\pics\\a.png",
+            z_is_remote
+        ));
+        assert!(is_unsafe_link_target_with(
+            "\\\\?\\UNC\\evil\\share\\a.png",
+            z_is_remote
+        ));
+    }
+
+    #[test]
+    fn relative_content_paths_do_not_reclassify_the_reader_chosen_base() {
+        assert!(!is_unsafe_local_path_with("pics/a.png", |_| {
+            DriveSafety::Unsafe
+        }));
     }
 
     #[test]

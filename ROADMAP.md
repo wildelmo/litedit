@@ -227,6 +227,10 @@ fixed first (S5.0).
 - [x] S8.9 One-window pipe: only the same user can connect; a silent launch is cut off after 1 s
 - [x] S8.10 Folder listing: bounded work per folder
 - [x] S8.11 Rename never replaces a dangling link
+- [x] S8.12 Code renderer: long-line display and cache allocations are bounded
+        by the 4,000-character display prefix
+- [x] S8.13 Scan 72dfaf3b: bound file reads, watcher queues and workspace restores;
+        guard copied paths, recycling and atomic document saves on Windows
 
 ## Epic 9 — Menus and folders you can see (owner request, 2026-11-16)
 
@@ -254,6 +258,17 @@ palette.
 
 Newest first. One line per meaningful step.
 
+- 2026-11-18 — Integrated the remaining findings from scan 72dfaf3b. Local
+  document saves still replace the file atomically and check the identity of
+  the original. If a path goes through a link or Windows cannot preserve the
+  file safely, Save As to a new local file keeps the original intact.
+- 2026-11-18 — S8.12 Long single-line documents no longer size the code
+  renderer's two offset maps or its retained cache entry from the complete
+  line. The maps and raw cache identity now follow the displayed prefix,
+  first-line syntax probing is capped at the existing highlighting limit,
+  and end-of-line hit testing uses the bounded source/display mapping.
+  Regression assertions cover allocation bounds, ASCII and multibyte caret
+  clamping, cache-prefix bounds and shebang syntax selection.
 - 2026-11-16 — S9.5 Hidden files, at the owner's request (`.docs` was not
   in the tree and the switch was forgotten at every start). They are shown
   by default now, also without a settings file (headless, tests). The

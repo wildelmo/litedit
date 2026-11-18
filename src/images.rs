@@ -349,28 +349,29 @@ pub fn decode_file_max(path: &Path, max_side: u32) -> Result<Decoded, String> {
     if crate::doc::is_reserved_name(path) {
         return Err("not a file".into());
     }
-    // A symlink could point at a network share (reading it authenticates
-    // to that server); local images are opened only as plain files. The
-    // folders on the way are checked first: looking at the file itself
-    // already goes through a linked folder.
+    // A symlink could point at a network share (reading it authenticates to
+    // that server). Windows performs its no-follow walk in `read_local_bounded`;
+    // a separate pathname walk here would reintroduce the race it prevents.
+    #[cfg(not(windows))]
     if crate::links::link_reaches_unsafe(path) {
         return Err("linked images are not opened".into());
     }
-    let link = std::fs::symlink_metadata(path).map_err(|_| "image not found".to_string())?;
-    if link.file_type().is_symlink() {
-        return Err("linked images are not opened".into());
-    }
-    let meta = std::fs::metadata(path).map_err(|_| "image not found".to_string())?;
-    if !meta.is_file() {
-        return Err("not a file".into());
-    }
-    if meta.len() > MAX_FILE_BYTES {
-        return Err(format!(
-            "image too large ({} MB)",
-            meta.len() / (1024 * 1024)
-        ));
-    }
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read image: {e}"))?;
+    let bytes = match crate::fileio::read_local_bounded(path, MAX_FILE_BYTES) {
+        Ok(loaded) => loaded.bytes,
+        Err(crate::fileio::ReadError::UnsafeLink) => {
+            return Err("linked images are not opened".into());
+        }
+        Err(crate::fileio::ReadError::NotFile) => return Err("not a file".into()),
+        Err(crate::fileio::ReadError::TooLarge(size)) => {
+            return Err(format!("image too large ({} MB)", size / (1024 * 1024)));
+        }
+        Err(crate::fileio::ReadError::Open(_)) | Err(crate::fileio::ReadError::Metadata(_)) => {
+            return Err("image not found".into());
+        }
+        Err(crate::fileio::ReadError::Read(e)) => {
+            return Err(format!("cannot read image: {e}"));
+        }
+    };
     let img = decode_image(&bytes)?;
     // The file's bytes aren't needed while the pixels are reduced.
     drop(bytes);

@@ -256,7 +256,11 @@ impl ApplicationHandler<UserEvent> for Runner {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         let redraw = match event {
-            UserEvent::FsChanged(paths) => self.app.handle(Input::FsChanged(paths)),
+            UserEvent::FsChanged(paths) => {
+                let redraw = self.app.handle(Input::FsChanged(paths));
+                self.watcher.notification_handled();
+                redraw
+            }
             UserEvent::OpenPaths(paths) => {
                 self.app.open_from_other_launch(paths);
                 if let Some(g) = &self.gfx {

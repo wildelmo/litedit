@@ -129,15 +129,10 @@ impl SearchView {
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    let Ok(meta) = std::fs::metadata(f) else {
+                    let Ok(loaded) = crate::fileio::read_bounded(f, MAX_FILE_BYTES) else {
                         continue;
                     };
-                    if meta.len() > MAX_FILE_BYTES {
-                        continue;
-                    }
-                    let Ok(bytes) = std::fs::read(f) else {
-                        continue;
-                    };
+                    let bytes = loaded.bytes;
                     if looks_binary(&bytes) {
                         continue;
                     }

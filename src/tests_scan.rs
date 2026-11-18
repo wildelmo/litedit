@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::app::{App, MAX_RESTORE_BYTES};
+use crate::app::{App, MAX_RESTORE_BYTES, MAX_RESTORE_LINES};
 use crate::session::Session;
 use crate::tests::{new_app, tmp_dir};
 
@@ -49,6 +49,7 @@ fn a_workspace_naming_one_file_many_ways_restores_one_tab() {
 #[test]
 fn the_restore_budget_opens_the_active_tab_first_then_the_others_in_order() {
     assert_eq!(MAX_RESTORE_BYTES, 512 * 1024 * 1024);
+    assert_eq!(MAX_RESTORE_LINES, 8_000_000);
     let d = tmp_dir("scan-budget");
     for n in ["a", "b", "c", "d"] {
         std::fs::write(d.join(format!("{n}.txt")), "0123456789").unwrap();
@@ -100,6 +101,38 @@ fn the_restore_budget_opens_the_active_tab_first_then_the_others_in_order() {
             .starts_with("4 files were not reopened")
     );
     assert_eq!(app.current_workspace().tabs.len(), 4);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_restore_line_budget_bounds_dense_buffers_and_keeps_active_priority() {
+    let d = tmp_dir("scan-line-budget");
+    std::fs::write(d.join("a.txt"), "\n\n\n").unwrap(); // Four line objects.
+    std::fs::write(d.join("plain.txt"), "ordinary text with no line breaks").unwrap();
+    std::fs::write(d.join("b.txt"), "\n\n\n").unwrap(); // Four line objects.
+    let ws = write_workspace(
+        &d,
+        "line-budget",
+        "tab\ta.txt\ntab\tplain.txt\ntab\tb.txt\nactive\t2\n",
+    );
+    let mut app = new_app();
+    app.set_restore_budget(100);
+    app.set_restore_line_budget(5);
+    app.open(&ws);
+
+    // The active dense file is admitted first (four lines), then the long
+    // single-line file. The other dense file cannot allocate four more line
+    // objects even though all three files fit comfortably in the byte limit.
+    assert_eq!(titles(&app), ["plain.txt", "b.txt"]);
+    assert_eq!(app.active_path(), Some(d.join("b.txt")));
+    assert!(
+        app.nag_message()
+            .unwrap_or_default()
+            .contains("restore limit of 5 text lines")
+    );
+    let w = app.current_workspace();
+    assert_eq!(w.tabs.len(), 3, "the skipped tab remains in the workspace");
+    assert!(w.tabs.iter().any(|(p, _)| p.ends_with("a.txt")));
     let _ = std::fs::remove_dir_all(&d);
 }
 

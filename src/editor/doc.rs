@@ -122,6 +122,8 @@ pub struct EditDoc {
     /// Size and modification time at that moment: if both are unchanged the
     /// file isn't re-read at all (saves stay fast for big files).
     disk_meta: Option<(u64, std::time::SystemTime)>,
+    #[cfg(windows)]
+    save_target: Option<crate::editor::save::SaveTarget>,
     /// Remembered column (in chars) for up/down movement.
     goal_col: Option<usize>,
     /// Locked: every editing method below refuses (the text, the history
@@ -152,6 +154,8 @@ impl EditDoc {
             lossy: doc.lossy,
             disk_hash: text_hash(&doc.text),
             disk_meta: doc.meta,
+            #[cfg(windows)]
+            save_target: doc.save_target,
         }
     }
 
@@ -194,22 +198,44 @@ impl EditDoc {
     /// `allow_lossy` (the invalid bytes were replaced when opened).
     pub fn save(&mut self, allow_lossy: bool) -> Result<usize, SaveError> {
         let path = self.path.clone();
-        self.save_to(&path, allow_lossy)
+        self.save_to(&path, allow_lossy, false)
     }
 
     /// Save to a new path and switch to it.
     pub fn save_as(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
-        let n = self.save_to(path, allow_lossy)?;
+        let n = self.save_to(path, allow_lossy, true)?;
         self.path = path.to_path_buf();
         Ok(n)
     }
 
-    fn save_to(&mut self, path: &Path, allow_lossy: bool) -> Result<usize, SaveError> {
+    fn save_to(
+        &mut self,
+        path: &Path,
+        allow_lossy: bool,
+        #[cfg_attr(not(windows), allow(unused_variables))] save_as: bool,
+    ) -> Result<usize, SaveError> {
         if self.lossy && !allow_lossy {
             return Err(SaveError::NeedsLossyConfirm);
         }
         let text = self.buf.to_text();
         let bytes = crate::doc::encode(&text, self.encoding);
+        #[cfg(windows)]
+        {
+            let new_target = if save_as {
+                crate::editor::save::save_as_bound(path, &bytes)
+            } else {
+                self.save_target
+                    .as_ref()
+                    .ok_or_else(|| {
+                        SaveError::Failed(
+                            "the original file cannot be identified; use Save As".into(),
+                        )
+                    })?
+                    .save(path, &bytes)
+            };
+            self.save_target = Some(new_target.map_err(SaveError::Failed)?);
+        }
+        #[cfg(not(windows))]
         crate::editor::save::save_bytes(path, &bytes).map_err(SaveError::Failed)?;
         if self.encoding == Encoding::Utf8Lossy {
             self.encoding = Encoding::Utf8; // now it is valid UTF-8
@@ -237,6 +263,10 @@ impl EditDoc {
         self.lossy = doc.lossy;
         self.disk_hash = text_hash(&doc.text);
         self.disk_meta = doc.meta;
+        #[cfg(windows)]
+        {
+            self.save_target = doc.save_target;
+        }
         self.hist = History::default();
         for s in &mut self.sels {
             s.anchor = self.buf.clamp(s.anchor);
@@ -1832,6 +1862,8 @@ mod tests {
             encoding: Encoding::Utf8,
             lossy: false,
             meta: None,
+            #[cfg(windows)]
+            save_target: None,
         })
     }
 

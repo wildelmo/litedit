@@ -6,14 +6,19 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{RecvTimeoutError, channel};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{RecvTimeoutError, TrySendError, sync_channel};
+use std::time::{Duration, Instant};
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::tree::is_ignored;
 
 const BATCH_WINDOW: Duration = Duration::from_millis(150);
+const MAX_BATCH_WINDOW: Duration = Duration::from_secs(1);
+const MAX_BATCH_PATHS: usize = 10_000;
+const EVENT_QUEUE_CAPACITY: usize = 1_024;
 
 /// True if a change to `p` is worth telling the app about.
 pub fn interesting(p: &Path) -> bool {
@@ -26,12 +31,17 @@ pub fn interesting(p: &Path) -> bool {
 pub struct FsWatcher {
     watcher: Option<RecommendedWatcher>,
     targets: Vec<(PathBuf, bool)>,
+    notification_pending: Arc<AtomicBool>,
 }
 
 impl FsWatcher {
     /// `notify_fn` is called (from a background thread) with each batch.
+    /// An empty batch means the bounded queue overflowed and all watched
+    /// state must be rescanned.
     pub fn new(notify_fn: impl Fn(Vec<PathBuf>) -> bool + Send + 'static) -> Self {
-        let (tx, rx) = channel::<PathBuf>();
+        let (tx, rx) = sync_channel::<PathBuf>(EVENT_QUEUE_CAPACITY);
+        let overflowed = Arc::new(AtomicBool::new(false));
+        let producer_overflowed = overflowed.clone();
         let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
             if matches!(ev.kind, EventKind::Access(_) | EventKind::Other) {
@@ -39,38 +49,105 @@ impl FsWatcher {
             }
             for p in ev.paths {
                 if interesting(&p) {
-                    let _ = tx.send(p);
+                    match tx.try_send(p) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            producer_overflowed.store(true, Ordering::Release);
+                        }
+                        Err(TrySendError::Disconnected(_)) => return,
+                    }
                 }
             }
         })
         .ok();
+        let notification_pending = Arc::new(AtomicBool::new(false));
+        let worker_pending = notification_pending.clone();
         let _ = std::thread::Builder::new()
             .name("litedit-watch".into())
             .spawn(move || {
-                while let Ok(first) = rx.recv() {
-                    let mut batch = BTreeSet::new();
-                    batch.insert(first);
-                    loop {
-                        match rx.recv_timeout(BATCH_WINDOW) {
-                            Ok(p) => {
-                                batch.insert(p);
-                                if batch.len() > 10_000 {
-                                    break;
-                                }
-                            }
-                            Err(RecvTimeoutError::Timeout) => break,
-                            Err(RecvTimeoutError::Disconnected) => return,
-                        }
+                let mut batch = BTreeSet::new();
+                let mut rescan = false;
+                let mut started = None;
+                let mut last_event = None;
+                loop {
+                    if overflowed.swap(false, Ordering::AcqRel) {
+                        batch.clear();
+                        rescan = true;
                     }
-                    if !notify_fn(batch.into_iter().collect()) {
-                        return; // the UI is gone
+
+                    if batch.is_empty() && !rescan {
+                        let Ok(first) = rx.recv() else { return };
+                        let now = Instant::now();
+                        batch.insert(first);
+                        started = Some(now);
+                        last_event = Some(now);
+                        continue;
+                    }
+
+                    let now = Instant::now();
+                    let quiet = last_event
+                        .is_some_and(|at| now.saturating_duration_since(at) >= BATCH_WINDOW);
+                    let expired = started
+                        .is_some_and(|at| now.saturating_duration_since(at) >= MAX_BATCH_WINDOW);
+                    let ready = rescan || batch.len() >= MAX_BATCH_PATHS || quiet || expired;
+
+                    if ready {
+                        if worker_pending
+                            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                        {
+                            let paths = if rescan {
+                                Vec::new()
+                            } else {
+                                std::mem::take(&mut batch).into_iter().collect()
+                            };
+                            if !notify_fn(paths) {
+                                return; // the UI is gone
+                            }
+                            batch.clear();
+                            rescan = false;
+                            started = None;
+                            last_event = None;
+                        } else {
+                            // One UI event already represents all earlier
+                            // changes. Keep only a level-triggered rescan for
+                            // changes arriving while it is being handled.
+                            batch.clear();
+                            rescan = true;
+                            std::thread::park_timeout(BATCH_WINDOW);
+                        }
+                        continue;
+                    }
+
+                    let quiet_in = last_event.map_or(BATCH_WINDOW, |at| {
+                        BATCH_WINDOW.saturating_sub(now.saturating_duration_since(at))
+                    });
+                    let expires_in = started.map_or(MAX_BATCH_WINDOW, |at| {
+                        MAX_BATCH_WINDOW.saturating_sub(now.saturating_duration_since(at))
+                    });
+                    match rx.recv_timeout(quiet_in.min(expires_in)) {
+                        Ok(p) => {
+                            let now = Instant::now();
+                            batch.insert(p);
+                            started.get_or_insert(now);
+                            last_event = Some(now);
+                        }
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
                     }
                 }
             });
         Self {
             watcher,
             targets: Vec::new(),
+            notification_pending,
         }
+    }
+
+    /// Allow the worker to send the next coalesced batch after the UI has
+    /// handled the previous one.
+    pub fn notification_handled(&self) {
+        self.notification_pending.store(false, Ordering::Release);
     }
 
     /// Watch exactly these folders (path, recursive). Cheap if unchanged.
@@ -106,6 +183,18 @@ mod tests {
         assert!(interesting(Path::new("/p/notes/a.md")));
         assert!(!interesting(Path::new("/p/.git/index")));
         assert!(!interesting(Path::new("/p/web/node_modules/x/y.js")));
+    }
+
+    #[test]
+    fn event_queue_has_fixed_capacity() {
+        let (tx, _rx) = sync_channel::<PathBuf>(EVENT_QUEUE_CAPACITY);
+        for i in 0..EVENT_QUEUE_CAPACITY {
+            assert!(tx.try_send(PathBuf::from(i.to_string())).is_ok());
+        }
+        assert!(matches!(
+            tx.try_send(PathBuf::from("overflow")),
+            Err(TrySendError::Full(_))
+        ));
     }
 
     #[test]

@@ -81,7 +81,8 @@ pub enum Input {
     },
     Text(String),
     Drop(PathBuf),
-    /// Files changed on disk (from the watcher thread).
+    /// Files changed on disk (from the watcher thread); an empty list asks
+    /// for a full rescan after watcher queue overflow.
     FsChanged(Vec<PathBuf>),
     /// The user asked to close the window.
     CloseRequested,

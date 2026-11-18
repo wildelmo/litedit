@@ -166,11 +166,13 @@ impl Workspace {
 
     /// Read a workspace file (relative paths are relative to its folder).
     pub fn load(path: &Path) -> Result<Self, String> {
-        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-        if meta.len() > MAX_BYTES {
-            return Err("workspace file is too large".into());
-        }
-        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let bytes = match crate::fileio::read_bounded(path, MAX_BYTES) {
+            Ok(loaded) => loaded.bytes,
+            Err(crate::fileio::ReadError::TooLarge(_)) => {
+                return Err("workspace file is too large".into());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
         let text = String::from_utf8_lossy(&bytes);
         Self::parse(&text, path.parent()).ok_or_else(|| "not a litedit workspace file".into())
     }
@@ -253,6 +255,26 @@ mod tests {
         assert_eq!(w.tabs.len(), MAX_TABS);
         assert!(w.active < w.tabs.len());
         assert!(Workspace::parse("something else", None).is_none());
+    }
+
+    #[test]
+    fn load_accepts_a_valid_file_and_rejects_bytes_over_the_limit() {
+        let dir =
+            std::env::temp_dir().join(format!("litedit-workspace-load-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("project.litedit-workspace");
+        let text = format!("{HEADER}\ntab\tnotes.md\nactive\t0\n");
+        std::fs::write(&path, &text).unwrap();
+        let loaded = Workspace::load(&path).unwrap();
+        assert_eq!(loaded.tabs, vec![(dir.join("notes.md"), 0)]);
+
+        std::fs::write(&path, vec![b'x'; MAX_BYTES as usize + 1]).unwrap();
+        assert_eq!(
+            Workspace::load(&path).unwrap_err(),
+            "workspace file is too large"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

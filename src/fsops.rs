@@ -7,6 +7,747 @@
 
 use std::path::{Path, PathBuf};
 
+// Copy traversal is deliberately capability based. Once a directory has
+// been selected or created, every child lookup is relative to that retained
+// directory handle; mutable pathnames are kept only for messages and UI
+// updates. The platform modules also open final components without following
+// links/reparse points.
+#[cfg(unix)]
+mod copy_handles {
+    use std::ffi::{CStr, CString, OsStr, OsString};
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Component, Path};
+
+    pub enum Entry {
+        File(File),
+        Dir(Dir),
+        Skip,
+    }
+
+    pub struct Dir(File);
+
+    impl Entry {
+        pub fn is_dir(&self) -> bool {
+            matches!(self, Self::Dir(_))
+        }
+    }
+
+    fn invalid(message: &'static str) -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidInput, message)
+    }
+
+    fn c_name(name: &OsStr) -> io::Result<CString> {
+        CString::new(name.as_bytes()).map_err(|_| invalid("a path name contains NUL"))
+    }
+
+    fn open_at(dir: &File, name: &OsStr) -> io::Result<Entry> {
+        let name = c_name(name)?;
+        // O_NONBLOCK prevents an attacker-created FIFO/device from hanging
+        // classification. It has no effect on ordinary files/directories.
+        let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+        // SAFETY: `name` is NUL terminated and `dir` remains open for the call.
+        let fd = unsafe { libc::openat(dir.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                return Ok(Entry::Skip);
+            }
+            return Err(error);
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        let file = unsafe { File::from_raw_fd(fd) };
+        let file_type = file.metadata()?.file_type();
+        if file_type.is_dir() {
+            Ok(Entry::Dir(Dir(file)))
+        } else if file_type.is_file() {
+            Ok(Entry::File(file))
+        } else {
+            Ok(Entry::Skip)
+        }
+    }
+
+    pub fn open_path(path: &Path) -> io::Result<Entry> {
+        let mut current = Dir(File::open(if path.is_absolute() { "/" } else { "." })?);
+        let parts: Vec<OsString> = path
+            .components()
+            .filter_map(|part| match part {
+                Component::Normal(name) => Some(name.to_os_string()),
+                Component::ParentDir => Some(OsString::from("..")),
+                Component::CurDir | Component::RootDir => None,
+                Component::Prefix(_) => None,
+            })
+            .collect();
+        if parts.is_empty() {
+            return Ok(Entry::Dir(current));
+        }
+        for (index, name) in parts.iter().enumerate() {
+            let entry = current.open(name)?;
+            if index + 1 == parts.len() {
+                return Ok(entry);
+            }
+            current = match entry {
+                Entry::Dir(dir) => dir,
+                Entry::File(_) | Entry::Skip => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        "a path component is not a folder",
+                    ));
+                }
+            };
+        }
+        unreachable!()
+    }
+
+    pub fn open_dir_path(path: &Path) -> io::Result<Dir> {
+        match open_path(path)? {
+            Entry::Dir(dir) => Ok(dir),
+            Entry::File(_) | Entry::Skip => Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "the path is not a folder",
+            )),
+        }
+    }
+
+    impl Dir {
+        pub fn try_clone(&self) -> io::Result<Self> {
+            self.0.try_clone().map(Self)
+        }
+
+        pub fn open(&self, name: &OsStr) -> io::Result<Entry> {
+            open_at(&self.0, name)
+        }
+
+        /// Read at most `limit + 1` names. The boolean says the directory
+        /// contained more than the caller's remaining entry budget.
+        pub fn names(&self, limit: usize) -> io::Result<(Vec<OsString>, bool)> {
+            // fdopendir owns its descriptor, so give it a duplicate.
+            // SAFETY: fcntl only observes the valid retained descriptor.
+            let fd = unsafe { libc::fcntl(self.0.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `fd` is a new directory descriptor.
+            let raw = unsafe { libc::fdopendir(fd) };
+            if raw.is_null() {
+                let error = io::Error::last_os_error();
+                // SAFETY: fdopendir did not take ownership on failure.
+                unsafe { libc::close(fd) };
+                return Err(error);
+            }
+            struct ReadDir(*mut libc::DIR);
+            impl Drop for ReadDir {
+                fn drop(&mut self) {
+                    // SAFETY: this pointer came from fdopendir and is owned here.
+                    unsafe { libc::closedir(self.0) };
+                }
+            }
+            let raw = ReadDir(raw);
+            let mut names = Vec::new();
+            loop {
+                // SAFETY: the DIR is retained for this loop and used serially.
+                let entry = unsafe { libc::readdir(raw.0) };
+                if entry.is_null() {
+                    break;
+                }
+                // SAFETY: POSIX guarantees d_name is NUL terminated.
+                let bytes = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+                if bytes == b"." || bytes == b".." {
+                    continue;
+                }
+                if names.len() == limit {
+                    return Ok((names, true));
+                }
+                names.push(OsString::from_vec(bytes.to_vec()));
+            }
+            Ok((names, false))
+        }
+
+        pub fn occupied(&self, name: &OsStr) -> bool {
+            match self.open(name) {
+                Ok(_) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(_) => true,
+            }
+        }
+
+        pub fn create_dir(&self, name: &OsStr) -> io::Result<Self> {
+            let name = c_name(name)?;
+            // SAFETY: the parent and NUL-terminated name remain valid.
+            let result = unsafe { libc::mkdirat(self.0.as_raw_fd(), name.as_ptr(), 0o777) };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            match open_at(&self.0, OsStr::from_bytes(name.as_bytes()))? {
+                Entry::Dir(dir) => Ok(dir),
+                Entry::File(_) | Entry::Skip => Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "the created entry is not a folder",
+                )),
+            }
+        }
+
+        pub fn create_file(&self, name: &OsStr) -> io::Result<File> {
+            let name = c_name(name)?;
+            let flags =
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW;
+            // SAFETY: the parent and NUL-terminated name remain valid.
+            let fd = unsafe { libc::openat(self.0.as_raw_fd(), name.as_ptr(), flags, 0o666) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: openat returned a new owned descriptor.
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+
+        pub fn remove_file(&self, name: &OsStr, _file: &File) -> io::Result<()> {
+            let name = c_name(name)?;
+            // unlinkat never follows the final component and is anchored to
+            // the retained destination directory.
+            // SAFETY: the parent and NUL-terminated name remain valid.
+            let result = unsafe { libc::unlinkat(self.0.as_raw_fd(), name.as_ptr(), 0) };
+            if result == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+mod copy_handles {
+    use std::ffi::{OsStr, OsString, c_void};
+    use std::fs::File;
+    use std::io;
+    use std::mem::size_of;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use std::path::{Component, Path, PathBuf};
+
+    type Handle = *mut c_void;
+
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const DELETE: u32 = 0x0001_0000;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    const FILE_LIST_DIRECTORY: u32 = 0x0000_0001;
+    const FILE_ADD_FILE: u32 = 0x0000_0002;
+    const FILE_ADD_SUBDIRECTORY: u32 = 0x0000_0004;
+    const FILE_TRAVERSE: u32 = 0x0000_0020;
+    const FILE_READ_ATTRIBUTES: u32 = 0x0000_0080;
+    const DESTINATION_DIRECTORY_ACCESS: u32 = FILE_LIST_DIRECTORY
+        | FILE_ADD_FILE
+        | FILE_ADD_SUBDIRECTORY
+        | FILE_TRAVERSE
+        | FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE;
+    const FILE_SHARE_ALL: u32 = 0x0000_0007;
+    const FILE_OPEN: u32 = 1;
+    const FILE_CREATE: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
+    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+    const FILE_DIRECTORY_FILE: u32 = 0x0000_0001;
+    const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x0000_0020;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x0000_0040;
+    const FILE_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const OBJ_CASE_INSENSITIVE: u32 = 0x0000_0040;
+    const FILE_ATTRIBUTE_TAG_INFORMATION: i32 = 9;
+    const FILE_NAMES_INFORMATION: u32 = 12;
+    const FILE_DISPOSITION_INFORMATION: u32 = 13;
+    const STATUS_NO_MORE_FILES: i32 = 0x8000_0006u32 as i32;
+    const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005u32 as i32;
+
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+
+    #[repr(C)]
+    struct ObjectAttributes {
+        length: u32,
+        root_directory: Handle,
+        object_name: *mut UnicodeString,
+        attributes: u32,
+        security_descriptor: *mut c_void,
+        security_quality_of_service: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct IoStatusBlock {
+        status_or_pointer: usize,
+        information: usize,
+    }
+
+    #[repr(C)]
+    struct FileAttributeTagInfo {
+        attributes: u32,
+        reparse_tag: u32,
+    }
+
+    #[repr(C)]
+    struct FileDispositionInfo {
+        delete_file: u8,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateFileW(
+            name: *const u16,
+            desired_access: u32,
+            share_mode: u32,
+            security_attributes: *const c_void,
+            creation_disposition: u32,
+            flags_and_attributes: u32,
+            template_file: Handle,
+        ) -> Handle;
+        fn GetFileInformationByHandleEx(
+            file: Handle,
+            class: i32,
+            information: *mut c_void,
+            size: u32,
+        ) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            file: *mut Handle,
+            desired_access: u32,
+            attributes: *mut ObjectAttributes,
+            status: *mut IoStatusBlock,
+            allocation_size: *const i64,
+            file_attributes: u32,
+            share_access: u32,
+            disposition: u32,
+            create_options: u32,
+            ea_buffer: *const c_void,
+            ea_length: u32,
+        ) -> i32;
+        fn NtQueryDirectoryFile(
+            file: Handle,
+            event: Handle,
+            apc_routine: *const c_void,
+            apc_context: *const c_void,
+            status: *mut IoStatusBlock,
+            information: *mut c_void,
+            length: u32,
+            information_class: u32,
+            return_single_entry: u8,
+            file_name: *const UnicodeString,
+            restart_scan: u8,
+        ) -> i32;
+        fn NtSetInformationFile(
+            file: Handle,
+            status: *mut IoStatusBlock,
+            information: *const c_void,
+            length: u32,
+            information_class: u32,
+        ) -> i32;
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+
+    pub enum Entry {
+        File(File),
+        Dir(Dir),
+        Skip,
+    }
+
+    pub struct Dir(File);
+
+    impl Entry {
+        pub fn is_dir(&self) -> bool {
+            matches!(self, Self::Dir(_))
+        }
+    }
+
+    fn nt_error(status: i32) -> io::Error {
+        // SAFETY: this conversion routine accepts every NTSTATUS value.
+        let error = unsafe { RtlNtStatusToDosError(status) };
+        io::Error::from_raw_os_error(error as i32)
+    }
+
+    fn attributes(file: &File) -> io::Result<u32> {
+        let mut info = FileAttributeTagInfo {
+            attributes: 0,
+            reparse_tag: 0,
+        };
+        // SAFETY: `info` is correctly sized and the file handle is retained.
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FILE_ATTRIBUTE_TAG_INFORMATION,
+                (&mut info as *mut FileAttributeTagInfo).cast(),
+                size_of::<FileAttributeTagInfo>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(info.attributes)
+        }
+    }
+
+    fn classify(file: File) -> io::Result<Entry> {
+        let attributes = attributes(&file)?;
+        if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            Ok(Entry::Skip)
+        } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            Ok(Entry::Dir(Dir(file)))
+        } else {
+            Ok(Entry::File(file))
+        }
+    }
+
+    fn nt_open(
+        parent: &File,
+        name: &OsStr,
+        desired_access: u32,
+        disposition: u32,
+        file_attributes: u32,
+        create_options: u32,
+    ) -> io::Result<File> {
+        let mut name: Vec<u16> = name.encode_wide().collect();
+        let byte_len = name
+            .len()
+            .checked_mul(2)
+            .filter(|length| *length <= u16::MAX as usize)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the path is too long"))?;
+        let mut unicode = UnicodeString {
+            length: byte_len as u16,
+            maximum_length: byte_len as u16,
+            buffer: name.as_mut_ptr(),
+        };
+        let mut attributes = ObjectAttributes {
+            length: size_of::<ObjectAttributes>() as u32,
+            root_directory: parent.as_raw_handle(),
+            object_name: &mut unicode,
+            attributes: OBJ_CASE_INSENSITIVE,
+            security_descriptor: std::ptr::null_mut(),
+            security_quality_of_service: std::ptr::null_mut(),
+        };
+        let mut status_block = IoStatusBlock {
+            status_or_pointer: 0,
+            information: 0,
+        };
+        let mut handle: Handle = std::ptr::null_mut();
+        // SAFETY: all pointed-to structures and the name buffer outlive the
+        // synchronous call; a successful call returns one owned handle.
+        let status = unsafe {
+            NtCreateFile(
+                &mut handle,
+                desired_access,
+                &mut attributes,
+                &mut status_block,
+                std::ptr::null(),
+                file_attributes,
+                FILE_SHARE_ALL,
+                disposition,
+                create_options,
+                std::ptr::null(),
+                0,
+            )
+        };
+        if status < 0 {
+            return Err(nt_error(status));
+        }
+        // SAFETY: NtCreateFile returned one owned handle on success.
+        Ok(unsafe { File::from_raw_handle(handle) })
+    }
+
+    fn open_relative(parent: &File, name: &OsStr) -> io::Result<Entry> {
+        let file = nt_open(
+            parent,
+            name,
+            GENERIC_READ | SYNCHRONIZE,
+            FILE_OPEN,
+            0,
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+        )?;
+        classify(file)
+    }
+
+    fn open_destination(parent: &File, name: &OsStr) -> io::Result<Entry> {
+        let file = nt_open(
+            parent,
+            name,
+            DESTINATION_DIRECTORY_ACCESS,
+            FILE_OPEN,
+            0,
+            FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+        )?;
+        classify(file)
+    }
+
+    fn open_root(path: &Path, writable: bool) -> io::Result<Entry> {
+        let mut name: Vec<u16> = path.as_os_str().encode_wide().collect();
+        name.push(0);
+        let access = if writable {
+            DESTINATION_DIRECTORY_ACCESS
+        } else {
+            GENERIC_READ
+        };
+        // SAFETY: the path is NUL terminated and every optional pointer is null.
+        let handle = unsafe {
+            CreateFileW(
+                name.as_ptr(),
+                access,
+                FILE_SHARE_ALL,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: CreateFileW returned one owned handle.
+        classify(unsafe { File::from_raw_handle(handle) })
+    }
+
+    fn open_path_with(path: &Path, writable: bool) -> io::Result<Entry> {
+        let mut root = if path.is_absolute() {
+            PathBuf::new()
+        } else {
+            PathBuf::from(".")
+        };
+        let mut parts = Vec::new();
+        for part in path.components() {
+            match part {
+                Component::Prefix(_) | Component::RootDir if path.is_absolute() => {
+                    root.push(part.as_os_str())
+                }
+                Component::Prefix(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "drive-relative paths are not supported",
+                    ));
+                }
+                Component::RootDir => {}
+                Component::CurDir => {}
+                Component::ParentDir => parts.push(OsString::from("..")),
+                Component::Normal(name) => parts.push(name.to_os_string()),
+            }
+        }
+        if root.as_os_str().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the path has no filesystem root",
+            ));
+        }
+        let mut current = match open_root(&root, writable && parts.is_empty())? {
+            Entry::Dir(dir) => dir,
+            Entry::File(_) | Entry::Skip => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "the filesystem root is not a folder",
+                ));
+            }
+        };
+        if parts.is_empty() {
+            return Ok(Entry::Dir(current));
+        }
+        for (index, name) in parts.iter().enumerate() {
+            let entry = if writable && index + 1 == parts.len() {
+                open_destination(&current.0, name)?
+            } else {
+                open_relative(&current.0, name)?
+            };
+            if index + 1 == parts.len() {
+                return Ok(entry);
+            }
+            current = match entry {
+                Entry::Dir(dir) => dir,
+                Entry::File(_) | Entry::Skip => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        "a path component is not a folder",
+                    ));
+                }
+            };
+        }
+        unreachable!()
+    }
+
+    pub fn open_path(path: &Path) -> io::Result<Entry> {
+        open_path_with(path, false)
+    }
+
+    pub fn open_dir_path(path: &Path) -> io::Result<Dir> {
+        match open_path_with(path, true)? {
+            Entry::Dir(dir) => Ok(dir),
+            Entry::File(_) | Entry::Skip => Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "the path is not a folder",
+            )),
+        }
+    }
+
+    impl Dir {
+        pub fn try_clone(&self) -> io::Result<Self> {
+            self.0.try_clone().map(Self)
+        }
+
+        pub fn open(&self, name: &OsStr) -> io::Result<Entry> {
+            open_relative(&self.0, name)
+        }
+
+        pub fn names(&self, limit: usize) -> io::Result<(Vec<OsString>, bool)> {
+            // FILE_NAMES_INFORMATION entries are naturally aligned in this buffer.
+            let mut buffer = vec![0u64; 8192];
+            let mut names = Vec::new();
+            let mut restart = 1u8;
+            loop {
+                let mut status_block = IoStatusBlock {
+                    status_or_pointer: 0,
+                    information: 0,
+                };
+                // SAFETY: the retained directory and aligned output buffer are
+                // valid for this synchronous call.
+                let status = unsafe {
+                    NtQueryDirectoryFile(
+                        self.0.as_raw_handle(),
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                        std::ptr::null(),
+                        &mut status_block,
+                        buffer.as_mut_ptr().cast(),
+                        (buffer.len() * size_of::<u64>()) as u32,
+                        FILE_NAMES_INFORMATION,
+                        0,
+                        std::ptr::null(),
+                        restart,
+                    )
+                };
+                restart = 0;
+                if status == STATUS_NO_MORE_FILES {
+                    break;
+                }
+                if status < 0 && status != STATUS_BUFFER_OVERFLOW {
+                    return Err(nt_error(status));
+                }
+                let used = status_block
+                    .information
+                    .min(buffer.len() * size_of::<u64>());
+                if used == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Windows returned an empty directory result",
+                    ));
+                }
+                let bytes = buffer.as_ptr().cast::<u8>();
+                let mut offset = 0usize;
+                while offset + 12 <= used {
+                    // SAFETY: the bounds above cover each fixed header.
+                    let next = unsafe { bytes.add(offset).cast::<u32>().read_unaligned() } as usize;
+                    // SAFETY: FileNameLength is the third u32 in the header.
+                    let name_bytes =
+                        unsafe { bytes.add(offset + 8).cast::<u32>().read_unaligned() } as usize;
+                    if name_bytes % 2 != 0 || offset + 12 + name_bytes > used {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Windows returned an invalid directory entry",
+                        ));
+                    }
+                    // SAFETY: the validated byte range contains UTF-16 code units.
+                    let wide = unsafe {
+                        std::slice::from_raw_parts(
+                            bytes.add(offset + 12).cast::<u16>(),
+                            name_bytes / 2,
+                        )
+                    };
+                    let name = OsString::from_wide(wide);
+                    if name != "." && name != ".." {
+                        if names.len() == limit {
+                            return Ok((names, true));
+                        }
+                        names.push(name);
+                    }
+                    if next == 0 {
+                        break;
+                    }
+                    if next < 12 || offset + next > used {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Windows returned an invalid directory offset",
+                        ));
+                    }
+                    offset += next;
+                }
+            }
+            Ok((names, false))
+        }
+
+        pub fn occupied(&self, name: &OsStr) -> bool {
+            match open_relative(&self.0, name) {
+                Ok(_) => true,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+                Err(_) => true,
+            }
+        }
+
+        pub fn create_dir(&self, name: &OsStr) -> io::Result<Self> {
+            let file = nt_open(
+                &self.0,
+                name,
+                DESTINATION_DIRECTORY_ACCESS,
+                FILE_CREATE,
+                FILE_ATTRIBUTE_DIRECTORY,
+                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+            )?;
+            match classify(file)? {
+                Entry::Dir(dir) => Ok(dir),
+                Entry::File(_) | Entry::Skip => Err(io::Error::new(
+                    io::ErrorKind::NotADirectory,
+                    "the created entry is not a folder",
+                )),
+            }
+        }
+
+        pub fn create_file(&self, name: &OsStr) -> io::Result<File> {
+            nt_open(
+                &self.0,
+                name,
+                GENERIC_WRITE | DELETE | SYNCHRONIZE,
+                FILE_CREATE,
+                0,
+                FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
+            )
+        }
+
+        pub fn remove_file(&self, _name: &OsStr, file: &File) -> io::Result<()> {
+            let info = FileDispositionInfo { delete_file: 1 };
+            let mut status_block = IoStatusBlock {
+                status_or_pointer: 0,
+                information: 0,
+            };
+            // SAFETY: the disposition structure remains valid for this
+            // synchronous call and the destination handle has DELETE access.
+            let status = unsafe {
+                NtSetInformationFile(
+                    file.as_raw_handle(),
+                    &mut status_block,
+                    (&info as *const FileDispositionInfo).cast(),
+                    size_of::<FileDispositionInfo>() as u32,
+                    FILE_DISPOSITION_INFORMATION,
+                )
+            };
+            if status < 0 {
+                Err(nt_error(status))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Check a user-typed file or folder name.
 pub fn validate_name(name: &str) -> Result<&str, String> {
     let n = name.trim_start();
@@ -125,14 +866,66 @@ pub fn move_to_recycle_bin(path: &Path) -> Result<(), String> {
     if crate::links::is_network_path(&path.to_string_lossy()) {
         return Err("network locations have no Recycle Bin; delete it in Explorer".into());
     }
-    if !path.exists() {
-        return Err("it no longer exists".into());
-    }
+    verify_recycle_path(path)?;
     #[cfg(test)]
     if let Some(bin) = TEST_RECYCLE.with(|t| t.borrow().clone()) {
         return test_recycle(path, &bin);
     }
     recycle(path)
+}
+
+/// Check every path component without following the component being checked.
+/// Windows' Recycle Bin API does not guarantee that it will avoid traversing
+/// reparse points, so none may reach that API, including junctions in parents.
+fn verify_recycle_path(path: &Path) -> Result<(), String> {
+    let mut prefix = PathBuf::new();
+    let mut components = path.components().peekable();
+    while let Some(component) = components.next() {
+        prefix.push(component.as_os_str());
+        if matches!(
+            component,
+            std::path::Component::Prefix(_) | std::path::Component::CurDir
+        ) {
+            continue;
+        }
+        let final_component = components.peek().is_none();
+        let metadata = match std::fs::symlink_metadata(&prefix) {
+            Ok(metadata) => metadata,
+            Err(error) if final_component && error.kind() == std::io::ErrorKind::NotFound => {
+                return Err("it no longer exists".into());
+            }
+            Err(_) => {
+                return Err("could not safely verify this path for the Recycle Bin".into());
+            }
+        };
+        if metadata_is_link_or_reparse(&metadata) {
+            return Err(
+                "links and reparse points cannot be safely moved to the Recycle Bin".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn metadata_is_link_or_reparse(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        has_reparse_attribute(metadata.file_attributes())
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[cfg(windows)]
+fn has_reparse_attribute(attributes: u32) -> bool {
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+    attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(test)]
@@ -289,24 +1082,6 @@ fn occupied(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok()
 }
 
-/// Where a copy of `src` goes inside `dir` without replacing anything: its
-/// own name if that is free, otherwise "name - Copy.ext", "name - Copy (2).ext", …
-pub fn free_copy_target(src: &Path, dir: &Path, is_dir: bool) -> Result<PathBuf, String> {
-    let name = src.file_name().ok_or("cannot copy this")?;
-    let plain = dir.join(name);
-    if !occupied(&plain) {
-        return Ok(plain);
-    }
-    let name = name.to_string_lossy();
-    for n in 1..=999 {
-        let p = dir.join(copy_name(&name, is_dir, n));
-        if !occupied(&p) {
-            return Ok(p);
-        }
-    }
-    Err("there are too many copies of it already".into())
-}
-
 /// Paths that are not inside another path of the list (and no repeats): when
 /// a folder and something in it are both chosen, only the folder is acted on.
 /// Order is kept.
@@ -391,53 +1166,84 @@ pub fn rebase(p: &Path, old: &Path, new: &Path) -> PathBuf {
     out
 }
 
-/// What a source is, without following links.
-enum Kind {
-    File(u64),
-    Dir,
-    /// Symlink / junction, or something that is neither file nor folder.
-    Skip,
-}
-
-fn kind_of(p: &Path) -> std::io::Result<Kind> {
-    let m = std::fs::symlink_metadata(p)?;
-    let t = m.file_type();
-    Ok(if t.is_symlink() {
-        Kind::Skip
-    } else if t.is_dir() {
-        Kind::Dir
-    } else if t.is_file() {
-        Kind::File(m.len())
-    } else {
-        Kind::Skip
-    })
+fn free_copy_name(
+    src: &Path,
+    dir: &copy_handles::Dir,
+    is_dir: bool,
+) -> Result<std::ffi::OsString, String> {
+    let name = src.file_name().ok_or("cannot copy this")?;
+    if !dir.occupied(name) {
+        return Ok(name.to_os_string());
+    }
+    let name = name.to_string_lossy();
+    for n in 1..=999 {
+        let candidate = std::ffi::OsString::from(copy_name(&name, is_dir, n));
+        if !dir.occupied(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err("there are too many copies of it already".into())
 }
 
 /// A file being copied: `to` was created by us and is incomplete.
 struct OpenCopy {
     from: std::fs::File,
     to: std::fs::File,
+    to_parent: copy_handles::Dir,
+    to_name: std::ffi::OsString,
     to_path: PathBuf,
     from_path: PathBuf,
+}
+
+struct CopyItem {
+    source_path: PathBuf,
+    destination_path: PathBuf,
+    created: bool,
+}
+
+struct PendingEntry {
+    source: copy_handles::Entry,
+    source_path: PathBuf,
+    destination_parent: copy_handles::Dir,
+    destination_name: std::ffi::OsString,
+    destination_path: PathBuf,
+    depth: usize,
+}
+
+struct PendingChildren {
+    source: copy_handles::Dir,
+    destination: copy_handles::Dir,
+    source_path: PathBuf,
+    destination_path: PathBuf,
+    names: Vec<std::ffi::OsString>,
+    depth: usize,
+}
+
+enum CopyWork {
+    Entry(PendingEntry),
+    Children(PendingChildren),
 }
 
 /// One paste or duplicate, done a slice at a time (`step`) so a big copy
 /// never freezes the window.
 ///
-/// Rules: nothing is ever replaced (files are made with `create_new`,
-/// folders with `create_dir`); links and junctions are never followed
-/// (skipped and counted); a folder is never copied into itself; the whole
-/// job is refused up front if it is over the limits, and stops if the
-/// sources grow past them meanwhile. A file that could not be finished is
-/// removed again, so no half-written file stays behind.
+/// Rules: nothing is ever replaced (files and folders are created
+/// exclusively relative to retained directory handles); links and junctions
+/// are never followed (skipped and counted); a folder is never copied into
+/// itself; the whole job is refused up front if it is over the limits, and
+/// stops if the sources grow past them meanwhile. A file that could not be
+/// finished is removed again, so no half-written file stays behind.
 pub struct CopyJob {
     limits: CopyLimits,
     /// Top-level items not started yet: (source, destination folder).
     queue: std::collections::VecDeque<(PathBuf, PathBuf)>,
-    /// The item being copied: (source, the copy's path).
-    item: Option<(PathBuf, PathBuf)>,
-    /// Entries of that item still to copy: (source, destination).
-    stack: Vec<(PathBuf, PathBuf)>,
+    /// The item being copied. Paths are display values only; all I/O uses
+    /// retained handles in `stack` and `open`.
+    item: Option<CopyItem>,
+    /// Handle-relative entries and directory enumerations still to copy.
+    stack: Vec<CopyWork>,
+    /// Entry work discovered but not started (children frames do not count).
+    pending_entries: usize,
     open: Option<OpenCopy>,
     buf: Vec<u8>,
     /// Files and folders made / bytes written so far.
@@ -468,6 +1274,7 @@ impl CopyJob {
             queue: Default::default(),
             item: None,
             stack: Vec::new(),
+            pending_entries: 0,
             open: None,
             buf: Vec::new(),
             entries: 0,
@@ -495,25 +1302,46 @@ impl CopyJob {
 
     /// Count what copying `src` would create; error once over the limits.
     fn scan(&mut self, src: &Path) -> Result<(), String> {
-        let mut pending = vec![src.to_path_buf()];
-        while let Some(p) = pending.pop() {
-            match kind_of(&p) {
-                Ok(Kind::File(len)) => {
+        enum ScanWork {
+            Entry(copy_handles::Entry),
+            Children(copy_handles::Dir, Vec<std::ffi::OsString>),
+        }
+
+        let Ok(source) = copy_handles::open_path(src) else {
+            return Ok(());
+        };
+        let mut pending = vec![ScanWork::Entry(source)];
+        while let Some(work) = pending.pop() {
+            match work {
+                ScanWork::Entry(copy_handles::Entry::File(file)) => {
                     self.total_entries += 1;
-                    self.total_bytes = self.total_bytes.saturating_add(len);
+                    self.total_bytes = self
+                        .total_bytes
+                        .saturating_add(file.metadata().map_or(0, |m| m.len()));
                 }
-                Ok(Kind::Dir) => {
+                ScanWork::Entry(copy_handles::Entry::Dir(dir)) => {
                     self.total_entries += 1;
-                    if let Ok(rd) = std::fs::read_dir(&p) {
-                        for e in rd.flatten() {
-                            pending.push(e.path());
-                            if self.total_entries + pending.len() > self.limits.entries {
-                                return Err(self.limits.entries_message());
-                            }
+                    if self.total_entries > self.limits.entries {
+                        return Err(self.limits.entries_message());
+                    }
+                    let remaining = self.limits.entries - self.total_entries;
+                    if let Ok((names, over)) = dir.names(remaining) {
+                        if over {
+                            return Err(self.limits.entries_message());
+                        }
+                        pending.push(ScanWork::Children(dir, names));
+                    }
+                }
+                ScanWork::Entry(copy_handles::Entry::Skip) => {}
+                ScanWork::Children(dir, mut names) => {
+                    if let Some(name) = names.pop() {
+                        let entry = dir.open(&name);
+                        pending.push(ScanWork::Children(dir, names));
+                        if let Ok(entry) = entry {
+                            pending.push(ScanWork::Entry(entry));
                         }
                     }
                 }
-                Ok(Kind::Skip) | Err(_) => {}
             }
             if self.total_entries > self.limits.entries {
                 return Err(self.limits.entries_message());
@@ -569,9 +1397,7 @@ impl CopyJob {
     /// Remove the half-written file, if any.
     fn drop_open(&mut self) {
         if let Some(o) = self.open.take() {
-            let path = o.to_path.clone();
-            drop(o);
-            let _ = std::fs::remove_file(path);
+            let _ = o.to_parent.remove_file(&o.to_name, &o.to);
         }
     }
 
@@ -579,17 +1405,21 @@ impl CopyJob {
     fn fail_item(&mut self, why: String) {
         self.drop_open();
         self.stack.clear();
-        if let Some((src, to)) = self.item.take() {
+        self.pending_entries = 0;
+        if let Some(item) = self.item.take() {
             // Say so when part of a folder was already copied.
-            let why = if kind_of(&to).is_ok() {
+            let why = if item.created {
                 format!(
                     "{why}; \"{}\" is incomplete",
-                    to.file_name().unwrap_or_default().to_string_lossy()
+                    item.destination_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
                 )
             } else {
                 why
             };
-            self.failed.push((src, why));
+            self.failed.push((item.source_path, why));
         }
     }
 
@@ -645,10 +1475,8 @@ impl CopyJob {
                     if let Some(t) = meta.as_ref().and_then(|m| m.modified().ok()) {
                         let _ = done.to.set_modified(t);
                     }
-                    let to_path = done.to_path.clone();
-                    drop(done);
                     if let Some(m) = meta {
-                        let _ = std::fs::set_permissions(&to_path, m.permissions());
+                        let _ = done.to.set_permissions(m.permissions());
                     }
                 }
                 return Ok(());
@@ -663,11 +1491,42 @@ impl CopyJob {
                 .write_all(&self.buf[..n])
                 .map_err(|e| format!("{}: {e}", name(&o.to_path)));
         }
-        if let Some((src, to)) = self.stack.pop() {
-            return self.start_entry(&src, &to);
+        if let Some(work) = self.stack.pop() {
+            return match work {
+                CopyWork::Entry(entry) => {
+                    self.pending_entries -= 1;
+                    self.start_entry(entry)
+                }
+                CopyWork::Children(mut children) => {
+                    let Some(name) = children.names.pop() else {
+                        return Ok(());
+                    };
+                    let source = children
+                        .source
+                        .open(&name)
+                        .map_err(|e| format!("{}: {e}", name.to_string_lossy()))?;
+                    let destination_parent = children
+                        .destination
+                        .try_clone()
+                        .map_err(|e| format!("{}: {e}", name.to_string_lossy()))?;
+                    let source_path = children.source_path.join(&name);
+                    let destination_path = children.destination_path.join(&name);
+                    let depth = children.depth + 1;
+                    self.stack.push(CopyWork::Children(children));
+                    self.stack.push(CopyWork::Entry(PendingEntry {
+                        source,
+                        source_path,
+                        destination_parent,
+                        destination_name: name,
+                        destination_path,
+                        depth,
+                    }));
+                    Ok(())
+                }
+            };
         }
-        if let Some((_, to)) = self.item.take() {
-            self.done.push(to);
+        if let Some(item) = self.item.take() {
+            self.done.push(item.destination_path);
             return Ok(());
         }
         // Start the next top-level item.
@@ -678,36 +1537,54 @@ impl CopyJob {
             self.failed.push((src, format!("not copied ({why})")));
             return Ok(());
         }
-        let kind = match kind_of(&src) {
-            Ok(k) => k,
+        let source = match copy_handles::open_path(&src) {
+            Ok(source) => source,
             Err(_) => {
                 self.failed.push((src, "it no longer exists".into()));
                 return Ok(());
             }
         };
-        if matches!(kind, Kind::Skip) {
+        if matches!(source, copy_handles::Entry::Skip) {
             self.skip(&src);
             return Ok(());
         }
-        if !matches!(kind_of(&dir), Ok(Kind::Dir)) {
-            self.failed
-                .push((src, "the destination is not a folder".into()));
-            return Ok(());
-        }
-        match free_copy_target(&src, &dir, matches!(kind, Kind::Dir)) {
-            Ok(to) => {
-                self.item = Some((src.clone(), to.clone()));
-                self.stack.push((src, to));
+        let destination = match copy_handles::open_dir_path(&dir) {
+            Ok(destination) => destination,
+            Err(_) => {
+                self.failed
+                    .push((src, "the destination is not a folder".into()));
+                return Ok(());
+            }
+        };
+        match free_copy_name(&src, &destination, source.is_dir()) {
+            Ok(name) => {
+                let to = dir.join(&name);
+                self.item = Some(CopyItem {
+                    source_path: src.clone(),
+                    destination_path: to.clone(),
+                    created: false,
+                });
+                self.pending_entries = 1;
+                self.stack.push(CopyWork::Entry(PendingEntry {
+                    source,
+                    source_path: src,
+                    destination_parent: destination,
+                    destination_name: name,
+                    destination_path: to,
+                    depth: 0,
+                }));
             }
             Err(e) => self.failed.push((src, e)),
         }
         Ok(())
     }
 
-    /// Create `to` as a copy of `src` (a folder's entries are queued).
-    fn start_entry(&mut self, src: &Path, to: &Path) -> Result<(), String> {
+    /// Create one entry relative to its retained destination directory.
+    fn start_entry(&mut self, pending: PendingEntry) -> Result<(), String> {
         let name = || {
-            src.file_name()
+            pending
+                .source_path
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
@@ -719,45 +1596,63 @@ impl CopyJob {
                 format!("{}: {e}", name())
             }
         };
-        match kind_of(src).map_err(|e| format!("{}: {e}", name()))? {
-            Kind::Skip => self.skip(src),
-            Kind::Dir => {
-                // Depth below the folder this item's copy started in.
-                let depth = self.item.as_ref().map_or(0, |(_, root)| {
-                    to.components()
-                        .count()
-                        .saturating_sub(root.components().count())
-                });
-                if depth >= MAX_COPY_DEPTH {
+        match pending.source {
+            copy_handles::Entry::Skip => self.skip(&pending.source_path),
+            copy_handles::Entry::Dir(source) => {
+                if pending.depth >= MAX_COPY_DEPTH {
                     return Err(format!(
                         "{}: folders nested more than {MAX_COPY_DEPTH} deep",
                         name()
                     ));
                 }
                 self.count_entry()?;
-                std::fs::create_dir(to).map_err(exists)?;
-                let rd = std::fs::read_dir(src).map_err(|e| format!("{}: {e}", name()))?;
-                for e in rd {
-                    let e = e.map_err(|e| format!("{}: {e}", name()))?;
-                    self.stack.push((e.path(), to.join(e.file_name())));
-                    if self.entries + self.stack.len() > self.limits.entries {
-                        return Err(self.over_limit(self.limits.entries_message()));
+                let destination = pending
+                    .destination_parent
+                    .create_dir(&pending.destination_name)
+                    .map_err(exists)?;
+                if pending.depth == 0 {
+                    if let Some(item) = self.item.as_mut() {
+                        item.created = true;
                     }
                 }
+                let remaining = self
+                    .limits
+                    .entries
+                    .saturating_sub(self.entries + self.pending_entries);
+                let (names, over) = source
+                    .names(remaining)
+                    .map_err(|e| format!("{}: {e}", name()))?;
+                if over {
+                    return Err(self.over_limit(self.limits.entries_message()));
+                }
+                self.pending_entries += names.len();
+                self.stack.push(CopyWork::Children(PendingChildren {
+                    source,
+                    destination,
+                    source_path: pending.source_path,
+                    destination_path: pending.destination_path,
+                    names,
+                    depth: pending.depth,
+                }));
             }
-            Kind::File(_) => {
+            copy_handles::Entry::File(from) => {
                 self.count_entry()?;
-                let from = std::fs::File::open(src).map_err(|e| format!("{}: {e}", name()))?;
-                let out = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(to)
+                let out = pending
+                    .destination_parent
+                    .create_file(&pending.destination_name)
                     .map_err(exists)?;
+                if pending.depth == 0 {
+                    if let Some(item) = self.item.as_mut() {
+                        item.created = true;
+                    }
+                }
                 self.open = Some(OpenCopy {
                     from,
                     to: out,
-                    to_path: to.to_path_buf(),
-                    from_path: src.to_path_buf(),
+                    to_parent: pending.destination_parent,
+                    to_name: pending.destination_name,
+                    to_path: pending.destination_path,
+                    from_path: pending.source_path,
                 });
             }
         }
@@ -1249,11 +2144,13 @@ mod tests {
         let d = scratch("bin");
         std::fs::create_dir_all(d.join("bin")).unwrap();
         std::fs::create_dir_all(d.join("dir")).unwrap();
+        std::fs::create_dir_all(d.join("empty-dir")).unwrap();
         std::fs::write(d.join("a.txt"), "one").unwrap();
         std::fs::write(d.join("dir/a.txt"), "two").unwrap();
         set_test_recycle_dir(Some(d.join("bin")));
         move_to_recycle_bin(&d.join("a.txt")).unwrap();
         move_to_recycle_bin(&d.join("dir/a.txt")).unwrap();
+        move_to_recycle_bin(&d.join("empty-dir")).unwrap();
         assert!(
             move_to_recycle_bin(&d.join("a.txt")).is_err(),
             "gone already"
@@ -1262,7 +2159,55 @@ mod tests {
         let kept: Vec<Vec<u8>> = snapshot(&d.join("bin")).into_iter().map(|e| e.1).collect();
         assert_eq!(kept, vec![b"one".to_vec(), b"two".to_vec()]);
         assert!(!d.join("a.txt").exists() && !d.join("dir/a.txt").exists());
+        assert!(d.join("bin/0000-empty-dir").is_dir());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recycle_refuses_link_entries_and_linked_parents() {
+        let d = scratch("recycle-links");
+        let bin = d.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let network_target = PathBuf::from("//attacker.invalid/share/secret.txt");
+        let missing_target = d.join("missing.txt");
+        std::os::unix::fs::symlink(&network_target, d.join("network-link")).unwrap();
+        std::os::unix::fs::symlink(&missing_target, d.join("dangling-link")).unwrap();
+        std::os::unix::fs::symlink(&network_target, d.join("network-parent")).unwrap();
+
+        set_test_recycle_dir(Some(bin.clone()));
+        for path in [
+            d.join("network-link"),
+            d.join("dangling-link"),
+            d.join("network-parent/child.txt"),
+        ] {
+            assert_eq!(
+                move_to_recycle_bin(&path).unwrap_err(),
+                "links and reparse points cannot be safely moved to the Recycle Bin"
+            );
+        }
+        set_test_recycle_dir(None);
+
+        assert_eq!(
+            std::fs::read_link(d.join("network-link")).unwrap(),
+            network_target
+        );
+        assert_eq!(
+            std::fs::read_link(d.join("dangling-link")).unwrap(),
+            missing_target
+        );
+        assert_eq!(std::fs::read_dir(&bin).unwrap().count(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recycle_recognizes_windows_reparse_attributes() {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        assert!(has_reparse_attribute(FILE_ATTRIBUTE_REPARSE_POINT));
+        assert!(has_reparse_attribute(FILE_ATTRIBUTE_REPARSE_POINT | 0x20));
+        assert!(!has_reparse_attribute(0x20));
     }
 
     #[test]

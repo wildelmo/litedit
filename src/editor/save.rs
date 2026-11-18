@@ -1,13 +1,15 @@
 //! Writing files safely.
 //!
 //! 1. Write the new bytes to a temporary file in the same folder and flush it.
+//!    For an existing Windows target, keep the creation handle exclusive while
+//!    copying and protecting its DACL, then write the bytes.
 //! 2. Swap it in:
 //!    - Windows, existing file: `ReplaceFileW`, which keeps the original's
 //!      ACLs, attributes and creation time. If another program holds the file
 //!      open so it cannot be replaced, fall back to overwriting in place.
 //!    - New file (or other platforms): rename over the target.
-//! 3. On any failure the temporary file is removed and an error is returned;
-//!    the caller keeps the buffer dirty.
+//! 3. On any failure, a temporary file created by this save is removed and an
+//!    error is returned; the caller keeps the buffer dirty.
 //!
 //! Symlinks are followed so the link stays a link. Read-only files and
 //! Windows device names are refused.
@@ -17,6 +19,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::doc::is_reserved_name;
+
+#[cfg(windows)]
+mod bound;
+#[cfg(windows)]
+pub(crate) use bound::{SaveTarget, save_as_bound};
 
 /// Where a save to `path` should actually write (follows symlinks).
 fn resolve_target(path: &Path) -> PathBuf {
@@ -72,14 +79,11 @@ pub fn save_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = temp_path(&target);
     match write_and_swap(&target, &tmp, bytes, existing.as_ref()) {
         Ok(()) => Ok(()),
-        // The target is untouched: the temporary copy is not needed.
+        // The target is untouched; write_and_swap removed any temp it created.
         Err(Failure {
             msg,
             keep_temp: false,
-        }) => {
-            let _ = fs::remove_file(&tmp);
-            Err(msg)
-        }
+        }) => Err(msg),
         // The target may be damaged or gone: never delete the only good copy.
         Err(Failure {
             msg,
@@ -104,52 +108,244 @@ fn fail(msg: impl Into<String>) -> Failure {
     }
 }
 
+/// A temporary file owned by this save. Cleanup is armed only after
+/// `create_new` succeeds, so a path that already collided is not removed.
+struct CreatedTemp<'a> {
+    path: &'a Path,
+    file: Option<fs::File>,
+    keep: bool,
+}
+
+impl<'a> CreatedTemp<'a> {
+    fn new(path: &'a Path, file: fs::File) -> Self {
+        Self {
+            path,
+            file: Some(file),
+            keep: false,
+        }
+    }
+
+    fn file_mut(&mut self) -> &mut fs::File {
+        self.file.as_mut().expect("temporary file is open")
+    }
+
+    fn close(&mut self) {
+        drop(self.file.take());
+    }
+
+    fn keep(&mut self) {
+        self.keep = true;
+    }
+}
+
+impl Drop for CreatedTemp<'_> {
+    fn drop(&mut self) {
+        self.close();
+        if !self.keep {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
+
+/// The access list of an existing Windows target. The descriptor owns the
+/// allocation that `dacl` points into.
+#[cfg(windows)]
+struct WindowsDacl {
+    descriptor: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+    dacl: *mut windows_sys::Win32::Security::ACL,
+}
+
+#[cfg(windows)]
+impl WindowsDacl {
+    fn read(target: &Path) -> std::io::Result<Self> {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL,
+        };
+
+        // Ask only for READ_CONTROL so this does not conflict with programs
+        // that share file data but prevent replacement.
+        let source = fs::OpenOptions::new()
+            .read(true)
+            .access_mode(READ_CONTROL)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(target)?;
+        Self::from_file(&source)
+    }
+
+    fn from_file(source: &fs::File) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE};
+        use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let mut dacl = std::ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: `source` is a live file handle with READ_CONTROL, and all
+        // requested output pointers are valid. Windows allocates descriptor;
+        // dacl points inside it and remains valid until this value is dropped.
+        let err = unsafe {
+            GetSecurityInfo(
+                source.as_raw_handle() as HANDLE,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        let result = Self { descriptor, dacl };
+        if err != ERROR_SUCCESS {
+            return Err(std::io::Error::from_raw_os_error(err as i32));
+        }
+        if result.descriptor.is_null() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Windows returned an empty security descriptor",
+            ));
+        }
+        Ok(result)
+    }
+
+    fn apply_to(&self, file: &fs::File) -> std::io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HANDLE};
+        use windows_sys::Win32::Security::Authorization::{SE_FILE_OBJECT, SetSecurityInfo};
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        };
+
+        // Protect the copied DACL so the directory cannot merge weaker
+        // inherited entries into the temporary file before it is populated.
+        // SAFETY: `file` is a live handle opened with WRITE_DAC; `dacl`
+        // points inside the live descriptor owned by `self`.
+        let err = unsafe {
+            SetSecurityInfo(
+                file.as_raw_handle() as HANDLE,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                self.dacl,
+                std::ptr::null_mut(),
+            )
+        };
+        if err == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(std::io::Error::from_raw_os_error(err as i32))
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsDacl {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            // SAFETY: GetSecurityInfo allocated this descriptor with
+            // LocalAlloc, and this value is its only owner.
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(self.descriptor);
+            }
+        }
+    }
+}
+
 fn write_and_swap(
     target: &Path,
     tmp: &Path,
     bytes: &[u8],
     existing: Option<&fs::Metadata>,
 ) -> Result<(), Failure> {
+    #[cfg(windows)]
+    let target_dacl = if existing.is_some() {
+        Some(WindowsDacl::read(target).map_err(|e| {
+            fail(format!(
+                "cannot preserve the file's access permissions: {e}"
+            ))
+        })?)
+    } else {
+        None
+    };
     {
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        if target_dacl.is_some() {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Foundation::GENERIC_WRITE;
+            use windows_sys::Win32::Storage::FileSystem::WRITE_DAC;
+            // The inherited directory DACL exists briefly at creation. Deny
+            // all sharing so no other process can obtain a handle during that
+            // interval; the protected target DACL is installed before bytes
+            // are written and remains in force after this handle is closed.
+            options.access_mode(GENERIC_WRITE | WRITE_DAC).share_mode(0);
+        }
+        let f = options
             .open(tmp)
             .map_err(|e| fail(format!("cannot write in this folder: {e}")))?;
-        f.write_all(bytes)
+        let mut temp = CreatedTemp::new(tmp, f);
+        #[cfg(windows)]
+        if let Some(dacl) = &target_dacl {
+            dacl.apply_to(temp.file_mut()).map_err(|e| {
+                fail(format!(
+                    "cannot preserve the file's access permissions: {e}"
+                ))
+            })?;
+        }
+        temp.file_mut()
+            .write_all(bytes)
             .map_err(|e| fail(format!("write failed: {e}")))?;
-        f.sync_all()
+        temp.file_mut()
+            .sync_all()
             .map_err(|e| fail(format!("write failed: {e}")))?;
-    }
-    if existing.is_none() {
-        return fs::rename(tmp, target).map_err(|e| fail(format!("cannot create the file: {e}")));
-    }
-    #[cfg(windows)]
-    {
-        if replace_file(target, tmp).is_ok() {
-            return Ok(());
+        temp.close();
+
+        if existing.is_none() {
+            return fs::rename(tmp, target)
+                .map_err(|e| fail(format!("cannot create the file: {e}")));
         }
-        // ReplaceFileW can fail *after* moving the original away (errors
-        // 1176/1177). If the target is gone, put the new copy in its place.
-        if !target.exists() {
-            return fs::rename(tmp, target).map_err(|e| Failure {
-                msg: format!("the original file was moved away and the new copy could not be put in place: {e}"),
-                keep_temp: true,
-            });
+        #[cfg(windows)]
+        {
+            if replace_file(target, tmp).is_ok() {
+                return Ok(());
+            }
+            // ReplaceFileW can fail *after* moving the original away (errors
+            // 1176/1177). If the target is gone, put the new copy in its place.
+            if !target.exists() {
+                return match fs::rename(tmp, target) {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        temp.keep();
+                        Err(Failure {
+                            msg: format!(
+                                "the original file was moved away and the new copy could not be put in place: {e}"
+                            ),
+                            keep_temp: true,
+                        })
+                    }
+                };
+            }
+            // Target intact but could not be replaced (held open by another
+            // program): overwrite in place, keeping the temp copy until the new
+            // bytes are verified on disk.
+            if let Err(err) = overwrite_in_place(target, bytes) {
+                if err.keep_temp {
+                    temp.keep();
+                }
+                return Err(err);
+            }
+            Ok(())
         }
-        // Target intact but could not be replaced (held open by another
-        // program): overwrite in place, keeping the temp copy until the new
-        // bytes are verified on disk.
-        overwrite_in_place(target, bytes)?;
-        let _ = fs::remove_file(tmp);
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        if let Some(m) = existing {
-            let _ = fs::set_permissions(tmp, m.permissions());
+        #[cfg(not(windows))]
+        {
+            if let Some(m) = existing {
+                let _ = fs::set_permissions(tmp, m.permissions());
+            }
+            fs::rename(tmp, target).map_err(|e| fail(format!("cannot replace the file: {e}")))
         }
-        fs::rename(tmp, target).map_err(|e| fail(format!("cannot replace the file: {e}")))
     }
 }
 
@@ -307,6 +503,21 @@ mod tests {
         assert!(save_bytes(&d.join("CON.txt"), b"x").is_err());
         assert!(save_bytes(&d.join("no/such/dir/a.txt"), b"x").is_err());
         assert!(leftovers(&d).is_empty());
+        fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn failed_create_keeps_unowned_temp() {
+        let d = dir("unowned-temp");
+        let target = d.join("new.txt");
+        let tmp = d.join(".collision.litedit-temp");
+        fs::write(&tmp, b"not ours").unwrap();
+
+        let err = write_and_swap(&target, &tmp, b"new", None).unwrap_err();
+
+        assert!(!err.keep_temp);
+        assert_eq!(fs::read(&tmp).unwrap(), b"not ours");
+        assert!(!target.exists());
         fs::remove_dir_all(&d).ok();
     }
 

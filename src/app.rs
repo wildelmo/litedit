@@ -140,6 +140,8 @@ pub struct App {
     ops: treeops::TreeOps,
     /// How many bytes of files one restore (session, workspace) may open.
     restore_budget: u64,
+    /// How many line objects text buffers from one restore may retain.
+    restore_line_budget: usize,
     /// Tabs of the restored workspace that did not fit in the budget:
     /// (path, side, position). Kept in the workspace when it is saved.
     not_reopened: Vec<(PathBuf, u8, Option<ViewPos>)>,
@@ -161,6 +163,16 @@ pub struct App {
 /// At most this much file text is opened by one restore (a session or a
 /// workspace, which may come from someone else and name 200 big files).
 pub const MAX_RESTORE_BYTES: u64 = 512 * 1024 * 1024;
+/// Line `String`s have substantial per-object overhead even when their text
+/// is tiny, so raw bytes alone cannot bound restored editor-buffer memory.
+/// Two per-file line budgets keep that overhead to roughly 200 MB per restore.
+pub const MAX_RESTORE_LINES: usize = crate::doc::MAX_LINES * 2;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RestoreLimit {
+    Bytes,
+    Lines,
+}
 
 struct TabSlot {
     id: u64,
@@ -276,6 +288,7 @@ impl App {
             ops: Default::default(),
             mods: crate::input::Mods::default(),
             restore_budget: MAX_RESTORE_BYTES,
+            restore_line_budget: MAX_RESTORE_LINES,
             not_reopened: Vec::new(),
             workspace_file: None,
             header_hover: false,
@@ -468,25 +481,25 @@ impl App {
             ));
             return;
         }
-        let old = match std::fs::metadata(&path) {
-            Ok(m) if m.len() > settings::MAX_BYTES => {
+        let old = match crate::fileio::read_bounded(&path, settings::MAX_BYTES) {
+            Err(crate::fileio::ReadError::TooLarge(_)) => {
                 self.notice = Some(format!("{name} for now; settings.txt is too large"));
                 return;
             }
             // Only plain UTF-8 is rewritten; anything else would be damaged.
-            Ok(_) => match std::fs::read(&path) {
-                Ok(b) => match String::from_utf8(b) {
-                    Ok(t) => Some(t),
-                    Err(_) => {
-                        self.notice = Some(format!(
-                            "{name} for now; settings.txt isn't UTF-8, so it was not changed"
-                        ));
-                        return;
-                    }
-                },
-                Err(_) => None,
+            Ok(loaded) => match String::from_utf8(loaded.bytes) {
+                Ok(t) => Some(t),
+                Err(_) => {
+                    self.notice = Some(format!(
+                        "{name} for now; settings.txt isn't UTF-8, so it was not changed"
+                    ));
+                    return;
+                }
             },
-            Err(_) => Some(settings::TEMPLATE.to_string()),
+            Err(crate::fileio::ReadError::Open(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                Some(settings::TEMPLATE.to_string())
+            }
+            Err(_) => None,
         };
         let Some(old) = old else {
             self.notice = Some(format!("{name} for now; could not read settings.txt"));
@@ -1925,6 +1938,16 @@ impl App {
     }
 
     fn open_now(&mut self, path: &Path) {
+        if !self.begin_open(path) {
+            return;
+        }
+        let view = self.make_view(path);
+        self.finish_open(path, view);
+    }
+
+    /// Apply the path-level effects of opening and focus an existing tab.
+    /// Returns true when the caller still needs to construct a new view.
+    fn begin_open(&mut self, path: &Path) -> bool {
         // Opened after all: from now on it is an ordinary tab (closing it
         // takes it out of the workspace).
         self.not_reopened
@@ -1940,9 +1963,12 @@ impl App {
             self.tabs[i].peek = false;
             self.activate(i);
             self.focus = Focus::Main;
-            return;
+            return false;
         }
-        let view = self.make_view(path);
+        true
+    }
+
+    fn finish_open(&mut self, path: &Path, view: Box<dyn View>) {
         self.add_tab(view);
         self.tree.reveal(path);
         self.focus = Focus::Main;
@@ -1950,7 +1976,10 @@ impl App {
     }
 
     fn make_view(&self, path: &Path) -> Box<dyn View> {
-        let mut view = self.make_view_at_top(path);
+        self.with_remembered_position(path, self.make_view_at_top(path))
+    }
+
+    fn with_remembered_position(&self, path: &Path, mut view: Box<dyn View>) -> Box<dyn View> {
         // Closed earlier in this run: continue where the reader was.
         if let Some(pos) = self.file_pos.get(path) {
             view.restore_position(pos);
@@ -1963,15 +1992,48 @@ impl App {
             return Box::new(ImageView::new(path));
         }
         match Document::open(path) {
-            Ok(doc) if is_markdown(path) => Box::new(MarkdownView::new(doc)),
-            Ok(doc) => {
-                let mut v = CodeView::new(doc);
-                v.wrap = self.wrap_code;
-                Box::new(v)
-            }
+            Ok(doc) => self.view_for_document(path, doc),
             Err(e) => Box::new(MessageView::error(
                 "Error",
                 format!("Could not open {}: {e}", path.display()),
+            )),
+        }
+    }
+
+    fn view_for_document(&self, path: &Path, doc: Document) -> Box<dyn View> {
+        if is_markdown(path) {
+            Box::new(MarkdownView::new(doc))
+        } else {
+            let mut v = CodeView::new(doc);
+            v.wrap = self.wrap_code;
+            Box::new(v)
+        }
+    }
+
+    /// Build a restored view only when its decoded text fits the remaining
+    /// aggregate line-object budget. This check uses the same bytes that are
+    /// passed to the editor, so a stale planning scan cannot admit a buffer.
+    fn make_restored_view(
+        &self,
+        path: &Path,
+        remaining_lines: usize,
+    ) -> Option<(Box<dyn View>, usize)> {
+        if is_image(path) {
+            let view = self.with_remembered_position(path, Box::new(ImageView::new(path)));
+            return Some((view, 0));
+        }
+        match Document::open_counted(path) {
+            Ok((doc, lines)) if lines <= remaining_lines => {
+                let view = self.view_for_document(path, doc);
+                Some((self.with_remembered_position(path, view), lines))
+            }
+            Ok(_) => None,
+            Err(e) => Some((
+                Box::new(MessageView::error(
+                    "Error",
+                    format!("Could not open {}: {e}", path.display()),
+                )),
+                0,
             )),
         }
     }
@@ -2708,6 +2770,12 @@ impl App {
         self.restore_budget = bytes;
     }
 
+    /// Lower the retained line-object budget (tests).
+    #[cfg(test)]
+    pub fn set_restore_line_budget(&mut self, lines: usize) {
+        self.restore_line_budget = lines;
+    }
+
     /// Save the current folder's workspace in the store (best effort).
     pub fn persist_workspace(&self) {
         if let (Some(store), Some(root)) = (&self.workspace_store, self.tree.root()) {
@@ -2718,19 +2786,23 @@ impl App {
     }
 
     /// Which of `tabs` to open: one entry per file (however it is spelled),
-    /// existing files only, and together no bigger than the restore budget
-    /// (files already open cost nothing). The active tab is counted first,
-    /// so it is restored whenever it fits on its own; then the others in
-    /// order. With `gate` (the list comes from a workspace file) tabs that
-    /// content may not open are refused before anything touches them.
-    /// Returns the indices to open (in order), those left out for size and
-    /// the refused ones.
+    /// existing files only, and together within both restore budgets (files
+    /// already open cost nothing). The active tab is counted first, so it is
+    /// restored whenever it fits on its own; then the others in order. With
+    /// `gate` (the list comes from a workspace file) tabs that content may not
+    /// open are refused before anything touches them. Returns the indices to
+    /// open (in order), those left out with their limiting budget, and the
+    /// refused ones.
     fn plan_restore(
         &self,
         tabs: &[(PathBuf, u8)],
         active: usize,
         gate: bool,
-    ) -> (Vec<usize>, Vec<usize>, Vec<(usize, &'static str)>) {
+    ) -> (
+        Vec<usize>,
+        Vec<(usize, RestoreLimit)>,
+        Vec<(usize, &'static str)>,
+    ) {
         let mut unique: Vec<usize> = Vec::new();
         let mut refused = Vec::new();
         for (k, (p, _)) in tabs.iter().enumerate() {
@@ -2755,7 +2827,8 @@ impl App {
         let order = active
             .into_iter()
             .chain(unique.iter().copied().filter(|&k| Some(k) != active));
-        let (mut open, mut skipped, mut used) = (Vec::new(), Vec::new(), 0u64);
+        let (mut open, mut skipped) = (Vec::new(), Vec::new());
+        let (mut used_bytes, mut used_lines) = (0u64, 0usize);
         for k in order {
             let p = &tabs[k].0;
             if self.find_tab(p).is_some() {
@@ -2769,20 +2842,41 @@ impl App {
             else {
                 continue;
             };
-            match used.checked_add(size).filter(|&u| u <= self.restore_budget) {
-                Some(u) => {
-                    used = u;
-                    open.push(k);
-                }
-                None => skipped.push(k),
-            }
+            let Some(bytes) = used_bytes
+                .checked_add(size)
+                .filter(|&u| u <= self.restore_budget)
+            else {
+                skipped.push((k, RestoreLimit::Bytes));
+                continue;
+            };
+            let remaining = self.restore_line_budget.saturating_sub(used_lines);
+            // Images and document errors do not create editor line objects.
+            // The decoded Document is dropped after this preflight, before
+            // any Buffer or per-line String is allocated.
+            let lines = if is_image(p) {
+                0
+            } else {
+                Document::open_counted(p)
+                    .map(|(_, lines)| lines.min(remaining.saturating_add(1)))
+                    .unwrap_or(0)
+            };
+            let Some(line_total) = used_lines
+                .checked_add(lines)
+                .filter(|&u| u <= self.restore_line_budget)
+            else {
+                skipped.push((k, RestoreLimit::Lines));
+                continue;
+            };
+            used_bytes = bytes;
+            used_lines = line_total;
+            open.push(k);
         }
         open.sort_unstable();
-        skipped.sort_unstable();
+        skipped.sort_unstable_by_key(|&(k, _)| k);
         (open, skipped, refused)
     }
 
-    /// Open `tabs` (existing files only, within the restore budget) on
+    /// Open `tabs` (existing files only, within the restore budgets) on
     /// their sides, each where the reader was (`positions`, by index); show
     /// `active`. Tabs left out for size are remembered (and kept when the
     /// workspace is saved) and the reader is told once. With `gate`, tabs
@@ -2794,12 +2888,27 @@ impl App {
         active: usize,
         gate: bool,
     ) -> Option<String> {
-        let (open, skipped, refused) = self.plan_restore(tabs, active, gate);
-        for &k in &open {
+        let (planned, mut skipped, refused) = self.plan_restore(tabs, active, gate);
+        let mut open = Vec::new();
+        let mut used_lines = 0usize;
+        for &k in &planned {
             let p = &tabs[k].0;
             // A tab that is already open stays where its reader is.
             let was_open = self.find_tab(p).is_some();
-            self.open_now(p);
+            if was_open {
+                self.open_now(p);
+            } else {
+                let remaining = self.restore_line_budget.saturating_sub(used_lines);
+                let Some((view, lines)) = self.make_restored_view(p, remaining) else {
+                    skipped.push((k, RestoreLimit::Lines));
+                    continue;
+                };
+                used_lines += lines;
+                if self.begin_open(p) {
+                    self.finish_open(p, view);
+                }
+            }
+            open.push(k);
             if !was_open
                 && let Some(pos) = positions.get(k).copied().flatten()
                 && self.view.path() == Some(p.as_path())
@@ -2808,27 +2917,56 @@ impl App {
             }
         }
         if !skipped.is_empty() {
-            for &k in &skipped {
+            skipped.sort_unstable_by_key(|&(k, _)| k);
+            for &(k, _) in &skipped {
                 let (p, g) = &tabs[k];
                 self.not_reopened
                     .push((p.clone(), *g, positions.get(k).copied().flatten()));
             }
             let n = skipped.len();
-            let b = self.restore_budget;
-            let limit = if b >= 1 << 20 && b.is_multiple_of(1 << 20) {
-                format!("{} MB", b >> 20)
+            let byte_limited = skipped.iter().any(|&(_, l)| l == RestoreLimit::Bytes);
+            let line_limited = skipped.iter().any(|&(_, l)| l == RestoreLimit::Lines);
+            let msg = if byte_limited && !line_limited {
+                let b = self.restore_budget;
+                let limit = if b >= 1 << 20 && b.is_multiple_of(1 << 20) {
+                    format!("{} MB", b >> 20)
+                } else {
+                    human_size(b as usize)
+                };
+                if n == 1 {
+                    format!(
+                        "1 file was not reopened: together with the others it would be larger \
+                         than {limit}. It stays in the workspace."
+                    )
+                } else {
+                    format!(
+                        "{n} files were not reopened: together they are larger than {limit}. \
+                         They stay in the workspace."
+                    )
+                }
+            } else if line_limited && !byte_limited {
+                let limit = match self.restore_line_budget {
+                    1 => "1 text line".into(),
+                    l if l >= 1_000_000 && l.is_multiple_of(1_000_000) => {
+                        format!("{} million text lines", l / 1_000_000)
+                    }
+                    l => format!("{l} text lines"),
+                };
+                if n == 1 {
+                    format!(
+                        "1 file was not reopened: together with the others it would exceed the \
+                         restore limit of {limit}. It stays in the workspace."
+                    )
+                } else {
+                    format!(
+                        "{n} files were not reopened: together they would exceed the restore \
+                         limit of {limit}. They stay in the workspace."
+                    )
+                }
             } else {
-                human_size(b as usize)
-            };
-            let msg = if n == 1 {
                 format!(
-                    "1 file was not reopened: together with the others it would be larger \
-                     than {limit}. It stays in the workspace."
-                )
-            } else {
-                format!(
-                    "{n} files were not reopened: together they are larger than {limit}. \
-                     They stay in the workspace."
+                    "{n} files were not reopened: the restore's file-size or text-line limit \
+                     was reached. They stay in the workspace."
                 )
             };
             if self.nag.is_none() {
@@ -3549,11 +3687,18 @@ impl App {
                 return true;
             }
             Input::FsChanged(paths) => {
+                let rescan = paths.is_empty();
                 self.file_details_changed(paths);
                 self.file_index = None;
-                let mut changed = self.tree.invalidate(paths);
+                let mut changed = if rescan {
+                    self.tree.reload_all();
+                    true
+                } else {
+                    self.tree.invalidate(paths)
+                };
                 // Comparisons showing a changed file recompute.
-                let hits = |v: &dyn View| v.watched_paths().iter().any(|w| paths.contains(w));
+                let hits =
+                    |v: &dyn View| rescan || v.watched_paths().iter().any(|w| paths.contains(w));
                 if hits(&*self.view) {
                     let mut ctx = ctx!(self);
                     changed |= self.view.reload(&mut ctx);
@@ -3577,7 +3722,7 @@ impl App {
                     }
                 }
                 if let Some(p) = self.view.path().map(Path::to_path_buf)
-                    && paths.iter().any(|c| c == &p)
+                    && (rescan || paths.iter().any(|c| c == &p))
                 {
                     let name = self.view_name();
                     match self.view.disk_state() {
@@ -3613,7 +3758,7 @@ impl App {
                     let Some(p) = v.path().map(Path::to_path_buf) else {
                         continue;
                     };
-                    if !paths.iter().any(|c| c == &p) {
+                    if !rescan && !paths.iter().any(|c| c == &p) {
                         continue;
                     }
                     match v.disk_state() {

@@ -183,8 +183,18 @@ pub fn find_syntax(path: &Path, first_line: &str) -> &'static SyntaxReference {
     ext.as_deref()
         .and_then(|e| ss.find_syntax_by_extension(e))
         .or_else(|| ss.find_syntax_by_extension(&name))
-        .or_else(|| ss.find_syntax_by_first_line(first_line))
+        .or_else(|| ss.find_syntax_by_first_line(syntax_first_line(first_line)))
         .unwrap_or_else(|| ss.find_syntax_plain_text())
+}
+
+/// Syntax selection only needs the start of a shebang/modeline. Keep unknown
+/// extensions from passing an attacker-sized first line into grammar regexes.
+fn syntax_first_line(line: &str) -> &str {
+    let mut end = line.len().min(MAX_HIGHLIGHT_BYTES);
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
 }
 
 /// Find a grammar by a markdown fence token like `rust`, `py`, `js`.
@@ -466,6 +476,18 @@ mod tests {
         }
         assert_eq!(
             find_syntax(Path::new("script"), "#!/bin/bash").name,
+            "Bourne Again Shell (bash)"
+        );
+    }
+
+    #[test]
+    fn first_line_syntax_probe_is_bounded() {
+        let line = format!("#!/bin/bash {}", "é".repeat(MAX_HIGHLIGHT_BYTES));
+        let prefix = syntax_first_line(&line);
+        assert!(prefix.len() <= MAX_HIGHLIGHT_BYTES);
+        assert!(prefix.starts_with("#!/bin/bash"));
+        assert_eq!(
+            find_syntax(Path::new("script"), &line).name,
             "Bourne Again Shell (bash)"
         );
     }

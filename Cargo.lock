@@ -960,6 +960,7 @@ dependencies = [
  "cosmic-text",
  "fancy-regex",
  "image",
+ "libc",
  "notify",
  "png",
  "pulldown-cmark",

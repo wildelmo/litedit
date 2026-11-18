@@ -191,22 +191,22 @@ impl Settings {
 
     /// Read a settings file. A missing file gives the defaults silently.
     pub fn load(path: &Path) -> (Self, Vec<String>) {
-        match std::fs::metadata(path) {
-            Err(_) => (Self::default(), Vec::new()),
-            Ok(m) if m.len() > MAX_BYTES => (
+        match crate::fileio::read_bounded(path, MAX_BYTES) {
+            Err(crate::fileio::ReadError::Open(_)) | Err(crate::fileio::ReadError::Metadata(_)) => {
+                (Self::default(), Vec::new())
+            }
+            Err(crate::fileio::ReadError::TooLarge(_)) => (
                 Self::default(),
                 vec![format!(
                     "settings file is over {} KB; ignored",
                     MAX_BYTES / 1024
                 )],
             ),
-            Ok(_) => match std::fs::read(path) {
-                Ok(bytes) => Self::parse(&String::from_utf8_lossy(&bytes)),
-                Err(e) => (
-                    Self::default(),
-                    vec![format!("could not read settings: {e}")],
-                ),
-            },
+            Ok(loaded) => Self::parse(&String::from_utf8_lossy(&loaded.bytes)),
+            Err(e) => (
+                Self::default(),
+                vec![format!("could not read settings: {e}")],
+            ),
         }
     }
 

@@ -38,25 +38,43 @@ pub struct Document {
     /// Size and modified time taken *before* reading (so a write during the
     /// read is noticed later).
     pub meta: Option<(u64, std::time::SystemTime)>,
+    #[cfg(windows)]
+    pub(crate) save_target: Option<crate::editor::save::SaveTarget>,
 }
 
 impl Document {
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_counted(path).map(|(doc, _)| doc)
+    }
+
+    /// Open a document and report how many line `String`s its editor buffer
+    /// will allocate. The count is taken from the decoded text before the
+    /// buffer exists.
+    pub(crate) fn open_counted(path: &Path) -> io::Result<(Self, usize)> {
         if is_reserved_name(path) {
             return Err(io::Error::other("reserved Windows device name"));
         }
-        let meta = std::fs::metadata(path)?;
+        let loaded = match crate::fileio::read_bounded(path, MAX_FILE_BYTES) {
+            Ok(loaded) => loaded,
+            Err(crate::fileio::ReadError::NotFile) => {
+                return Err(io::Error::other("not a regular file"));
+            }
+            Err(crate::fileio::ReadError::TooLarge(size)) => {
+                return Err(io::Error::other(format!(
+                    "file is too large to open ({} MB)",
+                    size / (1024 * 1024)
+                )));
+            }
+            Err(crate::fileio::ReadError::UnsafeLink) => {
+                return Err(io::Error::other("linked files are not opened"));
+            }
+            Err(crate::fileio::ReadError::Open(e))
+            | Err(crate::fileio::ReadError::Metadata(e))
+            | Err(crate::fileio::ReadError::Read(e)) => return Err(e),
+        };
+        let meta = loaded.metadata;
         let stamp = meta.modified().ok().map(|t| (meta.len(), t));
-        if !meta.is_file() {
-            return Err(io::Error::other("not a regular file"));
-        }
-        if meta.len() > MAX_FILE_BYTES {
-            return Err(io::Error::other(format!(
-                "file is too large to open ({} MB)",
-                meta.len() / (1024 * 1024)
-            )));
-        }
-        let bytes = std::fs::read(path)?;
+        let bytes = loaded.bytes;
         if looks_binary(&bytes) {
             return Err(io::Error::other(
                 "this looks like a binary file (an image, program or archive), not text",
@@ -67,20 +85,25 @@ impl Document {
         // would need gigabytes. Counted on the decoded text, exactly as the
         // editor splits it (a lone CR ends a line too), before any line is
         // allocated.
-        let lines = count_line_breaks(&text, MAX_LINES);
-        if lines > MAX_LINES {
+        let line_breaks = count_line_breaks(&text, MAX_LINES);
+        if line_breaks > MAX_LINES {
             return Err(io::Error::other(format!(
                 "file has too many lines to open (more than {} million)",
                 MAX_LINES / 1_000_000
             )));
         }
-        Ok(Self {
-            path: path.to_path_buf(),
-            text,
-            encoding,
-            lossy,
-            meta: stamp,
-        })
+        Ok((
+            Self {
+                path: path.to_path_buf(),
+                text,
+                encoding,
+                lossy,
+                meta: stamp,
+                #[cfg(windows)]
+                save_target: crate::editor::save::SaveTarget::from_file(&loaded.file).ok(),
+            },
+            line_breaks + 1,
+        ))
     }
 
     pub fn file_name(&self) -> String {
@@ -241,6 +264,20 @@ mod tests {
         assert_eq!(count_line_breaks("\r\r\r\r\r", 2), 3);
         assert_eq!(count_line_breaks("\n\n", 2), 2);
         assert_eq!(count_line_breaks("\r\n\r\n\r\n", 2), 3);
+    }
+
+    #[test]
+    fn counted_open_reports_all_supported_line_encodings_before_buffers() {
+        let f = tmp_file("line-preflight");
+        let text = "a\r\nb\rc\n"; // Three breaks, four editor line objects.
+        for enc in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+            std::fs::write(&f, encode(text, enc)).unwrap();
+            let (_, lines) = Document::open_counted(&f).unwrap();
+            assert_eq!(lines, 4, "{enc:?}");
+        }
+        std::fs::write(&f, [b'a', 0, b'\n']).unwrap();
+        assert!(Document::open_counted(&f).is_err(), "binary has no buffer");
+        std::fs::remove_dir_all(f.parent().unwrap()).ok();
     }
 
     fn tmp_file(name: &str) -> PathBuf {
