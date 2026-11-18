@@ -411,14 +411,16 @@ mod tests {
     #[test]
     fn opening_a_document_leaves_its_folder_movable() {
         let dir = scratch("movable-folder");
-        let path = dir.join("note.txt");
+        let project = dir.join("project");
+        fs::create_dir(&project).unwrap();
+        let path = project.join("note.txt");
         let original = save_as_bound(&path, b"first").unwrap();
         let doc = crate::doc::Document::open(&path).unwrap();
-        let moved = dir.with_extension("moved");
-        fs::rename(&dir, &moved).unwrap();
+        let moved = dir.join("moved");
+        fs::rename(&project, &moved).unwrap();
         assert_eq!(fs::read(moved.join("note.txt")).unwrap(), b"first");
         assert_eq!(doc.save_target.unwrap().identity, original.identity);
-        fs::remove_dir_all(moved).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1198,7 +1198,7 @@ struct OpenCopy {
 struct CopyItem {
     source_path: PathBuf,
     destination_path: PathBuf,
-    created: bool,
+    created_directory: bool,
 }
 
 struct PendingEntry {
@@ -1408,7 +1408,7 @@ impl CopyJob {
         self.pending_entries = 0;
         if let Some(item) = self.item.take() {
             // Say so when part of a folder was already copied.
-            let why = if item.created {
+            let why = if item.created_directory {
                 format!(
                     "{why}; \"{}\" is incomplete",
                     item.destination_path
@@ -1562,7 +1562,7 @@ impl CopyJob {
                 self.item = Some(CopyItem {
                     source_path: src.clone(),
                     destination_path: to.clone(),
-                    created: false,
+                    created_directory: false,
                 });
                 self.pending_entries = 1;
                 self.stack.push(CopyWork::Entry(PendingEntry {
@@ -1612,7 +1612,7 @@ impl CopyJob {
                     .map_err(exists)?;
                 if pending.depth == 0 {
                     if let Some(item) = self.item.as_mut() {
-                        item.created = true;
+                        item.created_directory = true;
                     }
                 }
                 let remaining = self
@@ -1641,11 +1641,6 @@ impl CopyJob {
                     .destination_parent
                     .create_file(&pending.destination_name)
                     .map_err(exists)?;
-                if pending.depth == 0 {
-                    if let Some(item) = self.item.as_mut() {
-                        item.created = true;
-                    }
-                }
                 self.open = Some(OpenCopy {
                     from,
                     to: out,
